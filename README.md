@@ -331,7 +331,7 @@ Even after grading, compression, and the follow-up hop, the best-matching chunk 
 
 ### Source citations
 
-Every answer (including an abstention) returns a `sources` array — the exact chunks used to build the prompt, with document name, page/section, and a short snippet, numbered to match the "CHUNK N" labels used internally when building the prompt. See `src/citations.py`. The `web/` UI renders these as an expandable citation list under each assistant message, so a claim can be checked against its source instead of trusted blindly.
+Every answer (including an abstention) returns a `sources` array — the exact chunks used to build the prompt, with document name, page/section, and a short snippet, numbered to match the "CHUNK N" labels used internally when building the prompt. See `_build_sources()` in `src/query_pipeline.py`. The `web/` UI renders these as an expandable citation list under each assistant message, so a claim can be checked against its source instead of trusted blindly.
 
 ---
 
@@ -440,9 +440,8 @@ Full detail: [`docs/eval_report.md`](./docs/eval_report.md).
 │   ├── src/
 │   │   ├── config.py               Central config, reads .env, STORAGE_MODE switch
 │   │   ├── llm.py                  Gemini chat generation + embeddings
-│   │   ├── query_pipeline.py       Orchestrates expansion -> retrieval -> [follow-up hop] -> generation
+│   │   ├── query_pipeline.py       Orchestrates expansion -> retrieval -> [follow-up hop] -> confidence gate -> generation; builds `sources`
 │   │   ├── graph.py                Entity extraction + co-occurrence graph building
-│   │   ├── citations.py            Builds the `sources` (citation) array from context chunks
 │   │   ├── telemetry.py            Persistent structured query logging
 │   │   ├── storage/
 │   │   │   ├── database.py           knowledge_nodes, document_chunks, documents

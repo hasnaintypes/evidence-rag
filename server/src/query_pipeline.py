@@ -7,10 +7,10 @@ from src.retrieval.reranker import rerank_chunks
 from src.retrieval.grader import grade_retrieved_chunks, meets_confidence_threshold
 from src.retrieval.compression import compress_context_chunks
 from src.evaluation.judge import score_faithfulness
-from src.citations import build_sources
 from src.telemetry import log_query_event
 
 MAX_HOPS = 2  # initial retrieval pass + at most 1 follow-up hop, never more
+SNIPPET_MAX_CHARS = 280  # citation snippet length - enough to verify a claim, not the whole chunk
 
 
 def _retrieve(query_text: str, query_embedding: list, top_k: int) -> list:
@@ -169,7 +169,7 @@ def process_chat_query(query: str, advanced_mode: bool = True) -> dict:
             "rrf_score": round(chunk.get("rrf_score", 0.0), 4),
         })
 
-    sources = build_sources(final_context_chunks)
+    sources = _build_sources(final_context_chunks)
 
     # --- PHASE 5.5: Retrieval-confidence abstention gate ---
     # advanced_mode only - naive mode never runs the cross-encoder, so
@@ -328,3 +328,33 @@ def _empty_result(reply: str, thinking: str, telemetry: dict) -> dict:
         "sources": [],
         "faithfulness": {"score": None, "unsupported_claims": []},
     }
+
+
+def _build_sources(context_chunks: list) -> list:
+    """
+    Reshapes the chunks actually used to generate an answer (or the
+    closest matches found, when the pipeline abstains) into the
+    citation-friendly `sources` list returned to the API/UI: document
+    name, location (page/section), and a short snippet - not the full
+    chunk_text, since this is for a user to spot-check a claim, not to
+    re-read the whole chunk. 1-based `index` matches the "CHUNK N"
+    numbering already used above when building the generation prompt.
+    """
+    sources = []
+    for idx, chunk in enumerate(context_chunks):
+        sources.append({
+            "index": idx + 1,
+            "document": chunk.get("source_file", "unknown"),
+            "page": chunk.get("page_number"),
+            "section": chunk.get("expanded_heading") or chunk.get("heading_path") or "Unknown Section",
+            "snippet": _snippet(chunk.get("chunk_text", "")),
+        })
+    return sources
+
+
+def _snippet(text: str) -> str:
+    text = text.strip()
+    if len(text) <= SNIPPET_MAX_CHARS:
+        return text
+    truncated = text[:SNIPPET_MAX_CHARS].rsplit(" ", 1)[0]
+    return f"{truncated}…"
