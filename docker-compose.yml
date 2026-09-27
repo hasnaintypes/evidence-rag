@@ -1,0 +1,13 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - backend/.env
+    volumes:
+      # Only relevant when STORAGE_MODE=local (SQLite) - ignored/unused
+      # once STORAGE_MODE=supabase, since nothing is written to disk then.
+      - ./backend/data:/app/backend/data
