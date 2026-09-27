@@ -13,6 +13,19 @@ from src.graph import build_document_graph
 
 SUPPORTED_EXTENSIONS = ['.md', '.pdf', '.docx', '.xlsx', '.xls', '.csv']
 
+# Explicit per-extension MIME types for Supabase Storage uploads - the
+# client defaults to "text/plain" for everything if not told otherwise,
+# which would fail the bucket's allowed_mime_types check for every format
+# except .md.
+EXTENSION_MIME_TYPES = {
+    '.md': 'text/markdown',
+    '.pdf': 'application/pdf',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.xls': 'application/vnd.ms-excel',
+    '.csv': 'text/csv',
+}
+
 
 def file_hash(file_path: str) -> str:
     """Content hash used to detect whether a file changed since last ingestion."""

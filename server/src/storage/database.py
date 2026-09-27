@@ -448,9 +448,9 @@ def get_graph_data(doc_id: Optional[str] = None) -> Dict[str, Any]:
     ph = _ph(1)
 
     if doc_id:
-        cursor.execute(f"SELECT id, name FROM entities WHERE doc_id = {ph}", (doc_id,))
+        cursor.execute(f"SELECT id, name, doc_id, node_id FROM entities WHERE doc_id = {ph}", (doc_id,))
     else:
-        cursor.execute("SELECT id, name FROM entities")
+        cursor.execute("SELECT id, name, doc_id, node_id FROM entities")
     entity_rows = cursor.fetchall()
 
     if doc_id:
@@ -461,6 +461,9 @@ def get_graph_data(doc_id: Optional[str] = None) -> Dict[str, Any]:
 
     conn.close()
     return {
-        "nodes": [{"id": r["id"], "label": r["name"]} for r in entity_rows],
+        "nodes": [
+            {"id": r["id"], "label": r["name"], "doc_id": r["doc_id"], "node_id": r["node_id"]}
+            for r in entity_rows
+        ],
         "edges": [{"from": r["source_entity_id"], "to": r["target_entity_id"], "weight": r["weight"]} for r in edge_rows],
     }

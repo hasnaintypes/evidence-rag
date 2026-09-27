@@ -11,7 +11,7 @@ from pydantic import BaseModel
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.query_pipeline import process_chat_query
-from src.storage.database import init_db, list_documents, get_graph_data
+from src.storage.database import init_db, list_documents, get_graph_data, get_node
 from src.ingestion.pipeline import ingest_file, SUPPORTED_EXTENSIONS
 from src.storage.files import save_upload, get_source_path
 import uvicorn
@@ -21,11 +21,29 @@ from src.config import settings
 
 app = FastAPI(title=settings.app_name)
 
+MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024  # matches the Supabase bucket's file size limit
+
 @app.get("/graph")
 async def graph_endpoint(doc_id: str = None):
     """Returns entity co-occurrence graph data for visualization.
     Pass ?doc_id=... to scope to one document, omit for the full graph."""
     return get_graph_data(doc_id)
+
+
+@app.get("/graph/section/{node_id}")
+async def graph_section_endpoint(node_id: str):
+    """Returns the source section behind a graph node, for the UI's
+    click-to-inspect panel. The frontend already has the doc_id -> filename
+    mapping from /documents, so this only needs to return the node itself."""
+    node = get_node(node_id)
+    if not node:
+        raise HTTPException(status_code=404, detail=f"Section '{node_id}' not found.")
+    return {
+        "doc_id": node["doc_id"],
+        "heading_path": node.get("heading_path"),
+        "content": node.get("content"),
+        "page": node.get("page"),
+    }
 
 @app.on_event("startup")
 async def startup_event():
@@ -92,6 +110,15 @@ async def upload_file_endpoint(file: UploadFile = File(...)):
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported file format. Supported types: {', '.join(SUPPORTED_EXTENSIONS)}"
+        )
+
+    file.file.seek(0, os.SEEK_END)
+    size = file.file.tell()
+    file.file.seek(0)
+    if size > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds the 50MB upload limit ({size / 1024 / 1024:.1f}MB)."
         )
 
     try:

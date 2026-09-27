@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from typing import Optional
 
 from src.config import settings, SAMPLE_DOCS_DIR
+from src.ingestion.pipeline import EXTENSION_MIME_TYPES
 
 
 def _supabase_client():
@@ -34,9 +35,10 @@ def save_upload(filename: str, file_obj):
             tmp_path = tmp.name
         try:
             client = _supabase_client()
+            content_type = EXTENSION_MIME_TYPES.get(suffix.lower(), "application/octet-stream")
             with open(tmp_path, "rb") as f:
                 client.storage.from_(settings.supabase_storage_bucket).upload(
-                    filename, f, {"upsert": "true"}
+                    filename, f, {"upsert": "true", "content-type": content_type}
                 )
             yield tmp_path
         finally:
