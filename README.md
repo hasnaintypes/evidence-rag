@@ -72,6 +72,8 @@ Retrieval combines:
 | Hidden retrieval process | Explainability matrix and telemetry |
 | Silent model degeneration | Repetition-loop detection |
 | No relationship layer | Entity co-occurrence graph |
+| Answer with no way to verify it | Numbered source citations (doc, page/section, snippet) |
+| Always answers, even on a weak match | Abstains below a configurable retrieval-confidence threshold |
 
 ---
 
@@ -289,11 +291,13 @@ flowchart TB
     HOP --> MERGE["Merge and Rerank Evidence"]
     MERGE --> PACK
 
-    PACK --> GEN["10. Grounded Generation"]
+    PACK --> CONF{"10. Confidence Gate<br/>Top score >= threshold?"}
+    CONF -->|No| ABSTAIN["Abstain: Insufficient Evidence + Sources"]
+    CONF -->|Yes| GEN["11. Grounded Generation"]
     GEN --> LOOP{"Repetition Loop?"}
 
-    LOOP -->|No| OK["Final Answer + References + Telemetry"]
-    LOOP -->|Yes| FAIL["Explicit Failure + Retrieved References"]
+    LOOP -->|No| OK["Final Answer + Sources + Faithfulness + Telemetry"]
+    LOOP -->|Yes| FAIL["Explicit Failure + Retrieved Sources"]
 ```
 
 ### Hybrid retrieval
@@ -321,11 +325,21 @@ A retrieved node is expanded with its sibling nodes from the same parent section
 
 If generation fails or enters a repetition pattern, the system returns an explicit failure message, the retrieved source references, and the available telemetry — never a fabricated replacement answer.
 
+### Retrieval-confidence abstention
+
+Even after grading, compression, and the follow-up hop, the best-matching chunk might still be a weak one that only survived grading via keyword overlap rather than genuine relevance. Before generation runs, `query_pipeline.py` checks the top chunk's cross-encoder score against `retrieval_confidence_threshold` (a config value, tunable against `docs/eval_set.json` — see `src/retrieval/grader.py`'s `meets_confidence_threshold()`). Below that bar, the pipeline skips generation entirely and returns an explicit "insufficient evidence" response instead of a plausible-but-weakly-grounded answer — the same closest-match chunks are still returned as `sources` for transparency, just without a synthesized claim built on top of them. This check only applies in advanced mode, since naive mode never runs the cross-encoder and has no confidence signal to gate on.
+
+### Source citations
+
+Every answer (including an abstention) returns a `sources` array — the exact chunks used to build the prompt, with document name, page/section, and a short snippet, numbered to match the "CHUNK N" labels used internally when building the prompt. See `src/citations.py`. The `web/` UI renders these as an expandable citation list under each assistant message, so a claim can be checked against its source instead of trusted blindly.
+
 ---
 
 ## Explainability and Observability
 
 ### Explainability matrix fields
+
+Exposed via two API response fields built from the exact chunks used to generate (or, on an abstention, the closest chunks found): `chunks_matrix` (full retrieval debug detail — scores, node type, hop) and `sources` (the user-facing citation shape — numbered, with a snippet).
 
 | Field | Purpose |
 |:--|:--|
@@ -340,6 +354,8 @@ If generation fails or enters a repetition pattern, the system returns an explic
 | Rerank score | Cross-encoder relevance |
 | Selected context | Whether the item reached generation |
 | Retrieval hop | Initial vs. follow-up retrieval |
+| Citation index | 1-based, matches the "CHUNK N" label in the generation prompt |
+| Snippet | Short excerpt of the matched text, for the UI's citation list |
 
 ### Pipeline telemetry fields
 
@@ -402,6 +418,7 @@ Full detail: [`docs/eval_report.md`](./docs/eval_report.md).
 | Layer | Technology |
 |:--|:--|
 | Backend | Python, FastAPI, Uvicorn |
+| Frontend | Next.js (App Router), Tailwind CSS, shadcn/ui |
 | Chat model | Gemini (`gemini-2.5-flash`) |
 | Embeddings | Gemini (`gemini-embedding-001`) |
 | Sparse retrieval | `rank-bm25` |
@@ -425,6 +442,7 @@ Full detail: [`docs/eval_report.md`](./docs/eval_report.md).
 │   │   ├── llm.py                  Gemini chat generation + embeddings
 │   │   ├── query_pipeline.py       Orchestrates expansion -> retrieval -> [follow-up hop] -> generation
 │   │   ├── graph.py                Entity extraction + co-occurrence graph building
+│   │   ├── citations.py            Builds the `sources` (citation) array from context chunks
 │   │   ├── telemetry.py            Persistent structured query logging
 │   │   ├── storage/
 │   │   │   ├── database.py           knowledge_nodes, document_chunks, documents
@@ -438,7 +456,8 @@ Full detail: [`docs/eval_report.md`](./docs/eval_report.md).
 │   │   ├── retrieval/
 │   │   │   ├── hybrid.py              BM25 + dense fusion (RRF), cached index
 │   │   │   ├── reranker.py            Cross-encoder re-ranking
-│   │   │   ├── grader.py              Retrieval relevance grading + Jaccard dedup
+│   │   │   ├── grader.py              Retrieval relevance grading + Jaccard dedup +
+│   │   │   │                          confidence-threshold abstention gate
 │   │   │   ├── query_rewriter.py      LLM-based query expansion + sub-query decomposition
 │   │   │   └── compression.py         Sentence-window pruning + parent-section reconstruction
 │   │   └── evaluation/
@@ -450,6 +469,14 @@ Full detail: [`docs/eval_report.md`](./docs/eval_report.md).
 │   │   └── supabase_schema.sql     One-time Postgres+pgvector schema for Supabase mode
 │   └── requirements.txt
 ├── web/                            Next.js frontend (shadcn/ui), talks to the server as an API
+│   ├── app/page.tsx                 Renders the chat panel
+│   ├── components/chat/
+│   │   ├── chat-panel.tsx             Chat state, input, submit
+│   │   ├── chat-message.tsx           Message bubble (user/assistant)
+│   │   └── source-list.tsx            Expandable per-answer citation list
+│   └── lib/
+│       ├── api.ts                     POST /chat client
+│       └── types.ts                   Shared API/message types
 └── docs/
     ├── sample_docs/                 Example knowledge base (multi-format)
     ├── eval_set.json                Labeled Q&A pairs for benchmarking
@@ -478,6 +505,8 @@ GEMINI_API_KEY=your-key-here
 ENABLE_ENTITY_GRAPH=false
 ```
 
+`RETRIEVAL_CONFIDENCE_THRESHOLD` (default `0.0`) is also read from the environment if you want to tune the abstention gate without a code change — see [Retrieval-confidence abstention](#retrieval-confidence-abstention).
+
 ### Ingest documents
 
 ```bash
@@ -490,7 +519,18 @@ python scripts/ingest.py
 uvicorn api.app:app --reload
 ```
 
-The server is a pure JSON API (no bundled UI) — FastAPI's interactive docs are at `http://127.0.0.1:8000/docs`. Point the `web/` frontend at this API once it exists.
+The server is a pure JSON API — FastAPI's interactive docs are at `http://127.0.0.1:8000/docs`.
+
+### Set up the web frontend
+
+```bash
+cd web
+pnpm install
+cp .env.example .env
+pnpm dev
+```
+
+`.env` just needs `NEXT_PUBLIC_API_URL` pointing at the running server (defaults to `http://127.0.0.1:8000`). Open `http://localhost:3000` for the chat UI.
 
 ---
 
@@ -508,4 +548,6 @@ Parsing, `KnowledgeNode` tree construction, entity graph, cross-encoder rerankin
 - Entity extraction performs one LLM call per document section and can be expensive for large documents.
 - Local generation latency depends on hardware, context size, and model selection.
 - Faithfulness scoring adds one extra LLM call per query (skipped when generation itself already failed) and is judged by the same model family doing the generation, not an independent/stronger judge model.
+- The retrieval-confidence abstention gate only applies in advanced mode; naive mode never computes a cross-encoder score and always attempts an answer.
+- The web UI's citation list is intentionally basic (numbered, expandable snippet) — it does not yet render inline `[1]`/`[2]` markers within the generated answer text itself.
 

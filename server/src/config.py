@@ -40,6 +40,19 @@ class Settings(BaseSettings):
     # --- Entity graph (opt-in, adds one LLM call per document section) ---
     enable_entity_graph: bool = False
 
+    # --- Retrieval-confidence abstention (advanced_mode only - naive mode
+    # never computes a cross-encoder rerank_score, so it has no confidence
+    # signal to gate on) ---
+    # Minimum rerank_score the best retrieved chunk must clear, after
+    # grading/compression/the follow-up hop, for the pipeline to attempt an
+    # answer at all. Below this, process_chat_query() reports insufficient
+    # evidence instead of generating a plausible-but-weakly-grounded
+    # answer. Matches retrieval/grader.py's RERANK_SCORE_THRESHOLD (the
+    # same "positive score = relevant cluster" cutoff for this
+    # cross-encoder) by default - tune against docs/eval_set.json rather
+    # than hardcoding a different number in code.
+    retrieval_confidence_threshold: float = 0.0
+
     # --- Supabase (storage_mode="supabase") -----------------------------
     # supabase_db_url: direct Postgres connection string (Project Settings
     # -> Database -> Connection string), used by psycopg2 for the knowledge

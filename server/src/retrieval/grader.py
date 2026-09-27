@@ -63,3 +63,23 @@ def grade_retrieved_chunks(query: str, chunks: List[Dict[str, Any]]) -> List[Dic
             seen_texts.add(text_normalized)
 
     return valid_chunks
+
+
+def meets_confidence_threshold(chunks: List[Dict[str, Any]], threshold: float) -> bool:
+    """
+    Final abstention gate: returns whether at least one of the given
+    chunks' cross-encoder rerank_score clears `threshold`.
+
+    A chunk can pass grade_retrieved_chunks() above via the keyword-hit
+    fallback alone (hit_ratio >= 0.2) even with a poor/negative
+    rerank_score - useful for not over-pruning candidates, but not a
+    strong enough signal to synthesize an answer from. Called by
+    query_pipeline.py after retrieval/rerank/grade/the follow-up hop: if
+    even the best chunk found doesn't clear this bar, the pipeline should
+    honestly report insufficient evidence instead of generating a
+    confident-sounding but weakly-grounded answer.
+    """
+    if not chunks:
+        return False
+    top_score = max(chunk.get("rerank_score", 0.0) for chunk in chunks)
+    return top_score >= threshold

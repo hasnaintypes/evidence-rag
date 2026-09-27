@@ -57,7 +57,14 @@ async def chat_endpoint(request: ChatRequest):
         result = process_chat_query(request.message, advanced_mode=request.advanced_mode)
         return result
     except Exception as e:
-        return {"reply": f"An error occurred: {str(e)}", "thinking": "Pipeline failure.", "telemetry": {}, "chunks_matrix": []}
+        return {
+            "reply": f"An error occurred: {str(e)}",
+            "thinking": "Pipeline failure.",
+            "telemetry": {},
+            "chunks_matrix": [],
+            "sources": [],
+            "faithfulness": {"score": None, "unsupported_claims": []},
+        }
 
 
 @app.get("/documents")

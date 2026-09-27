@@ -1,11 +1,13 @@
 import time
+from src.config import settings
 from src.llm import get_embedding, generate_chat_response
 from src.retrieval.query_rewriter import rewrite_query, decompose_into_subqueries
 from src.retrieval.hybrid import hybrid_retrieve
 from src.retrieval.reranker import rerank_chunks
-from src.retrieval.grader import grade_retrieved_chunks
+from src.retrieval.grader import grade_retrieved_chunks, meets_confidence_threshold
 from src.retrieval.compression import compress_context_chunks
 from src.evaluation.judge import score_faithfulness
+from src.citations import build_sources
 from src.telemetry import log_query_event
 
 MAX_HOPS = 2  # initial retrieval pass + at most 1 follow-up hop, never more
@@ -167,6 +169,46 @@ def process_chat_query(query: str, advanced_mode: bool = True) -> dict:
             "rrf_score": round(chunk.get("rrf_score", 0.0), 4),
         })
 
+    sources = build_sources(final_context_chunks)
+
+    # --- PHASE 5.5: Retrieval-confidence abstention gate ---
+    # advanced_mode only - naive mode never runs the cross-encoder, so
+    # every chunk defaults to rerank_score 0.0 there and this check would
+    # either never fire or always fire depending on the threshold sign,
+    # neither of which reflects actual retrieval confidence.
+    if advanced_mode and not meets_confidence_threshold(final_context_chunks, settings.retrieval_confidence_threshold):
+        abstain_thinking = (
+            f"Retrieval hops used: {hop_count}/{MAX_HOPS}\n"
+            f"Abstained: top rerank score {top_score} did not clear "
+            f"retrieval_confidence_threshold={settings.retrieval_confidence_threshold}\n"
+            f"Expanded query tracks:\n" + "\n".join(f" -> {q}" for q in expanded_queries)
+        )
+        log_query_event(
+            query=query,
+            telemetry=telemetry,
+            advanced_mode=advanced_mode,
+            hop_count=hop_count,
+            chunk_count=len(final_context_chunks),
+            top_rerank_score=top_score,
+            generation_failed=False,
+            faithfulness_score=None,
+            unsupported_claims=[],
+        )
+        return {
+            "reply": (
+                "The indexed documents did not contain sufficiently relevant evidence to "
+                "answer this question reliably - insufficient context for a confident answer "
+                "(retrieval confidence below the configured threshold). The closest matches "
+                "found are listed in the sources below, but none were a strong enough match "
+                "to synthesize an answer from."
+            ),
+            "thinking": abstain_thinking,
+            "telemetry": telemetry,
+            "chunks_matrix": chunks_matrix_payload,
+            "sources": sources,
+            "faithfulness": {"score": None, "unsupported_claims": []},
+        }
+
     prompt = f"""You are a technical documentation assistant. Answer the question using ONLY the information in the document chunks below.
 
 INSTRUCTIONS:
@@ -246,6 +288,7 @@ ANSWER:"""
         "thinking": thinking_content,
         "telemetry": telemetry,
         "chunks_matrix": chunks_matrix_payload,
+        "sources": sources,
         "faithfulness": {
             "score": faithfulness_score,
             "unsupported_claims": unsupported_claims,
@@ -282,5 +325,6 @@ def _empty_result(reply: str, thinking: str, telemetry: dict) -> dict:
         "thinking": thinking,
         "telemetry": telemetry,
         "chunks_matrix": [],
+        "sources": [],
         "faithfulness": {"score": None, "unsupported_claims": []},
     }
