@@ -5,6 +5,7 @@ from src.retrieval.hybrid import hybrid_retrieve
 from src.retrieval.reranker import rerank_chunks
 from src.retrieval.grader import grade_retrieved_chunks
 from src.retrieval.compression import compress_context_chunks
+from src.evaluation.judge import score_faithfulness
 from src.telemetry import log_query_event
 
 MAX_HOPS = 2  # initial retrieval pass + at most 1 follow-up hop, never more
@@ -206,6 +207,19 @@ ANSWER:"""
             "question, or check the LLM client connection if this happens repeatedly."
         )
 
+    # --- PHASE 6.5: Faithfulness scoring (LLM-as-judge) ---
+    # Retrieval metrics above say the right chunks were found; this checks
+    # whether the generated answer actually stuck to them. Skipped when
+    # generation itself already failed - there's no real claim to judge,
+    # just an apology message, and judging it would waste a call and
+    # muddy the faithfulness signal with failed-generation noise.
+    start_time = time.perf_counter()
+    faithfulness_result = None if generation_failed else score_faithfulness(final_summary, final_context_chunks)
+    telemetry["faithfulness_scoring_time_ms"] = round((time.perf_counter() - start_time) * 1000, 1)
+
+    faithfulness_score = faithfulness_result["faithfulness_score"] if faithfulness_result else None
+    unsupported_claims = faithfulness_result["unsupported_claims"] if faithfulness_result else []
+
     references_string = ", ".join(source_files) if source_files else "Local Knowledge Base"
     structured_reply = f"{final_summary}\n\nReference:\n- {references_string}"
 
@@ -223,6 +237,8 @@ ANSWER:"""
         chunk_count=len(final_context_chunks),
         top_rerank_score=top_score,
         generation_failed=generation_failed,
+        faithfulness_score=faithfulness_score,
+        unsupported_claims=unsupported_claims,
     )
 
     return {
@@ -230,6 +246,10 @@ ANSWER:"""
         "thinking": thinking_content,
         "telemetry": telemetry,
         "chunks_matrix": chunks_matrix_payload,
+        "faithfulness": {
+            "score": faithfulness_score,
+            "unsupported_claims": unsupported_claims,
+        },
     }
 
 
@@ -257,4 +277,10 @@ def _detect_repetition_loop(text: str, max_line_repeat_ratio: float = 0.3) -> bo
 
 
 def _empty_result(reply: str, thinking: str, telemetry: dict) -> dict:
-    return {"reply": reply, "thinking": thinking, "telemetry": telemetry, "chunks_matrix": []}
+    return {
+        "reply": reply,
+        "thinking": thinking,
+        "telemetry": telemetry,
+        "chunks_matrix": [],
+        "faithfulness": {"score": None, "unsupported_claims": []},
+    }

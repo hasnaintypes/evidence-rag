@@ -36,9 +36,21 @@ def init_telemetry_table() -> None:
             chunk_count INTEGER,
             top_rerank_score REAL,
             generation_failed INTEGER DEFAULT 0,
-            telemetry_json TEXT
+            telemetry_json TEXT,
+            faithfulness_score REAL,
+            unsupported_claims_json TEXT
         )
     """)
+
+    # Migration for query_log tables created before faithfulness scoring
+    # was added - CREATE TABLE IF NOT EXISTS above is a no-op on an
+    # existing table, so older DBs need these columns added explicitly.
+    existing_columns = {row[1] for row in cursor.execute("PRAGMA table_info(query_log)").fetchall()}
+    if "faithfulness_score" not in existing_columns:
+        cursor.execute("ALTER TABLE query_log ADD COLUMN faithfulness_score REAL")
+    if "unsupported_claims_json" not in existing_columns:
+        cursor.execute("ALTER TABLE query_log ADD COLUMN unsupported_claims_json TEXT")
+
     conn.commit()
     conn.close()
 
@@ -74,12 +86,15 @@ def log_query_event(
     chunk_count: Optional[int] = None,
     top_rerank_score: Optional[float] = None,
     generation_failed: bool = False,
+    faithfulness_score: Optional[float] = None,
+    unsupported_claims: Optional[list] = None,
 ) -> None:
     """
     Persists one query's outcome to query_log. Called at the end of
     process_chat_query() so past requests can be inspected later
-    (e.g. to spot queries that repeatedly fail generation, or stages
-    that are consistently slow) without needing external log aggregation.
+    (e.g. to spot queries that repeatedly fail generation, stages that
+    are consistently slow, or answers that keep coming back unfaithful
+    to their retrieved context) without needing external log aggregation.
 
     Failures here are swallowed rather than raised - telemetry logging
     must never break the actual chat response.
@@ -87,23 +102,26 @@ def log_query_event(
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
+        unsupported_claims_json = json.dumps(unsupported_claims or [])
         if settings.storage_mode == "supabase":
             cursor.execute("""
                 INSERT INTO query_log
-                    (query, advanced_mode, hop_count, chunk_count, top_rerank_score, generation_failed, telemetry_json)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (query, advanced_mode, hop_count, chunk_count, top_rerank_score, generation_failed,
+                     telemetry_json, faithfulness_score, unsupported_claims_json)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             """, (
                 query, int(advanced_mode), hop_count, chunk_count, top_rerank_score,
-                int(generation_failed), json.dumps(telemetry),
+                int(generation_failed), json.dumps(telemetry), faithfulness_score, unsupported_claims_json,
             ))
         else:
             cursor.execute("""
                 INSERT INTO query_log
-                    (query, advanced_mode, hop_count, chunk_count, top_rerank_score, generation_failed, telemetry_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (query, advanced_mode, hop_count, chunk_count, top_rerank_score, generation_failed,
+                     telemetry_json, faithfulness_score, unsupported_claims_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 query, int(advanced_mode), hop_count, chunk_count, top_rerank_score,
-                int(generation_failed), json.dumps(telemetry),
+                int(generation_failed), json.dumps(telemetry), faithfulness_score, unsupported_claims_json,
             ))
         conn.commit()
         conn.close()

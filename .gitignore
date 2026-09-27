@@ -10,9 +10,9 @@ venv/
 .pytest_cache/
 
 # Local data / models — never commit these
-backend/data/*.db
-backend/data/*.sqlite
-backend/data/*.sqlite3
+server/data/*.db
+server/data/*.sqlite
+server/data/*.sqlite3
 models/
 *.onnx
 *.gguf

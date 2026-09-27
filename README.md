@@ -353,6 +353,7 @@ If generation fails or enters a repetition pattern, the system returns an explic
 | Compression | Context reduction and parent expansion |
 | Follow-up retrieval | Trigger state and hop count |
 | Generation | Model, duration, and failure state |
+| Faithfulness scoring | LLM-as-judge score (0-1) and any unsupported claims, skipped when generation failed |
 
 ---
 
@@ -390,7 +391,9 @@ The retrieval pipeline is evaluated against a naive dense-retrieval baseline on 
 | Recall@5 | +16.7% |
 | MRR | +5.6% |
 
-Full detail: [`docs/eval_report.md`](./docs/eval_report.md). The evaluation measures retrieval quality; it does not currently include automated answer-faithfulness scoring.
+Alongside retrieval quality, every query response is also scored for **answer faithfulness**: a second, cheap Gemini call acts as an LLM-as-judge, given the generated answer and the exact chunks it was allowed to use, and returns a 0-1 support score plus a list of any unsupported claims (see `src/evaluation/judge.py`). This catches the case retrieval metrics can't: the right document was found, but the answer still hallucinated or misstated what it says. Scores are logged per-query via `telemetry.py` and averaged across the eval set in `docs/eval_report.md`.
+
+Full detail: [`docs/eval_report.md`](./docs/eval_report.md).
 
 ---
 
@@ -408,54 +411,59 @@ Full detail: [`docs/eval_report.md`](./docs/eval_report.md). The evaluation meas
 | DOCX parsing | python-docx |
 | Spreadsheet parsing | pandas |
 | Graph visualization | Vis Network |
-| Evaluation | Precision@K, Recall@K, MRR |
+| Evaluation | Precision@K, Recall@K, MRR, Faithfulness (LLM-as-judge) |
 
 ---
 
 ## Project Structure
 
 ```
-├── backend/
-│   ├── api/app.py              FastAPI app: routes only, pure JSON API
+├── server/
+│   ├── api/app.py                 FastAPI app: routes only, pure JSON API
 │   ├── src/
-│   │   ├── config.py           Central config, reads .env, STORAGE_MODE switch
-│   │   ├── db.py                Storage layer: knowledge_nodes, document_chunks,
-│   │   │                        documents registry, entities/entity_edges
-│   │   │                        (SQLite locally, Postgres+pgvector on Supabase)
-│   │   ├── storage.py           Raw file storage: local disk or Supabase Storage
-│   │   ├── ingestion.py         Shared parse -> chunk -> embed -> store pipeline
-│   │   ├── chunking.py           chunk_nodes() (tree-aware) + chunk_document() (legacy)
-│   │   ├── graph_builder.py      Entity extraction + co-occurrence graph building
-│   │   ├── parsers/              Pluggable document parsers, all tree-aware
+│   │   ├── config.py               Central config, reads .env, STORAGE_MODE switch
+│   │   ├── llm.py                  Gemini chat generation + embeddings
+│   │   ├── query_pipeline.py       Orchestrates expansion -> retrieval -> [follow-up hop] -> generation
+│   │   ├── graph.py                Entity extraction + co-occurrence graph building
+│   │   ├── telemetry.py            Persistent structured query logging
+│   │   ├── storage/
+│   │   │   ├── database.py           knowledge_nodes, document_chunks, documents
+│   │   │   │                         registry, entities/entity_edges (SQLite
+│   │   │   │                         locally, Postgres+pgvector on Supabase)
+│   │   │   └── files.py               Raw file storage: local disk or Supabase Storage
+│   │   ├── ingestion/
+│   │   │   ├── pipeline.py            Shared parse -> chunk -> embed -> store pipeline
+│   │   │   ├── chunking.py            chunk_nodes() (tree-aware) + chunk_document() (legacy)
+│   │   │   └── parsers/               Pluggable document parsers, all tree-aware
 │   │   ├── retrieval/
-│   │   │   ├── hybrid.py           BM25 + dense fusion (RRF), cached index
-│   │   │   ├── reranker.py         Cross-encoder re-ranking
-│   │   │   ├── grader.py           Retrieval relevance grading + Jaccard dedup
-│   │   │   ├── query_rewriter.py   LLM-based query expansion + sub-query decomposition
-│   │   │   └── compression.py      Sentence-window pruning + parent-section reconstruction
-│   │   ├── llm_client.py         Chat/embedding client wrappers
-│   │   ├── rag_pipeline.py       Orchestrates expansion -> retrieval -> [follow-up hop] -> generation
-│   │   └── telemetry.py          Persistent structured query logging
+│   │   │   ├── hybrid.py              BM25 + dense fusion (RRF), cached index
+│   │   │   ├── reranker.py            Cross-encoder re-ranking
+│   │   │   ├── grader.py              Retrieval relevance grading + Jaccard dedup
+│   │   │   ├── query_rewriter.py      LLM-based query expansion + sub-query decomposition
+│   │   │   └── compression.py         Sentence-window pruning + parent-section reconstruction
+│   │   └── evaluation/
+│   │       └── judge.py               Answer faithfulness scoring (LLM-as-judge)
 │   ├── scripts/
-│   │   ├── ingest.py             Parse + chunk + embed + index, with hash-based dedup
-│   │   ├── run_eval.py           Precision/Recall/MRR benchmark harness
-│   │   └── supabase_schema.sql   One-time Postgres+pgvector schema for Supabase mode
+│   │   ├── ingest.py               Parse + chunk + embed + index, with hash-based dedup
+│   │   ├── run_eval.py             Precision/Recall/MRR + faithfulness benchmark harness
+│   │   ├── test_connection.py      Quick Gemini API connectivity check
+│   │   └── supabase_schema.sql     One-time Postgres+pgvector schema for Supabase mode
 │   └── requirements.txt
-├── web/                          Next.js frontend (talks to the backend as an API)
+├── web/                            Next.js frontend (shadcn/ui), talks to the server as an API
 └── docs/
-    ├── sample_docs/               Example knowledge base (multi-format)
-    ├── eval_set.json              Labeled Q&A pairs for benchmarking
-    └── eval_report.md             Latest benchmark results
+    ├── sample_docs/                 Example knowledge base (multi-format)
+    ├── eval_set.json                Labeled Q&A pairs for benchmarking
+    └── eval_report.md               Latest benchmark results
 ```
 
 ---
 
 ## Quick Start
 
-### Set up the backend
+### Set up the server
 
 ```bash
-cd backend
+cd server
 python -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
@@ -482,7 +490,7 @@ python scripts/ingest.py
 uvicorn api.app:app --reload
 ```
 
-The backend is a pure JSON API (no bundled UI) — FastAPI's interactive docs are at `http://127.0.0.1:8000/docs`. Point the `web/` frontend at this API once it exists.
+The server is a pure JSON API (no bundled UI) — FastAPI's interactive docs are at `http://127.0.0.1:8000/docs`. Point the `web/` frontend at this API once it exists.
 
 ---
 
@@ -490,7 +498,7 @@ The backend is a pure JSON API (no bundled UI) — FastAPI's interactive docs ar
 
 Chat generation and embeddings run through the Gemini API (requires `GEMINI_API_KEY`); reranking uses a local BGE cross-encoder.
 
-Parsing, `KnowledgeNode` tree construction, entity graph, cross-encoder reranking, retrieval grading, parent-section reconstruction, and bounded follow-up retrieval are identical regardless of where storage runs. The storage backend is swappable behind `STORAGE_MODE` for a stateless, deployable configuration.
+Parsing, `KnowledgeNode` tree construction, entity graph, cross-encoder reranking, retrieval grading, parent-section reconstruction, and bounded follow-up retrieval are identical regardless of where storage runs. The storage layer is swappable behind `STORAGE_MODE` for a stateless, deployable configuration.
 
 ---
 
@@ -499,5 +507,5 @@ Parsing, `KnowledgeNode` tree construction, entity graph, cross-encoder rerankin
 - The entity graph is currently an exploration and explainability layer, not a retrieval signal.
 - Entity extraction performs one LLM call per document section and can be expensive for large documents.
 - Local generation latency depends on hardware, context size, and model selection.
-- The current benchmark measures retrieval quality but does not include automated answer-faithfulness scoring.
+- Faithfulness scoring adds one extra LLM call per query (skipped when generation itself already failed) and is judged by the same model family doing the generation, not an independent/stronger judge model.
 

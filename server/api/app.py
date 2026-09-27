@@ -5,8 +5,8 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-# backend/src and backend/scripts are siblings, not packages under each
-# other - add backend/ itself so "from src...."/"from scripts...." resolve
+# server/src and server/scripts are siblings, not packages under each
+# other - add server/ itself so "from src...."/"from scripts...." resolve
 # regardless of the process's working directory
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -46,7 +46,7 @@ async def health_check():
     return {
         "status": "ok",
         "storage_mode": settings.storage_mode,
-        "chat_model": settings.foundry_chat_model,
+        "chat_model": settings.gemini_chat_model,
     }
 
 

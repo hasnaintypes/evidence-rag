@@ -75,8 +75,16 @@ create table if not exists query_log (
     chunk_count integer,
     top_rerank_score real,
     generation_failed integer default 0,
-    telemetry_json jsonb
+    telemetry_json jsonb,
+    faithfulness_score real,
+    unsupported_claims_json jsonb
 );
+
+-- Migration for query_log tables created before faithfulness scoring was
+-- added (LLM-as-judge score of whether the generated answer is actually
+-- supported by its retrieved chunks) - no-ops on a fresh table.
+alter table query_log add column if not exists faithfulness_score real;
+alter table query_log add column if not exists unsupported_claims_json jsonb;
 
 create index if not exists idx_nodes_parent on knowledge_nodes(parent_id);
 create index if not exists idx_nodes_doc on knowledge_nodes(doc_id);

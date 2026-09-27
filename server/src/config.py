@@ -2,10 +2,10 @@ import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
-# This file lives at backend/src/config.py, so two levels up is the repo
+# This file lives at server/src/config.py, so two levels up is the repo
 # root - used to locate docs/ regardless of the process's cwd (the app is
-# normally launched with cwd=backend/, but docs/ lives one level above
-# backend/, so a plain relative path would look in the wrong place).
+# normally launched with cwd=server/, but docs/ lives one level above
+# server/, so a plain relative path would look in the wrong place).
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DOCS_DIR = os.path.join(_REPO_ROOT, "docs")
 SAMPLE_DOCS_DIR = os.path.join(DOCS_DIR, "sample_docs")

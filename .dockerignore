@@ -3,7 +3,7 @@
 venv/
 __pycache__/
 *.pyc
-backend/data/
-backend/.env
+server/data/
+server/.env
 web/
 node_modules/
