@@ -1,0 +1,1 @@
+RAG (Retrieval-Augmented Generation), yapay zeka modellerinin kendi eğitim verileri dışında, dış kaynaklardan (örneğin senin yerel dosyaların) bilgi getirerek daha doğru ve güncel cevaplar üretmesini sağlayan bir mimaridir. Bu mimari, modellerin yanlış bilgi verme (halüsinasyon) olasılığını azaltır.
