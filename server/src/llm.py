@@ -44,6 +44,36 @@ def generate_chat_response(prompt: str, max_tokens: Optional[int] = None) -> str
         return f"Error during generation: {str(e)}"
 
 
+VISION_TRANSCRIPTION_PROMPT = """This is a scanned page from a technical/industrial document with no extractable text layer. Transcribe its content as plain text, preserving structure:
+- Put section headings on their own line, formatted like "5.1 Emergency Stop" if a number/title is visible.
+- Prefix safety callouts exactly as printed, e.g. "WARNING: ..." or "NOTE: ...".
+- Preserve paragraph breaks as blank lines.
+- If there's a diagram or photo, describe it in one line prefixed with "Figure:".
+Output only the transcription, no commentary."""
+
+
+def transcribe_page_image(image_bytes: bytes) -> str:
+    """
+    Sends a rendered PDF page image to Gemini for OCR/transcription, used as
+    a fallback for scanned pages that pdfplumber's text extraction can't
+    read (see ingestion/parsers/pdf.py). Best-effort: returns "" on any
+    failure so ingestion can fall back to a placeholder node instead of
+    crashing the whole document.
+    """
+    try:
+        response = client.models.generate_content(
+            model=settings.gemini_chat_model,
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+                VISION_TRANSCRIPTION_PROMPT,
+            ],
+            config=types.GenerateContentConfig(temperature=0.0, max_output_tokens=2000),
+        )
+        return response.text or ""
+    except Exception:
+        return ""
+
+
 def generate_structured_response(
     prompt: str,
     response_schema: Dict[str, Any],

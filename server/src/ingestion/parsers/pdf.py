@@ -1,9 +1,16 @@
+import io
 import re
 from typing import Any, Dict, List, Optional
 
 import pdfplumber
 
 from src.ingestion.parsers.base import BaseParser, KnowledgeNode, NodeType
+from src.llm import transcribe_page_image
+
+# Pages with less extracted text than this are treated as scanned/image-only
+# and routed through the Gemini vision fallback instead of the word-position
+# heuristics below, which need a real text layer to work.
+MIN_TEXT_LENGTH_FOR_TEXT_EXTRACTION = 20
 
 # "5.1.1 External E-STOP", "Section 3.8", "A.2 Notes" gibi başlıkları yakalar
 HEADING_PATTERN = re.compile(
@@ -87,6 +94,16 @@ class PDFDocumentParser(BaseParser):
 
                 # 3) Kalan text'i satır satır işleyip heading/paragraph/warning/note ayır
                 words = page.extract_words(extra_attrs=["size", "fontname"])
+
+                if sum(len(w["text"]) for w in words) < MIN_TEXT_LENGTH_FOR_TEXT_EXTRACTION:
+                    # No usable text layer (scanned/image-only page) - fall
+                    # back to vision transcription instead of the
+                    # font-position heuristics below, which need real words.
+                    order_counter = self._process_scanned_page(
+                        page, nodes, heading_stack, doc_id, page_num, order_counter
+                    )
+                    continue
+
                 lines = self._group_words_into_lines(words)
                 lines = self._drop_lines_inside_bboxes(lines, table_bboxes)
 
@@ -153,6 +170,110 @@ class PDFDocumentParser(BaseParser):
                 )
 
         return nodes
+
+    # ------------------------------------------------------------------ #
+    # Scanned-page vision fallback
+    # ------------------------------------------------------------------ #
+    def _process_scanned_page(
+        self,
+        page,
+        nodes: List[KnowledgeNode],
+        heading_stack: List[KnowledgeNode],
+        doc_id: str,
+        page_num: int,
+        order_counter: int,
+    ) -> int:
+        """
+        Renders a scanned/image-only page and transcribes it via Gemini
+        vision, then classifies the transcription into the same
+        heading/warning/note/paragraph node types as text-extracted pages
+        (minus the font-size heuristic, since a transcription has no font
+        metadata) so it slots into the same KnowledgeNode tree.
+        """
+        try:
+            image = page.to_image(resolution=150).original
+            buf = io.BytesIO()
+            image.save(buf, format="PNG")
+            transcription = transcribe_page_image(buf.getvalue())
+        except Exception:
+            transcription = ""
+
+        if not transcription.strip():
+            # Vision failed or the page really is blank - leave a visible
+            # trace instead of silently dropping the page from the tree.
+            order_counter += 1
+            parent = heading_stack[-1] if heading_stack else None
+            nodes.append(
+                KnowledgeNode(
+                    doc_id=doc_id,
+                    parent_id=parent.id if parent else None,
+                    type=NodeType.PARAGRAPH,
+                    level=(parent.level + 1) if parent else 1,
+                    heading_path=self._path_for(parent),
+                    content=f"[Scanned page {page_num}: content could not be transcribed]",
+                    page=page_num,
+                    order=order_counter,
+                    metadata={"vision_transcription_failed": True},
+                )
+            )
+            return order_counter
+
+        buffer: List[str] = []
+        for line in transcription.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+
+            heading_match = HEADING_PATTERN.match(line)
+            if heading_match:
+                self._flush_paragraph(buffer, nodes, heading_stack, doc_id, page_num, order_counter)
+                buffer = []
+                order_counter += 1
+                level = heading_match.group("num").count(".") + 1
+                node = KnowledgeNode(
+                    doc_id=doc_id,
+                    type=NodeType.SECTION,
+                    level=level,
+                    content=line,
+                    page=page_num,
+                    order=order_counter,
+                    metadata={"source": "vision"},
+                )
+                while heading_stack and heading_stack[-1].level >= level:
+                    heading_stack.pop()
+                parent = heading_stack[-1] if heading_stack else None
+                node.parent_id = parent.id if parent else None
+                node.heading_path = self._path_for(parent, node.content)
+                heading_stack.append(node)
+                nodes.append(node)
+                continue
+
+            if WARNING_PATTERN.match(line) or NOTE_PATTERN.match(line):
+                self._flush_paragraph(buffer, nodes, heading_stack, doc_id, page_num, order_counter)
+                buffer = []
+                order_counter += 1
+                parent = heading_stack[-1] if heading_stack else None
+                node_type = NodeType.WARNING if WARNING_PATTERN.match(line) else NodeType.NOTE
+                nodes.append(
+                    KnowledgeNode(
+                        doc_id=doc_id,
+                        parent_id=parent.id if parent else None,
+                        type=node_type,
+                        level=(parent.level + 1) if parent else 1,
+                        heading_path=self._path_for(parent),
+                        content=line,
+                        page=page_num,
+                        order=order_counter,
+                        metadata={"source": "vision"},
+                    )
+                )
+                continue
+
+            buffer.append(line)
+
+        order_counter += 1
+        self._flush_paragraph(buffer, nodes, heading_stack, doc_id, page_num, order_counter)
+        return order_counter
 
     # ------------------------------------------------------------------ #
     # Helpers

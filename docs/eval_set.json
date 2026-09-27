@@ -50,5 +50,12 @@
     "expected_source_file": null,
     "expected_keywords": [],
     "note": "No document in this corpus discusses drones or flight altitude. Tests whether the pipeline honestly reports insufficient context instead of fabricating an answer - this is a hallucination check, not a retrieval check."
+  },
+  {
+    "id": "q9_scanned_page",
+    "question": "How long should the coolant system be allowed to cool before servicing the coolant filter, and what is the filter's part number?",
+    "expected_source_file": "scanned_coolant_filter.pdf",
+    "expected_keywords": ["30 minutes", "CF-2201"],
+    "note": "scanned_coolant_filter.pdf is an image-only PDF with no text layer - exercises the Gemini vision fallback in ingestion/parsers/pdf.py end-to-end (render page -> transcribe -> chunk -> embed -> retrieve)."
   }
 ]
