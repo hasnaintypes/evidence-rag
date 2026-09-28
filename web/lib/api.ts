@@ -33,12 +33,14 @@ async function apiFetch(path: string, init: RequestInit = {}): Promise<Response>
   return response;
 }
 
-export async function uploadDocument(file: File): Promise<void> {
+export async function uploadDocument(file: File): Promise<{ docId: string }> {
   const form = new FormData();
   form.append("file", file);
   // No Content-Type header here - the browser sets the multipart boundary
   // itself when given a FormData body; setting it manually breaks the parse.
-  await apiFetch("/upload", { method: "POST", body: form });
+  const response = await apiFetch("/upload", { method: "POST", body: form });
+  const data = (await response.json()) as { doc_id: string };
+  return { docId: data.doc_id };
 }
 
 export async function getDocuments(): Promise<DocumentRecord[]> {

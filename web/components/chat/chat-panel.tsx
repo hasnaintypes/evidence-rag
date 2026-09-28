@@ -5,7 +5,6 @@ import { toast } from "sonner";
 import {
   Conversation,
   ConversationContent,
-  ConversationEmptyState,
   ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
 import {
@@ -21,6 +20,7 @@ import { Checkpoint, CheckpointIcon, CheckpointTrigger } from "@/components/ai-e
 import { ChatMessageBubble } from "@/components/chat/chat-message";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getConversation, restoreCheckpoint, sendMessage } from "@/lib/api";
+import { useAuth } from "@/hooks/use-auth";
 import type { ChatMessage, Conversation as ConversationRecord, ConversationMessage } from "@/lib/types";
 
 let messageIdCounter = 0;
@@ -52,7 +52,21 @@ function MessageSkeleton({ align }: { align: "start" | "end" }) {
   );
 }
 
+function timeOfDayGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Morning";
+  if (hour < 18) return "Afternoon";
+  return "Evening";
+}
+
+function displayName(email: string | undefined): string {
+  if (!email) return "there";
+  const local = email.split("@")[0];
+  return local.charAt(0).toUpperCase() + local.slice(1);
+}
+
 export function ChatPanel({ conversationId }: { conversationId: string }) {
+  const { user } = useAuth();
   const [conversation, setConversation] = useState<ConversationRecord | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
@@ -101,6 +115,56 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
     }
   }
 
+  const advancedModeToggle = (
+    <label className="flex items-center gap-2 text-xs text-muted-foreground">
+      <input
+        type="checkbox"
+        checked={advancedMode}
+        onChange={(event) => setAdvancedMode(event.target.checked)}
+        className="size-3.5 accent-foreground"
+      />
+      Advanced retrieval
+    </label>
+  );
+
+  const promptInput = (
+    <PromptInput onSubmit={handleSubmit}>
+      <PromptInputBody>
+        <PromptInputTextarea placeholder="Ask a question…" disabled={isSending} />
+      </PromptInputBody>
+      <PromptInputFooter>
+        <PromptInputTools />
+        <PromptInputSubmit status={isSending ? "submitted" : undefined} disabled={isSending} />
+      </PromptInputFooter>
+    </PromptInput>
+  );
+
+  const attachmentChip = conversation?.filename && (
+    <Attachments variant="inline">
+      <Attachment
+        data={{ type: "file", id: conversation.doc_id, filename: conversation.filename, mediaType: "application/octet-stream", url: "" }}
+      >
+        <AttachmentPreview />
+        <AttachmentInfo />
+      </Attachment>
+    </Attachments>
+  );
+
+  // Empty conversation: centered greeting + prompt input, like a fresh
+  // chat landing screen. Once the first message goes out, the layout
+  // below takes over - scrollable history with the input pinned to the bottom.
+  if (!isLoadingHistory && messages.length === 0) {
+    return (
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center gap-6 px-4">
+        <div className="flex items-center gap-2 text-3xl font-semibold tracking-tight text-foreground">
+          Good {timeOfDayGreeting()}, {displayName(user?.email)}
+        </div>
+        {attachmentChip && <div className="flex justify-center">{attachmentChip}</div>}
+        <div className="w-full">{promptInput}</div>
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col">
       <header className="flex items-center justify-between border-b border-border px-4 py-4">
@@ -108,29 +172,10 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
           <h1 className="text-xl font-bold tracking-tight">EvidenceRAG</h1>
           <p className="text-xs text-muted-foreground">Ask a question about this document.</p>
         </div>
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={advancedMode}
-            onChange={(event) => setAdvancedMode(event.target.checked)}
-            className="size-3.5 accent-foreground"
-          />
-          Advanced retrieval
-        </label>
+        {advancedModeToggle}
       </header>
 
-      {conversation?.filename && (
-        <div className="border-b border-border px-4 py-2">
-          <Attachments variant="inline">
-            <Attachment
-              data={{ type: "file", id: conversation.doc_id, filename: conversation.filename, mediaType: "application/octet-stream", url: "" }}
-            >
-              <AttachmentPreview />
-              <AttachmentInfo />
-            </Attachment>
-          </Attachments>
-        </div>
-      )}
+      {attachmentChip && <div className="border-b border-border px-4 py-2">{attachmentChip}</div>}
 
       <Conversation>
         <ConversationContent>
@@ -139,11 +184,6 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
               <MessageSkeleton align="end" />
               <MessageSkeleton align="start" />
             </>
-          ) : messages.length === 0 ? (
-            <ConversationEmptyState
-              title="No messages yet"
-              description="Ask something about this document to get started."
-            />
           ) : (
             messages.map((message, index) => {
               const isLastAssistantTurn =
@@ -169,15 +209,7 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
         <ConversationScrollButton />
       </Conversation>
 
-      <PromptInput onSubmit={handleSubmit} className="border-t border-border p-4">
-        <PromptInputBody>
-          <PromptInputTextarea placeholder="Ask a question…" disabled={isSending} />
-        </PromptInputBody>
-        <PromptInputFooter>
-          <PromptInputTools />
-          <PromptInputSubmit status={isSending ? "submitted" : undefined} disabled={isSending} />
-        </PromptInputFooter>
-      </PromptInput>
+      <div className="border-t border-border p-4">{promptInput}</div>
     </div>
   );
 }

@@ -58,6 +58,7 @@ async def upload_file_endpoint(file: UploadFile = File(...), user: CurrentUser =
                 "status": "unchanged",
                 "message": f"'{filename}' is identical to the already-indexed version - skipped.",
                 "analytics": {"chunk_count": 0},
+                "doc_id": result["doc_id"],
             }
 
         if result["status"] == "empty":
@@ -67,6 +68,7 @@ async def upload_file_endpoint(file: UploadFile = File(...), user: CurrentUser =
             "status": "success",
             "message": f"'{filename}' successfully indexed into {result['chunk_count']} chunks.",
             "analytics": {"chunk_count": result["chunk_count"]},
+            "doc_id": result["doc_id"],
         }
     except HTTPException:
         raise

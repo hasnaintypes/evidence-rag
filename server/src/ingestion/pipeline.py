@@ -104,14 +104,14 @@ def ingest_file(file_path: str, filename: str, user_id: str = None) -> dict:
     uploaded through the UI go through the exact same pipeline and produce
     the same knowledge tree / chunk structure.
 
-    Returns {"status": "unchanged" | "success" | "empty", "chunk_count": int}.
+    Returns {"status": "unchanged" | "success" | "empty", "chunk_count": int, "doc_id": str}.
     """
     doc_id = make_doc_id(filename, user_id=user_id)
     current_hash = file_hash(file_path)
     stored_hash = get_document_hash(doc_id)
 
     if stored_hash == current_hash:
-        return {"status": "unchanged", "chunk_count": 0}
+        return {"status": "unchanged", "chunk_count": 0, "doc_id": doc_id}
 
     if stored_hash is not None:
         # File existed before but content changed - clear stale nodes/chunks
@@ -126,7 +126,7 @@ def ingest_file(file_path: str, filename: str, user_id: str = None) -> dict:
         chunks_data = _ingest_legacy(parser, file_path, filename, doc_id)
 
     if not chunks_data:
-        return {"status": "empty", "chunk_count": 0}
+        return {"status": "empty", "chunk_count": 0, "doc_id": doc_id}
 
     indexed_count = 0
     for item in chunks_data:
@@ -149,4 +149,4 @@ def ingest_file(file_path: str, filename: str, user_id: str = None) -> dict:
         user_id=user_id,
     )
 
-    return {"status": "success", "chunk_count": indexed_count}
+    return {"status": "success", "chunk_count": indexed_count, "doc_id": doc_id}

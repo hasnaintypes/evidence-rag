@@ -1,10 +1,8 @@
 "use client";
 
-import { useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
-import { toast } from "sonner";
-import { Network, MessagesSquare, Plus, Upload } from "lucide-react";
+import { Network, MessagesSquare, Plus, FileText } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -17,57 +15,20 @@ import {
   SidebarMenuItem,
   SidebarMenuSkeleton,
 } from "@/components/ui/sidebar";
-import { Skeleton } from "@/components/ui/skeleton";
-import { createConversation, uploadDocument } from "@/lib/api";
 import { signOut } from "@/lib/auth";
 import { useConversations } from "@/hooks/use-conversations";
-import { useDocuments } from "@/hooks/use-documents";
 
-const NAV_LINKS = [{ href: "/graph", label: "Entity graph", icon: Network }];
+const NAV_LINKS = [
+  { href: "/documents", label: "Documents", icon: FileText },
+  { href: "/graph", label: "Entity graph", icon: Network },
+];
 
 export function AppSidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const params = useParams<{ conversationId?: string }>();
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const { conversations, isLoading, refresh: refreshConversations } = useConversations();
-  const { documents, isLoading: isLoadingDocuments, refresh: refreshDocuments } = useDocuments();
-  const [isPickingDoc, setIsPickingDoc] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
-
-  async function startNewChat() {
-    setIsPickingDoc(true);
-    await refreshDocuments();
-  }
-
-  async function pickDocument(docId: string) {
-    try {
-      const conversation = await createConversation(docId);
-      setIsPickingDoc(false);
-      refreshConversations();
-      router.push(`/chat/${conversation.id}`);
-    } catch {
-      toast.error("Couldn't start a new chat.");
-    }
-  }
-
-  async function handleFileSelected(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-
-    setIsUploading(true);
-    try {
-      await uploadDocument(file);
-      await refreshDocuments();
-      toast.success(`"${file.name}" uploaded and indexed.`);
-    } catch {
-      toast.error(`Couldn't upload "${file.name}".`);
-    } finally {
-      setIsUploading(false);
-    }
-  }
+  const { conversations, isLoading } = useConversations();
 
   return (
     <Sidebar>
@@ -82,7 +43,7 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu>
               <SidebarMenuItem>
-                <SidebarMenuButton onClick={startNewChat}>
+                <SidebarMenuButton isActive={pathname === "/chat/new"} render={<Link href="/chat/new" />}>
                   <Plus />
                   <span>New chat</span>
                 </SidebarMenuButton>
@@ -98,47 +59,6 @@ export function AppSidebar() {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-
-        {isPickingDoc && (
-          <SidebarGroup>
-            <SidebarGroupLabel>Pick a document</SidebarGroupLabel>
-            <SidebarGroupContent>
-              <SidebarMenu>
-                <SidebarMenuItem>
-                  <SidebarMenuButton onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
-                    <Upload />
-                    <span>{isUploading ? "Uploading…" : "Upload new document"}</span>
-                  </SidebarMenuButton>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept=".md,.pdf,.docx,.xlsx,.xls,.csv"
-                    className="hidden"
-                    onChange={handleFileSelected}
-                  />
-                </SidebarMenuItem>
-                {isLoadingDocuments ? (
-                  Array.from({ length: 3 }).map((_, i) => (
-                    <div key={i} className="flex items-center gap-2 px-2 py-1.5">
-                      <Skeleton className="size-4 shrink-0 rounded" />
-                      <Skeleton className="h-4 flex-1" />
-                    </div>
-                  ))
-                ) : documents.length === 0 ? (
-                  <p className="px-2 py-1.5 text-xs text-muted-foreground">No documents yet - upload one above.</p>
-                ) : (
-                  documents.map((doc) => (
-                    <SidebarMenuItem key={doc.doc_id}>
-                      <SidebarMenuButton tooltip={doc.filename} className="text-xs" onClick={() => pickDocument(doc.doc_id)}>
-                        <span className="truncate">{doc.filename}</span>
-                      </SidebarMenuButton>
-                    </SidebarMenuItem>
-                  ))
-                )}
-              </SidebarMenu>
-            </SidebarGroupContent>
-          </SidebarGroup>
-        )}
 
         <SidebarGroup>
           <SidebarGroupLabel>Conversations</SidebarGroupLabel>
