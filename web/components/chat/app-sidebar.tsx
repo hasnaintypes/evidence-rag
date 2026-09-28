@@ -16,7 +16,6 @@ import {
   SidebarMenuItem,
   SidebarMenuSkeleton,
   SidebarTrigger,
-  useSidebar,
 } from "@/components/ui/sidebar";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import {
@@ -51,7 +50,6 @@ export function AppSidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const params = useParams<{ conversationId?: string }>();
-  const { isMobile } = useSidebar();
 
   const { user } = useAuth();
   const { conversations, isLoading } = useConversations();
@@ -158,8 +156,8 @@ export function AppSidebar() {
               </DropdownMenuTrigger>
               <DropdownMenuContent
                 className="min-w-56 rounded-lg"
-                side={isMobile ? "bottom" : "right"}
-                align="end"
+                side="top"
+                align="start"
                 sideOffset={8}
               >
                 <DropdownMenuGroup>
