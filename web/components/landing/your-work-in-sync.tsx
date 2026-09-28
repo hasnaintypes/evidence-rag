@@ -55,7 +55,7 @@ const YourWorkInSync: React.FC<YourWorkInSyncProps> = ({
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        fontFamily: "Inter, sans-serif",
+        fontFamily: "var(--font-sans)",
         fontWeight: 600,
         fontSize: "13px",
         color: "#ffffff",
@@ -118,7 +118,7 @@ const YourWorkInSync: React.FC<YourWorkInSyncProps> = ({
             >
               <span
                 style={{
-                  fontFamily: "Inter, sans-serif",
+                  fontFamily: "var(--font-sans)",
                   fontWeight: 500,
                   fontSize: "13px",
                   lineHeight: "16px",
@@ -157,7 +157,7 @@ const YourWorkInSync: React.FC<YourWorkInSyncProps> = ({
             >
               <span
                 style={{
-                  fontFamily: "Inter, sans-serif",
+                  fontFamily: "var(--font-sans)",
                   fontWeight: 500,
                   fontSize: "13px",
                   lineHeight: "16px",
@@ -199,7 +199,7 @@ const YourWorkInSync: React.FC<YourWorkInSyncProps> = ({
             >
               <span
                 style={{
-                  fontFamily: "Inter, sans-serif",
+                  fontFamily: "var(--font-sans)",
                   fontWeight: 500,
                   fontSize: "13px",
                   lineHeight: "16px",
@@ -227,24 +227,24 @@ const YourWorkInSync: React.FC<YourWorkInSyncProps> = ({
           >
             <div
               style={{
-                background: "#ffffff",
+                background: "var(--yws-surface)",
                 borderRadius: "16px",
                 padding: "0px 12px",
                 height: "36px",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                boxShadow: "0px 0px 0px 1px rgba(0,0,0,0.08), 0px 1px 2px -0.4px rgba(0,0,0,0.08)",
+                boxShadow: "0px 0px 0px 1px var(--yws-border), 0px 1px 2px -0.4px var(--yws-shadow)",
                 overflow: "hidden",
               }}
             >
               <span
                 style={{
-                  fontFamily: "Inter, sans-serif",
+                  fontFamily: "var(--font-sans)",
                   fontWeight: 400,
                   fontSize: "14px",
                   lineHeight: "20px",
-                  color: "#030712",
+                  color: "var(--yws-text-primary)",
                   whiteSpace: "nowrap",
                 }}
               >

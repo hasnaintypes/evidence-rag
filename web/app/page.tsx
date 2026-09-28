@@ -102,8 +102,7 @@ export default function LandingPage() {
 
               <div className="w-full max-w-[calc(100%-32px)] sm:max-w-[calc(100%-48px)] md:max-w-[calc(100%-64px)] lg:max-w-[700px] lg:w-[700px] h-10 sm:h-11 md:h-12 py-1.5 sm:py-2 px-3 sm:px-4 md:px-4 pr-2 sm:pr-3 bg-background/90 backdrop-blur-sm overflow-hidden rounded-full flex justify-between items-center relative z-30 border border-border">
                 <div className="flex justify-center items-center">
-                  <Link href="/" className="flex justify-start items-center gap-2">
-                    <img src="/logo.png" alt="" className="h-5 w-5 sm:h-6 sm:w-6 invert" />
+                  <Link href="/" className="flex justify-start items-center">
                     <div className="flex flex-col justify-center text-foreground text-sm sm:text-base md:text-lg lg:text-xl font-semibold leading-5 font-sans tracking-tight">
                       EvidenceRAG
                     </div>

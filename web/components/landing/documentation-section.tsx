@@ -22,14 +22,17 @@ export default function DocumentationSection() {
     {
       title: "Structure-aware parsing",
       description: "Every document becomes a hierarchical KnowledgeNode tree -\nheadings, tables, warnings, figures - not a flat wall of text.",
+      image: "/features/structure-aware-parsing.jpg",
     },
     {
       title: "Hybrid retrieval, explained",
       description: "BM25 and dense retrieval fused, reranked, and graded,\nwith every score visible in the explainability matrix.",
+      image: "/features/hybrid-retrieval.jpg",
     },
     {
       title: "Grounded generation, or nothing",
       description: "Answers are traced to source file and page. No answer\nbeats a fabricated one - the pipeline says so honestly.",
+      image: "/features/grounded-generation.jpg",
     },
   ]
 
@@ -104,16 +107,17 @@ export default function DocumentationSection() {
 
           {/* Right Column - Visual */}
           <div className="w-full md:w-auto rounded-lg flex flex-col justify-center items-center gap-2 order-1 md:order-2">
-            <div className="w-full md:w-[580px] h-[250px] md:h-[420px] bg-card border border-border overflow-hidden rounded-lg flex flex-col justify-start items-start">
-              <div
-                className={`w-full h-full transition-all duration-300 ${
-                  activeCard === 0
-                    ? "bg-gradient-to-br from-blue-950/40 to-blue-900/10"
-                    : activeCard === 1
-                      ? "bg-gradient-to-br from-purple-950/40 to-purple-900/10"
-                      : "bg-gradient-to-br from-emerald-950/40 to-emerald-900/10"
-                }`}
-              />
+            <div className="relative w-full md:w-[580px] h-[250px] md:h-[420px] bg-card border border-border overflow-hidden rounded-lg">
+              {cards.map((card, index) => (
+                <img
+                  key={card.image}
+                  src={card.image}
+                  alt={card.title}
+                  className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-500 ${
+                    index === activeCard ? "opacity-100" : "opacity-0"
+                  }`}
+                />
+              ))}
             </div>
           </div>
         </div>
