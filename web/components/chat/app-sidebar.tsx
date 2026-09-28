@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
-import { Network, MessagesSquare, Plus, FileText, Settings, HelpCircle, LogOut, ChevronRight } from "lucide-react";
+import { Network, MessagesSquare, Plus, FileText, Settings, HelpCircle, LogOut, ChevronsUpDown } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -16,8 +16,18 @@ import {
   SidebarMenuItem,
   SidebarMenuSkeleton,
   SidebarTrigger,
+  useSidebar,
 } from "@/components/ui/sidebar";
-import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 import { signOut } from "@/lib/auth";
 import { useAuth } from "@/hooks/use-auth";
 import { useConversations } from "@/hooks/use-conversations";
@@ -41,12 +51,26 @@ export function AppSidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const params = useParams<{ conversationId?: string }>();
+  const { isMobile } = useSidebar();
 
   const { user } = useAuth();
   const { conversations, isLoading } = useConversations();
 
   const fullName = (user?.user_metadata as { full_name?: string } | undefined)?.full_name;
   const name = displayName(user?.email, fullName);
+
+  const userSummary = (
+    <>
+      <Avatar>
+        <AvatarImage src={avatarUrl(fullName ?? user?.email)} alt={name} />
+        <AvatarFallback>{name.charAt(0).toUpperCase()}</AvatarFallback>
+      </Avatar>
+      <div className="grid flex-1 text-left text-sm leading-tight group-data-[collapsible=icon]:hidden">
+        <span className="truncate font-medium">{name}</span>
+        <span className="truncate text-xs text-muted-foreground">{user?.email}</span>
+      </div>
+    </>
+  );
 
   return (
     <Sidebar collapsible="icon">
@@ -118,52 +142,55 @@ export function AppSidebar() {
       </SidebarContent>
 
       <SidebarFooter>
-        <Popover>
-          <PopoverTrigger className="flex w-full cursor-pointer items-center gap-2 rounded-md p-2 text-left hover:bg-sidebar-accent">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={avatarUrl(fullName ?? user?.email)} alt="" className="size-7 shrink-0 rounded-full" />
-            <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
-              <p className="truncate text-xs font-medium text-sidebar-foreground">{name}</p>
-              <p className="truncate text-[0.65rem] text-muted-foreground">Free plan</p>
-            </div>
-            <ChevronRight className="size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
-          </PopoverTrigger>
-          <PopoverContent side="right" align="end" className="w-64 p-1.5">
-            <div className="flex items-center gap-2.5 px-2 py-2">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={avatarUrl(fullName ?? user?.email)} alt="" className="size-9 shrink-0 rounded-full" />
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium text-foreground">{name}</p>
-                <p className="truncate text-xs text-muted-foreground">{user?.email}</p>
-              </div>
-            </div>
-            <div className="my-1 h-px bg-border" />
-            <button
-              className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground disabled:cursor-not-allowed"
-              disabled
-            >
-              <Settings className="size-3.5" />
-              Settings
-            </button>
-            <a
-              href="https://github.com/hasnaintypes/evidence-rag#readme"
-              target="_blank"
-              rel="noreferrer"
-              className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-            >
-              <HelpCircle className="size-3.5" />
-              Help
-            </a>
-            <div className="my-1 h-px bg-border" />
-            <button
-              onClick={() => signOut().then(() => router.push("/sign-in"))}
-              className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-destructive hover:bg-destructive/10"
-            >
-              <LogOut className="size-3.5" />
-              Log out
-            </button>
-          </PopoverContent>
-        </Popover>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <SidebarMenuButton
+                    size="lg"
+                    className="data-popup-open:bg-sidebar-accent data-popup-open:text-sidebar-accent-foreground"
+                  />
+                }
+              >
+                {userSummary}
+                <ChevronsUpDown className="ml-auto size-4 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                className="min-w-56 rounded-lg"
+                side={isMobile ? "bottom" : "right"}
+                align="end"
+                sideOffset={8}
+              >
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel className="p-0 font-normal">
+                    <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">{userSummary}</div>
+                  </DropdownMenuLabel>
+                </DropdownMenuGroup>
+                <DropdownMenuSeparator />
+                <DropdownMenuGroup>
+                  <DropdownMenuItem disabled>
+                    <Settings />
+                    Settings
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    render={
+                      <a href="https://github.com/hasnaintypes/evidence-rag#readme" target="_blank" rel="noreferrer" />
+                    }
+                  >
+                    <HelpCircle />
+                    Help
+                  </DropdownMenuItem>
+                </DropdownMenuGroup>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onClick={() => signOut().then(() => router.push("/sign-in"))}>
+                  <LogOut />
+                  Log out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </SidebarMenuItem>
+        </SidebarMenu>
       </SidebarFooter>
     </Sidebar>
   );

@@ -54,6 +54,7 @@ export function ChatComposer() {
   }
 
   async function handleSubmit({ text }: { text: string }) {
+    if (isSubmitting) return;
     const trimmed = text.trim();
     if (!trimmed) {
       toast.error("Type a question first.");
@@ -65,13 +66,15 @@ export function ChatComposer() {
     }
 
     setIsSubmitting(true);
+    const toastId = toast.loading(`Processing "${attachedFile.name}"…`);
     try {
       const { docId } = await uploadDocument(attachedFile);
       const conversation = await createConversation(docId);
       await sendMessage(conversation.id, trimmed, true);
+      toast.success("Document ready.", { id: toastId });
       router.push(`/chat/${conversation.id}`);
     } catch {
-      toast.error("Couldn't start the chat.");
+      toast.error("Couldn't start the chat.", { id: toastId });
       setIsSubmitting(false);
     }
   }
