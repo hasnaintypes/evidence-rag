@@ -17,7 +17,7 @@ import {
 import { Attachments, Attachment, AttachmentPreview, AttachmentInfo, AttachmentRemove } from "@/components/ai-elements/attachments";
 import { createConversation, sendMessage, uploadDocument } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
-import { Paperclip } from "lucide-react";
+import { Loader2, Paperclip } from "lucide-react";
 
 const ACCEPTED_EXTENSIONS = ".md,.pdf,.docx,.xlsx,.xls,.csv";
 
@@ -37,20 +37,51 @@ function displayName(user: { email?: string; user_metadata?: { full_name?: strin
 }
 
 // The compose screen for a brand-new chat: no conversation exists yet.
-// The document is attached here (not via the sidebar) - uploading it,
-// creating the conversation, and sending the first message all happen
-// together on submit, then we navigate to the real conversation.
+// The document is attached here (not via the sidebar). Uploading starts
+// the moment a file is picked - not on submit - so by the time the user
+// finishes typing their first question, processing is already underway
+// (or done). Submit is blocked until that upload resolves.
 export function ChatComposer() {
   const router = useRouter();
   const { user } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadGeneration = useRef(0);
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
+  const [docId, setDocId] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  async function startUpload(file: File) {
+    const generation = ++uploadGeneration.current;
+    setAttachedFile(file);
+    setDocId(null);
+    setIsUploading(true);
+    const toastId = toast.loading(`Processing "${file.name}"…`);
+    try {
+      const result = await uploadDocument(file);
+      if (generation !== uploadGeneration.current) return;
+      setDocId(result.docId);
+      toast.success(`"${file.name}" is ready - ask your question.`, { id: toastId });
+    } catch {
+      if (generation !== uploadGeneration.current) return;
+      toast.error(`Couldn't process "${file.name}".`, { id: toastId });
+      setAttachedFile(null);
+    } finally {
+      if (generation === uploadGeneration.current) setIsUploading(false);
+    }
+  }
 
   function handleFileSelected(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
-    if (file) setAttachedFile(file);
+    if (file) startUpload(file);
+  }
+
+  function handleRemoveAttachment() {
+    uploadGeneration.current += 1;
+    setAttachedFile(null);
+    setDocId(null);
+    setIsUploading(false);
   }
 
   async function handleSubmit({ text }: { text: string }) {
@@ -64,17 +95,18 @@ export function ChatComposer() {
       toast.error("Attach a document to chat about.");
       return;
     }
+    if (isUploading || !docId) {
+      toast.error("Still processing the document - hang on.");
+      return;
+    }
 
     setIsSubmitting(true);
-    const toastId = toast.loading(`Processing "${attachedFile.name}"…`);
     try {
-      const { docId } = await uploadDocument(attachedFile);
       const conversation = await createConversation(docId);
       await sendMessage(conversation.id, trimmed, true);
-      toast.success("Document ready.", { id: toastId });
       router.push(`/chat/${conversation.id}`);
     } catch {
-      toast.error("Couldn't start the chat.", { id: toastId });
+      toast.error("Couldn't start the chat.");
       setIsSubmitting(false);
     }
   }
@@ -91,10 +123,12 @@ export function ChatComposer() {
             <PromptInputHeader>
               <Attachments variant="inline">
                 <Attachment
-                  data={{ type: "file", id: "pending", filename: attachedFile.name, mediaType: attachedFile.type, url: "" }}
-                  onRemove={() => setAttachedFile(null)}
+                  data={{ type: "file", id: docId ?? "pending", filename: attachedFile.name, mediaType: attachedFile.type, url: "" }}
+                  onRemove={handleRemoveAttachment}
                 >
-                  <AttachmentPreview />
+                  <AttachmentPreview
+                    fallbackIcon={isUploading ? <Loader2 className="size-3 animate-spin text-muted-foreground" /> : undefined}
+                  />
                   <AttachmentInfo />
                   <AttachmentRemove />
                 </Attachment>
@@ -109,7 +143,7 @@ export function ChatComposer() {
               <PromptInputButton
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                disabled={isSubmitting}
+                disabled={isSubmitting || isUploading}
                 tooltip="Attach a document"
               >
                 <Paperclip className="size-4" />
@@ -122,7 +156,7 @@ export function ChatComposer() {
                 onChange={handleFileSelected}
               />
             </PromptInputTools>
-            <PromptInputSubmit status={isSubmitting ? "submitted" : undefined} disabled={isSubmitting} />
+            <PromptInputSubmit status={isSubmitting ? "submitted" : undefined} disabled={isSubmitting || isUploading} />
           </PromptInputFooter>
         </PromptInput>
       </div>
