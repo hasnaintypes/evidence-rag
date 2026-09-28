@@ -17,6 +17,12 @@ models/
 *.onnx
 *.gguf
 
+# Eval run scratch output (docs/eval_baseline.json IS committed - it's
+# the CI-maintained snapshot compare_eval.py diffs against)
+docs/eval_metrics.json
+server/eval_comment.md
+server/eval_status.txt
+
 # Node (if any JS tooling is added later)
 node_modules/
 .next/

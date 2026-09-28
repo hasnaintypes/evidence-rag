@@ -5,7 +5,7 @@ import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.query_pipeline import process_chat_query
-from src.config import EVAL_SET_PATH, EVAL_REPORT_PATH
+from src.config import EVAL_SET_PATH, EVAL_REPORT_PATH, EVAL_METRICS_PATH
 
 
 def compute_metrics(retrieved_sources: list, expected_source, k: int) -> dict:
@@ -247,6 +247,12 @@ def run_eval():
 
     with open(EVAL_REPORT_PATH, "w", encoding="utf-8") as f:
         f.write(report_text)
+
+    # Machine-readable sibling for CI (see scripts/compare_eval.py) - the
+    # markdown report above is for humans, this is for diffing against
+    # docs/eval_baseline.json to catch regressions automatically.
+    with open(EVAL_METRICS_PATH, "w", encoding="utf-8") as f:
+        json.dump({"naive": naive_summary, "advanced": advanced_summary}, f, indent=2)
 
     print(f"\nReport written to {EVAL_REPORT_PATH}")
     print(

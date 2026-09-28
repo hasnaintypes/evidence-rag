@@ -11,6 +11,11 @@ DOCS_DIR = os.path.join(_REPO_ROOT, "docs")
 SAMPLE_DOCS_DIR = os.path.join(DOCS_DIR, "sample_docs")
 EVAL_SET_PATH = os.path.join(DOCS_DIR, "eval_set.json")
 EVAL_REPORT_PATH = os.path.join(DOCS_DIR, "eval_report.md")
+# Machine-readable sibling of eval_report.md - CI diffs this against
+# eval_baseline.json to catch retrieval/prompt regressions (see
+# scripts/compare_eval.py and .github/workflows/eval.yml).
+EVAL_METRICS_PATH = os.path.join(DOCS_DIR, "eval_metrics.json")
+EVAL_BASELINE_PATH = os.path.join(DOCS_DIR, "eval_baseline.json")
 
 
 class Settings(BaseSettings):

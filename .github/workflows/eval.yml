@@ -1,0 +1,132 @@
+name: Retrieval Evaluation
+
+on:
+  pull_request:
+    paths:
+      - "server/src/retrieval/**"
+      - "server/src/ingestion/**"
+      - "server/src/query_pipeline.py"
+      - "docs/eval_set.json"
+  push:
+    branches: [main]
+    paths:
+      - "server/src/retrieval/**"
+      - "server/src/ingestion/**"
+      - "server/src/query_pipeline.py"
+      - "docs/eval_set.json"
+
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: server/requirements.txt
+
+      - name: Install dependencies
+        working-directory: server
+        run: pip install -r requirements.txt
+
+      - name: Configure environment
+        working-directory: server
+        run: |
+          echo "STORAGE_MODE=local" >> .env
+          echo "GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}" >> .env
+          echo "ENABLE_ENTITY_GRAPH=false" >> .env
+
+      # Ingestion (parsing + embedding the whole sample corpus) is the
+      # expensive step and its output only changes when ingestion code,
+      # the embedding model, or the sample docs themselves change - so
+      # most PRs (retrieval/reranking-only changes) hit this cache and
+      # skip straight to the (cheap) eval run.
+      - name: Cache ingested corpus
+        id: corpus-cache
+        uses: actions/cache@v4
+        with:
+          path: server/data
+          key: eval-corpus-${{ hashFiles('docs/sample_docs/**', 'server/src/ingestion/**', 'server/src/llm.py', 'server/src/config.py') }}
+
+      - name: Ingest sample documents
+        if: steps.corpus-cache.outputs.cache-hit != 'true'
+        working-directory: server
+        run: python scripts/ingest.py
+
+      - name: Run evaluation
+        working-directory: server
+        run: python scripts/run_eval.py
+
+      - name: Compare against baseline
+        working-directory: server
+        run: python scripts/compare_eval.py
+
+      - name: Upload full report
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: |
+            docs/eval_report.md
+            docs/eval_metrics.json
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('server/eval_comment.md', 'utf8');
+            const marker = '<!-- eval-report -->';
+            const fullBody = `${marker}\n${body}`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: fullBody,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: fullBody,
+              });
+            }
+
+      # Keeps docs/eval_baseline.json current with main, so the next PR's
+      # comparison is against the latest merged state, not a stale one.
+      - name: Update baseline on main
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          cp docs/eval_metrics.json docs/eval_baseline.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/eval_baseline.json
+          git diff --staged --quiet || git commit -m "chore: update eval baseline [skip ci]"
+          git push
+
+      - name: Gate on regression
+        run: |
+          if [ "$(cat server/eval_status.txt)" = "FAIL" ]; then
+            echo "Retrieval evaluation regressed beyond threshold - see the PR comment for details."
+            exit 1
+          fi
+          echo "No regression beyond threshold."
