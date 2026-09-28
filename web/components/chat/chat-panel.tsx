@@ -135,7 +135,7 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
         <PromptInputTextarea placeholder="Ask a question…" disabled={isSending} />
       </PromptInputBody>
       <PromptInputFooter>
-        <PromptInputTools />
+        <PromptInputTools>{advancedModeToggle}</PromptInputTools>
         <PromptInputSubmit status={isSending ? "submitted" : undefined} disabled={isSending} />
       </PromptInputFooter>
     </PromptInput>
@@ -169,14 +169,6 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col">
-      <header className="flex items-center justify-between border-b border-border px-4 py-4">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight">EvidenceRAG</h1>
-          <p className="text-xs text-muted-foreground">Ask a question about this document.</p>
-        </div>
-        {advancedModeToggle}
-      </header>
-
       {attachmentChip && <div className="border-b border-border px-4 py-2">{attachmentChip}</div>}
 
       <Conversation>
@@ -211,7 +203,7 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
         <ConversationScrollButton />
       </Conversation>
 
-      <div className="border-t border-border p-4">{promptInput}</div>
+      <div className="p-4">{promptInput}</div>
     </div>
   );
 }
