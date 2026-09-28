@@ -2,11 +2,12 @@
 -- Mirrors the SQLite schema in src/db.py's local-mode init_db(), so both
 -- backends store the same shape of data.
 --
--- vector(384) matches all-MiniLM-L6-v2's output dimension - the only
--- embedding model currently wired up. If you ever swap embedding models,
--- this column width has to change too, and existing rows would need
--- re-embedding (see EMBEDDING_MODEL_NAME / get_indexed_embedding_models
--- in src/db.py, which exists specifically to catch that mismatch).
+-- vector(3072) matches gemini-embedding-001's output dimension (the
+-- embedding model set via GEMINI_EMBEDDING_MODEL). If you ever swap
+-- embedding models, this column width has to change too, and existing
+-- rows would need re-embedding (see EMBEDDING_MODEL_NAME /
+-- get_indexed_embedding_models in src/storage/database.py, which exists
+-- specifically to catch that mismatch).
 
 create extension if not exists vector;
 
@@ -17,7 +18,31 @@ create table if not exists documents (
     ingested_at timestamptz default now(),
     node_count integer default 0,
     chunk_count integer default 0,
-    embedding_model text
+    embedding_model text,
+    user_id text
+);
+
+-- Migration for documents tables created before per-user ownership was
+-- added - NULL means a shared/demo document (e.g. docs/sample_docs).
+alter table documents add column if not exists user_id text;
+
+create table if not exists conversations (
+    id text primary key,
+    user_id text not null,
+    doc_id text not null,
+    title text,
+    created_at timestamptz default now(),
+    updated_at timestamptz default now()
+);
+
+create table if not exists messages (
+    id serial primary key,
+    conversation_id text not null,
+    role text not null,
+    content text not null,
+    sources_json jsonb,
+    faithfulness_score real,
+    created_at timestamptz default now()
 );
 
 create table if not exists knowledge_nodes (
@@ -41,7 +66,7 @@ create table if not exists document_chunks (
     page_number integer default 1,
     chunk_index integer not null,
     chunk_text text not null,
-    embedding vector(384) not null,
+    embedding vector(3072) not null,
     node_type text default 'paragraph',
     heading_path text,
     node_ids jsonb,
@@ -92,6 +117,8 @@ create index if not exists idx_chunks_parent on document_chunks(parent_id);
 create index if not exists idx_chunks_doc on document_chunks(doc_id);
 create index if not exists idx_entities_doc on entities(doc_id);
 create index if not exists idx_edges_doc on entity_edges(doc_id);
+create index if not exists idx_conversations_user on conversations(user_id);
+create index if not exists idx_messages_conversation on messages(conversation_id);
 
 -- Optional but recommended once you have more than a few thousand chunks:
 -- speeds up cosine-similarity search via pgvector's approximate index.

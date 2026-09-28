@@ -13,17 +13,31 @@ MAX_HOPS = 2  # initial retrieval pass + at most 1 follow-up hop, never more
 SNIPPET_MAX_CHARS = 280  # citation snippet length - enough to verify a claim, not the whole chunk
 
 
-def _retrieve(query_text: str, query_embedding: list, top_k: int) -> list:
+def _retrieve(query_text: str, query_embedding: list, top_k: int, doc_id: str = None) -> list:
     """
     Returns (id, chunk_text, source_file, page_number, node_type,
     heading_path, parent_id, rrf_score) tuples, consumed unmodified by
     every downstream stage (rerank, grade, compress, parent-expansion,
     follow-up hop).
     """
-    return hybrid_retrieve(query_text=query_text, query_embedding=query_embedding, top_k=top_k)
+    return hybrid_retrieve(query_text=query_text, query_embedding=query_embedding, top_k=top_k, doc_id=doc_id)
 
 
-def process_chat_query(query: str, advanced_mode: bool = True) -> dict:
+def _format_history(history: list) -> str:
+    """
+    Renders the last few conversation turns as a plain transcript block
+    for the generation prompt, so follow-up questions ("what about X")
+    resolve against what was actually discussed. Query rewriting/expansion
+    above is intentionally NOT history-aware yet - this only affects the
+    final answer, not retrieval; a deliberately smaller first step.
+    """
+    if not history:
+        return ""
+    lines = [f"{turn['role'].upper()}: {turn['content']}" for turn in history]
+    return "CONVERSATION SO FAR:\n" + "\n".join(lines) + "\n\n"
+
+
+def process_chat_query(query: str, advanced_mode: bool = True, doc_id: str = None, history: list = None) -> dict:
     """
     RAG pipeline: query expansion -> hybrid retrieval -> rerank -> grade ->
     compress (+ parent expansion) -> [optional single follow-up hop] -> generate.
@@ -33,6 +47,11 @@ def process_chat_query(query: str, advanced_mode: bool = True) -> dict:
     returning a pre-written answer — a wrong-but-confident canned response
     is worse than an explicit "insufficient context" reply, because it
     fails silently on any query the fallback list wasn't written for.
+
+    doc_id: scopes retrieval to a single document (conversations are
+    attached to exactly one document - see api/routers/conversations.py).
+    history: prior turns in the conversation, [{"role", "content"}, ...],
+    folded into the generation prompt so follow-ups resolve correctly.
     """
     telemetry = {}
     query_lower = query.lower()
@@ -54,7 +73,7 @@ def process_chat_query(query: str, advanced_mode: bool = True) -> dict:
 
     search_width = 8 if advanced_mode else 4
     for q_track in expanded_queries:
-        retrieved = _retrieve(query_text=q_track, query_embedding=query_embedding, top_k=search_width)
+        retrieved = _retrieve(query_text=q_track, query_embedding=query_embedding, top_k=search_width, doc_id=doc_id)
         for chunk in retrieved:
             if chunk["id"] not in seen_chunk_ids:
                 seen_chunk_ids.add(chunk["id"])
@@ -119,7 +138,7 @@ def process_chat_query(query: str, advanced_mode: bool = True) -> dict:
             followup_candidates = []
             for sub_q in subqueries:
                 sub_embedding = get_embedding(sub_q)
-                retrieved = _retrieve(query_text=sub_q, query_embedding=sub_embedding, top_k=search_width)
+                retrieved = _retrieve(query_text=sub_q, query_embedding=sub_embedding, top_k=search_width, doc_id=doc_id)
                 for chunk in retrieved:
                     if chunk["id"] not in seen_chunk_ids:
                         seen_chunk_ids.add(chunk["id"])
@@ -217,8 +236,9 @@ INSTRUCTIONS:
 3. If the chunks do not contain enough information to answer, say so explicitly instead of guessing.
 4. Answer directly. No preamble, no restating the question, no meta-commentary about the instructions.
 5. Do NOT describe or narrate the chunks one by one (e.g. "In the first chunk..." / "In the Nth document chunk..."). State the final answer directly, as a technician would.
+6. If the question is a follow-up (e.g. "what about X"), use the conversation so far to understand what it's referring to - but still answer only from the document chunks, not from memory of earlier answers.
 
-DOCUMENT CHUNKS:
+{_format_history(history)}DOCUMENT CHUNKS:
 {context_text.strip()}
 
 QUESTION:

@@ -43,6 +43,35 @@ export type DocumentRecord = {
   node_count: number;
   chunk_count: number;
   embedding_model: string | null;
+  user_id: string | null;
+};
+
+// Mirrors GET /conversations and POST /conversations
+// (server/api/routers/conversations.py).
+export type Conversation = {
+  id: string;
+  doc_id: string;
+  filename: string | null;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+// Mirrors a row from GET /conversations/{id} and the response shape of
+// POST /conversations/{id}/messages.
+export type ConversationMessage = {
+  id: number;
+  conversation_id: string;
+  role: "user" | "assistant";
+  content: string;
+  sources: Source[];
+  faithfulness_score: number | null;
+  created_at: string;
+  // Only present on the POST /conversations/{id}/messages response, not
+  // when loading history via GET /conversations/{id}.
+  telemetry?: Record<string, number>;
+  chunks_matrix?: unknown[];
+  thinking?: string;
 };
 
 // Mirrors GET /graph (see get_graph_data() in server/src/storage/database.py).

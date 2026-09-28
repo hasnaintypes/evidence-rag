@@ -33,11 +33,16 @@ def file_hash(file_path: str) -> str:
         return hashlib.sha256(f.read()).hexdigest()
 
 
-def make_doc_id(filename: str) -> str:
-    """Stable doc_id derived from filename, so re-ingestion of the same file
-    always maps to the same doc_id (required for hash-based dedup to work -
-    otherwise every run would look like a "new" document)."""
-    return hashlib.sha1(filename.encode("utf-8")).hexdigest()[:12]
+def make_doc_id(filename: str, user_id: str = None) -> str:
+    """Stable doc_id derived from filename (+ user_id when set), so
+    re-ingestion of the same file always maps to the same doc_id (required
+    for hash-based dedup - otherwise every run would look like a "new"
+    document). user_id is folded in so two different users uploading a
+    file with the same name don't collide on the same doc_id and overwrite
+    each other. Shared/demo docs (scripts/ingest.py, no user_id) keep the
+    original filename-only hash - unchanged for docs already ingested that way."""
+    key = f"{user_id}:{filename}" if user_id else filename
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
 
 
 def _ingest_tree_aware(parser, file_path: str, doc_id: str, filename: str) -> list:
@@ -89,18 +94,19 @@ def _ingest_legacy(parser, file_path: str, filename: str, doc_id: str) -> list:
     return chunks_data
 
 
-def ingest_file(file_path: str, filename: str) -> dict:
+def ingest_file(file_path: str, filename: str, user_id: str = None) -> dict:
     """
     Parses, chunks, embeds, and indexes one document with hash-based dedup.
 
-    Shared by scripts/ingest.py (bulk CLI ingestion over docs/sample_docs)
-    and the /upload API route, so a file dropped on disk and one uploaded
-    through the UI go through the exact same pipeline and produce the same
-    knowledge tree / chunk structure.
+    Shared by scripts/ingest.py (bulk CLI ingestion over docs/sample_docs,
+    user_id=None -> shared/demo doc) and the /upload API route (user_id set
+    from the authenticated caller), so a file dropped on disk and one
+    uploaded through the UI go through the exact same pipeline and produce
+    the same knowledge tree / chunk structure.
 
     Returns {"status": "unchanged" | "success" | "empty", "chunk_count": int}.
     """
-    doc_id = make_doc_id(filename)
+    doc_id = make_doc_id(filename, user_id=user_id)
     current_hash = file_hash(file_path)
     stored_hash = get_document_hash(doc_id)
 
@@ -140,6 +146,7 @@ def ingest_file(file_path: str, filename: str) -> dict:
         node_count=len(chunks_data),
         chunk_count=indexed_count,
         embedding_model=EMBEDDING_MODEL_NAME,
+        user_id=user_id,
     )
 
     return {"status": "success", "chunk_count": indexed_count}

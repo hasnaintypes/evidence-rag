@@ -10,7 +10,9 @@ An explainable document question-answering system that parses technical document
 
 [![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Next.js](https://img.shields.io/badge/Next.js-Frontend-000000?style=flat-square&logo=next.js&logoColor=white)](https://nextjs.org/)
 [![Gemini](https://img.shields.io/badge/LLM-Gemini-107C10?style=flat-square)](#architecture)
+[![Supabase](https://img.shields.io/badge/Auth-Supabase-3ECF8E?style=flat-square&logo=supabase&logoColor=white)](#authentication--conversations)
 
 </div>
 
@@ -24,6 +26,7 @@ An explainable document question-answering system that parses technical document
 - [System Architecture](#system-architecture)
 - [Document Ingestion Pipeline](#document-ingestion-pipeline)
 - [RAG Query Flow](#rag-query-flow)
+- [Authentication & Conversations](#authentication--conversations)
 - [Explainability and Observability](#explainability-and-observability)
 - [Entity Graph](#entity-graph)
 - [Evaluation Results](#evaluation-results)
@@ -101,10 +104,14 @@ A telemetry layer records stage-level latency for every query, so bottlenecks ar
 
 ```mermaid
 flowchart TB
-    U["User"] --> UI["Web Interface"]
+    U["User"] --> UI["Web Interface (Next.js)"]
+    UI -- "email + password" --> SBAUTH["Supabase Auth"]
+    SBAUTH -- "JWT" --> UI
 
-    subgraph API["FastAPI Application"]
-        CHAT["/chat"]
+    subgraph API["FastAPI Application (server/api/)"]
+        DEPS["JWT Verification<br/>(Supabase JWKS, no shared secret)"]
+        CONV["/conversations"]
+        MSG["/conversations/{id}/messages"]
         UPLOAD["/upload"]
         DOCS["/documents"]
         GRAPHAPI["/graph"]
@@ -112,11 +119,14 @@ flowchart TB
         HEALTH["/health"]
     end
 
-    UI --> CHAT
-    UI --> UPLOAD
-    UI --> DOCS
-    UI --> GRAPHAPI
+    UI -- "Authorization: Bearer JWT" --> DEPS
+    DEPS --> CONV
+    DEPS --> MSG
+    DEPS --> UPLOAD
+    DEPS --> DOCS
+    DEPS --> GRAPHAPI
     UI --> SOURCE
+    UI --> HEALTH
 
     subgraph INGESTION["Structure-Aware Ingestion"]
         PARSERS["Markdown / PDF / DOCX / XLSX / CSV Parsers"]
@@ -133,7 +143,7 @@ flowchart TB
     TREE --> ENTITY
 
     subgraph STORAGE["Storage"]
-        DB[("Documents + Knowledge Tree + Chunks + Embeddings + Entities + Query Log")]
+        DB[("Documents (per-user) + Knowledge Tree + Chunks + Embeddings + Entities + Conversations + Messages + Query Log")]
     end
 
     HASH --> DB
@@ -151,7 +161,7 @@ flowchart TB
         FOLLOWUP["Bounded Follow-Up Retrieval"]
     end
 
-    CHAT --> REWRITE
+    MSG --> REWRITE
     REWRITE --> BM25
     REWRITE --> DENSE
     DB --> BM25
@@ -335,6 +345,29 @@ Every answer (including an abstention) returns a `sources` array — the exact c
 
 ---
 
+## Authentication & Conversations
+
+Every document belongs to the user who uploaded it, and every chat happens inside a **conversation** scoped to exactly one document — not a global search box.
+
+### Auth: Supabase Auth, verified without a shared secret
+
+Sign-in/sign-up talk directly from the browser to Supabase Auth (`web/lib/auth.ts`) — they are **not** proxied through the FastAPI backend. That's the correct pattern for this architecture (SPA frontend + separate API backend, no server-rendered sessions/cookies): Supabase's client SDK already handles token issuance, refresh, and storage.
+
+The backend's only auth responsibility is verifying a token it's handed. `server/api/deps.py` does this against Supabase's public **JWKS** endpoint (`/auth/v1/.well-known/jwks.json`) using asymmetric signing keys — no shared secret is stored on the server, and Supabase can rotate keys without any config change here. Every route except `/health` and `/source/{filename}` (opened via plain browser navigation for citation links, which can't attach a custom header) requires a valid `Authorization: Bearer <jwt>`.
+
+### Conversations are document-scoped
+
+- `POST /conversations` creates a conversation tied to one `doc_id`.
+- `POST /conversations/{id}/messages` runs the RAG pipeline with retrieval filtered to that document (`hybrid_retrieve(..., doc_id=...)`) and the last several turns folded into the generation prompt, so follow-ups like *"after how many hours should it be applied?"* resolve correctly.
+- Conversation titles are auto-set from the first message; `GET /conversations` lists a user's own conversations, newest first.
+- `documents.user_id` is nullable: `NULL` means a shared/demo document (e.g. `docs/sample_docs/`, ingested via `scripts/ingest.py`), visible to every signed-in user; uploads via `POST /upload` are stamped with the uploader's id and private to them.
+
+### Frontend state
+
+Session state lives in a small Zustand store (`web/stores/auth-store.ts`) subscribed once at module load, not re-fetched per component. `web/hooks/` (`use-auth`, `use-conversations`, `use-documents`) wrap the raw `lib/api.ts` calls with loading/error state so components don't each re-implement the same fetch boilerplate.
+
+---
+
 ## Explainability and Observability
 
 ### Explainability matrix fields
@@ -418,7 +451,9 @@ Full detail: [`docs/eval_report.md`](./docs/eval_report.md).
 | Layer | Technology |
 |:--|:--|
 | Backend | Python, FastAPI, Uvicorn |
-| Frontend | Next.js (App Router), Tailwind CSS, shadcn/ui |
+| Frontend | Next.js (App Router), Tailwind CSS, shadcn/ui (base-ui style) |
+| Auth | Supabase Auth (email + password), JWT verified backend-side via JWKS |
+| Frontend state | Zustand (session store) + custom hooks (`use-auth`, `use-conversations`, `use-documents`) |
 | Chat model | Gemini (`gemini-2.5-flash`) |
 | Embeddings | Gemini (`gemini-embedding-001`) |
 | Sparse retrieval | `rank-bm25` |
@@ -436,24 +471,38 @@ Full detail: [`docs/eval_report.md`](./docs/eval_report.md).
 
 ```
 ├── server/
-│   ├── api/app.py                 FastAPI app: routes only, pure JSON API
+│   ├── api/
+│   │   ├── app.py                  FastAPI() instance, CORS, startup event - mounts routers only
+│   │   ├── deps.py                 get_current_user: verifies Supabase JWTs via JWKS
+│   │   ├── schemas.py              Pydantic request/response models
+│   │   └── routers/
+│   │       ├── health.py             GET /health
+│   │       ├── documents.py           GET /documents, POST /upload, GET /source/{filename}
+│   │       ├── conversations.py       POST/GET /conversations, GET/DELETE /conversations/{id},
+│   │       │                          POST /conversations/{id}/messages
+│   │       └── graph.py                GET /graph, GET /graph/section/{node_id}
 │   ├── src/
 │   │   ├── config.py               Central config, reads .env, STORAGE_MODE switch
 │   │   ├── llm.py                  Gemini chat generation + embeddings
-│   │   ├── query_pipeline.py       Orchestrates expansion -> retrieval -> [follow-up hop] -> confidence gate -> generation; builds `sources`
+│   │   ├── query_pipeline.py       process_chat_query(query, advanced_mode, doc_id, history) -
+│   │   │                           expansion -> retrieval (doc-scoped) -> [follow-up hop] ->
+│   │   │                           confidence gate -> generation (history-aware); builds `sources`
 │   │   ├── graph.py                Entity extraction + co-occurrence graph building
 │   │   ├── telemetry.py            Persistent structured query logging
 │   │   ├── storage/
-│   │   │   ├── database.py           knowledge_nodes, document_chunks, documents
-│   │   │   │                         registry, entities/entity_edges (SQLite
-│   │   │   │                         locally, Postgres+pgvector on Supabase)
+│   │   │   ├── database.py           documents (per-user), knowledge_nodes, document_chunks,
+│   │   │   │                         entities/entity_edges, conversations, messages
+│   │   │   │                         (SQLite locally, Postgres+pgvector on Supabase)
 │   │   │   └── files.py               Raw file storage: local disk or Supabase Storage
 │   │   ├── ingestion/
-│   │   │   ├── pipeline.py            Shared parse -> chunk -> embed -> store pipeline
+│   │   │   ├── pipeline.py            Shared parse -> chunk -> embed -> store pipeline;
+│   │   │   │                          make_doc_id(filename, user_id) keeps uploads from
+│   │   │   │                          different users from colliding on the same doc_id
 │   │   │   ├── chunking.py            chunk_nodes() (tree-aware) + chunk_document() (legacy)
 │   │   │   └── parsers/               Pluggable document parsers, all tree-aware
 │   │   ├── retrieval/
-│   │   │   ├── hybrid.py              BM25 + dense fusion (RRF), cached index
+│   │   │   ├── hybrid.py              BM25 + dense fusion (RRF), cached index, optional
+│   │   │   │                          doc_id filter for conversation-scoped retrieval
 │   │   │   ├── reranker.py            Cross-encoder re-ranking
 │   │   │   ├── grader.py              Retrieval relevance grading + Jaccard dedup +
 │   │   │   │                          confidence-threshold abstention gate
@@ -464,27 +513,49 @@ Full detail: [`docs/eval_report.md`](./docs/eval_report.md).
 │   ├── scripts/
 │   │   ├── ingest.py               Parse + chunk + embed + index, with hash-based dedup
 │   │   ├── run_eval.py             Precision/Recall/MRR + faithfulness benchmark harness
+│   │   ├── compare_eval.py         Diffs a fresh eval run against docs/eval_baseline.json (CI)
 │   │   ├── test_connection.py      Quick Gemini API connectivity check
-│   │   └── supabase_schema.sql     One-time Postgres+pgvector schema for Supabase mode
+│   │   └── supabase_schema.sql     One-time Postgres+pgvector schema (also mirrored by
+│   │                                storage/database.py's SQLite init_db() for local mode)
 │   └── requirements.txt
 ├── web/                            Next.js frontend (shadcn/ui), talks to the server as an API
-│   ├── app/page.tsx                 Renders the chat panel
-│   ├── components/chat/
-│   │   ├── chat-panel.tsx             Chat state, input, submit
-│   │   ├── chat-message.tsx           Message bubble (user/assistant)
-│   │   └── source-list.tsx            Expandable per-answer citation list
+│   ├── app/
+│   │   ├── page.tsx                  Landing page
+│   │   ├── sign-in/, sign-up/          Auth pages (email + password)
+│   │   ├── graph/page.tsx              Entity graph visualization
+│   │   └── chat/
+│   │       ├── layout.tsx               Auth guard + sidebar shell for every /chat/* route
+│   │       ├── page.tsx                 Redirects to the most recent conversation, or empty state
+│   │       └── [conversationId]/page.tsx  One conversation's chat panel
+│   ├── components/
+│   │   ├── auth/                     login-form.tsx, signup-form.tsx
+│   │   ├── chat/
+│   │   │   ├── app-sidebar.tsx          Conversations list, "New chat" (pick/upload a doc), nav
+│   │   │   ├── chat-panel.tsx           Loads history, sends messages, renders the thread
+│   │   │   ├── chat-message.tsx         Message bubble (user/assistant)
+│   │   │   └── source-list.tsx          Expandable per-answer citation list
+│   │   ├── landing/                  Landing page sections (hero copy lives in app/page.tsx)
+│   │   └── ui/                       shadcn primitives (button, sidebar, sheet, field, ...)
+│   ├── hooks/                      use-auth.ts, use-conversations.ts, use-documents.ts
+│   ├── stores/
+│   │   └── auth-store.ts             Zustand session store, subscribed once at module load
 │   └── lib/
-│       ├── api.ts                     POST /chat client
-│       └── types.ts                   Shared API/message types
+│       ├── supabase.ts                Browser Supabase client
+│       ├── auth.ts                    signInWithPassword / signUp / signOut wrappers
+│       ├── api.ts                     Authenticated fetch wrappers for every backend route
+│       └── types.ts                   Shared API/message/conversation types
 └── docs/
-    ├── sample_docs/                 Example knowledge base (multi-format)
+    ├── sample_docs/                 Example knowledge base (multi-format, shared/demo - user_id NULL)
     ├── eval_set.json                Labeled Q&A pairs for benchmarking
+    ├── eval_baseline.json           CI-maintained metrics snapshot from main (see compare_eval.py)
     └── eval_report.md               Latest benchmark results
 ```
 
 ---
 
 ## Quick Start
+
+A Supabase project is required regardless of `STORAGE_MODE` — Auth is a separate Supabase product from Postgres/Storage, and this app has no local/mock auth path. Every data route (`/documents`, `/conversations`, `/upload`, `/graph`) requires a signed-in user.
 
 ### Set up the server
 
@@ -496,21 +567,30 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Configure `.env` (defaults to local storage):
+Configure `.env`:
 
 ```env
-STORAGE_MODE=local
+STORAGE_MODE=local             # or "supabase" for Postgres+pgvector + Supabase Storage
 GEMINI_API_KEY=your-key-here
 ENABLE_ENTITY_GRAPH=false
+
+# Auth (always required) - Project Settings -> API -> Project URL
+SUPABASE_URL=https://your-project.supabase.co
+
+CORS_ALLOWED_ORIGINS=http://localhost:3000
 ```
+
+If `STORAGE_MODE=supabase`, also set `SUPABASE_DB_URL` and `SUPABASE_KEY` (service role) and run `scripts/supabase_schema.sql` once in the Supabase SQL editor — it creates `documents`/`conversations`/`messages` and everything else this app needs. `SUPABASE_DB_URL` should use the **connection pooler** string (Settings → Database → Connection Pooling, port 6543), not the direct `db.<ref>.supabase.co` host — that host is IPv6-only on many projects and will silently fail to connect on networks without an IPv6 route.
 
 `RETRIEVAL_CONFIDENCE_THRESHOLD` (default `0.0`) is also read from the environment if you want to tune the abstention gate without a code change — see [Retrieval-confidence abstention](#retrieval-confidence-abstention).
 
-### Ingest documents
+### Ingest the shared/demo corpus
 
 ```bash
 python scripts/ingest.py
 ```
+
+Indexes `docs/sample_docs/` as shared documents (`user_id IS NULL`), visible to every signed-in user. Per-user uploads happen through the web UI's `POST /upload` instead.
 
 ### Run the application
 
@@ -518,7 +598,7 @@ python scripts/ingest.py
 uvicorn api.app:app --reload
 ```
 
-The server is a pure JSON API — FastAPI's interactive docs are at `http://127.0.0.1:8000/docs`.
+FastAPI's interactive docs (with JWT auth support) are at `http://127.0.0.1:8000/docs`.
 
 ### Set up the web frontend
 
@@ -529,7 +609,15 @@ cp .env.example .env
 pnpm dev
 ```
 
-`.env` just needs `NEXT_PUBLIC_API_URL` pointing at the running server (defaults to `http://127.0.0.1:8000`). Open `http://localhost:3000` for the chat UI.
+Configure `.env`:
+
+```env
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key       # Project Settings -> API - safe client-side
+```
+
+Open `http://localhost:3000`, sign up, then start a conversation from the sidebar.
 
 ---
 
@@ -549,4 +637,7 @@ Parsing, `KnowledgeNode` tree construction, entity graph, cross-encoder rerankin
 - Faithfulness scoring adds one extra LLM call per query (skipped when generation itself already failed) and is judged by the same model family doing the generation, not an independent/stronger judge model.
 - The retrieval-confidence abstention gate only applies in advanced mode; naive mode never computes a cross-encoder score and always attempts an answer.
 - The web UI's citation list is intentionally basic (numbered, expandable snippet) — it does not yet render inline `[1]`/`[2]` markers within the generated answer text itself.
+- Conversation history is folded into the generation prompt so follow-ups resolve correctly, but query rewriting/expansion (`query_rewriter.py`) doesn't yet take prior turns into account — a smaller, deliberate first step rather than the full history-aware retrieval treatment.
+- Every data route requires a signed-in Supabase user; there's no anonymous/read-only demo mode.
+- Auth uses Supabase's `anon`/`service_role` keys. Supabase is deprecating that naming in favor of `publishable`/`secret` keys by end of 2026 — legacy keys still work today, but this project hasn't migrated yet.
 

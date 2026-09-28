@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     top_k: int = 3
     chunk_size_tokens: int = 200
     chunk_overlap_tokens: int = 40
+    # Comma-separated origins allowed to call this API from a browser (the
+    # web/ Next.js dev server by default) - needed once the frontend sends
+    # an Authorization header, since that requires an explicit CORS allowlist.
+    cors_allowed_origins: str = "http://localhost:3000"
 
     # --- Generation Settings ---
     # NOTE: query_pipeline.py's prompt explicitly instructs "do not truncate"

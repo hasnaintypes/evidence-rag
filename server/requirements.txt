@@ -1,5 +1,6 @@
 # Core
 fastapi==0.115.0
+python-multipart==0.0.9  # required by FastAPI's UploadFile (POST /upload)
 uvicorn[standard]==0.30.6
 python-dotenv==1.0.1
 pydantic==2.12.5
@@ -21,6 +22,10 @@ pandas==2.2.3
 # Supabase — storage_mode=supabase (Postgres+pgvector + Storage)
 supabase==2.31.0
 psycopg2-binary==2.9.9
+
+# Auth — verifying Supabase Auth JWTs (>=2.12.0 to satisfy supabase-auth's
+# own pyjwt[crypto] requirement, pulled in transitively via the supabase package)
+PyJWT[crypto]==2.12.0
 
 # Dev / test
 pytest==8.3.3

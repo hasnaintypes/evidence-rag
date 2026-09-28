@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { ChatMessageBubble } from "@/components/chat/chat-message";
-import { sendChatMessage } from "@/lib/api";
-import type { ChatMessage } from "@/lib/types";
+import { getConversation, sendMessage } from "@/lib/api";
+import type { ChatMessage, ConversationMessage } from "@/lib/types";
 
 let messageIdCounter = 0;
 function nextMessageId() {
@@ -13,12 +13,31 @@ function nextMessageId() {
   return `msg-${messageIdCounter}`;
 }
 
-export function ChatPanel() {
+function fromServerMessage(m: ConversationMessage): ChatMessage {
+  return {
+    id: `server-${m.id}`,
+    role: m.role,
+    content: m.content,
+    sources: m.sources,
+    faithfulness:
+      m.faithfulness_score !== null ? { score: m.faithfulness_score, unsupported_claims: [] } : undefined,
+  };
+}
+
+export function ChatPanel({ conversationId }: { conversationId: string }) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [input, setInput] = useState("");
   const [advancedMode, setAdvancedMode] = useState(true);
   const [isSending, setIsSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    getConversation(conversationId)
+      .then(({ messages: history }) => setMessages(history.map(fromServerMessage)))
+      .catch(() => setMessages([]))
+      .finally(() => setIsLoadingHistory(false));
+  }, [conversationId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -45,15 +64,18 @@ export function ChatPanel() {
     setIsSending(true);
 
     try {
-      const result = await sendChatMessage(trimmed, advancedMode);
+      const result = await sendMessage(conversationId, trimmed, advancedMode);
       setMessages((prev) =>
         prev.map((message) =>
           message.id === pendingId
             ? {
                 ...message,
-                content: result.reply,
+                content: result.content,
                 sources: result.sources,
-                faithfulness: result.faithfulness,
+                faithfulness:
+                  result.faithfulness_score !== null
+                    ? { score: result.faithfulness_score, unsupported_claims: [] }
+                    : undefined,
                 pending: false,
               }
             : message
@@ -91,9 +113,9 @@ export function ChatPanel() {
     <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 px-4 py-6">
       <header className="flex items-center justify-between border-b border-border pb-4">
         <div>
-          <h1 className="text-sm font-semibold">EvidenceRAG</h1>
+          <h1 className="text-xl font-bold tracking-tight">EvidenceRAG</h1>
           <p className="text-xs text-muted-foreground">
-            Ask a question about the indexed documents.
+            Ask a question about this document.
           </p>
         </div>
         <label className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -108,9 +130,11 @@ export function ChatPanel() {
       </header>
 
       <div className="flex flex-1 flex-col gap-3">
-        {messages.length === 0 ? (
+        {isLoadingHistory ? (
+          <p className="mt-10 text-center text-sm text-muted-foreground">Loading conversation…</p>
+        ) : messages.length === 0 ? (
           <p className="mt-10 text-center text-sm text-muted-foreground">
-            No messages yet — ask something about a document in the knowledge base.
+            No messages yet — ask something about this document.
           </p>
         ) : (
           messages.map((message) => (

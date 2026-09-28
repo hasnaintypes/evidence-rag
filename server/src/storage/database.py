@@ -64,7 +64,31 @@ def init_db() -> None:
             ingested_at TEXT DEFAULT CURRENT_TIMESTAMP,
             node_count INTEGER DEFAULT 0,
             chunk_count INTEGER DEFAULT 0,
-            embedding_model TEXT
+            embedding_model TEXT,
+            user_id TEXT
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS conversations (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            doc_id TEXT NOT NULL,
+            title TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            sources_json TEXT,
+            faithfulness_score REAL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
@@ -131,6 +155,7 @@ def init_db() -> None:
         "node_count": "INTEGER DEFAULT 0",
         "chunk_count": "INTEGER DEFAULT 0",
         "embedding_model": "TEXT",
+        "user_id": "TEXT",
     })
     _migrate_missing_columns(cursor, "knowledge_nodes", {
         "doc_id": "TEXT",
@@ -165,6 +190,8 @@ def init_db() -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc ON document_chunks(doc_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_doc ON entities(doc_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_edges_doc ON entity_edges(doc_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)")
 
     conn.commit()
     conn.close()
@@ -206,33 +233,36 @@ def upsert_document_record(
     node_count: int,
     chunk_count: int,
     embedding_model: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> None:
     conn = get_db_connection()
     cursor = conn.cursor()
     if settings.storage_mode == "supabase":
         cursor.execute("""
-            INSERT INTO documents (doc_id, filename, file_hash, node_count, chunk_count, embedding_model)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO documents (doc_id, filename, file_hash, node_count, chunk_count, embedding_model, user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (doc_id) DO UPDATE SET
                 filename = EXCLUDED.filename,
                 file_hash = EXCLUDED.file_hash,
                 ingested_at = now(),
                 node_count = EXCLUDED.node_count,
                 chunk_count = EXCLUDED.chunk_count,
-                embedding_model = EXCLUDED.embedding_model
-        """, (doc_id, filename, file_hash, node_count, chunk_count, embedding_model))
+                embedding_model = EXCLUDED.embedding_model,
+                user_id = EXCLUDED.user_id
+        """, (doc_id, filename, file_hash, node_count, chunk_count, embedding_model, user_id))
     else:
         cursor.execute("""
-            INSERT INTO documents (doc_id, filename, file_hash, node_count, chunk_count, embedding_model)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO documents (doc_id, filename, file_hash, node_count, chunk_count, embedding_model, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(doc_id) DO UPDATE SET
                 filename = excluded.filename,
                 file_hash = excluded.file_hash,
                 ingested_at = CURRENT_TIMESTAMP,
                 node_count = excluded.node_count,
                 chunk_count = excluded.chunk_count,
-                embedding_model = excluded.embedding_model
-        """, (doc_id, filename, file_hash, node_count, chunk_count, embedding_model))
+                embedding_model = excluded.embedding_model,
+                user_id = excluded.user_id
+        """, (doc_id, filename, file_hash, node_count, chunk_count, embedding_model, user_id))
     conn.commit()
     conn.close()
 
@@ -258,10 +288,23 @@ def delete_document_data(doc_id: str) -> None:
     conn.close()
 
 
-def list_documents() -> List[Dict[str, Any]]:
+def list_documents(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Returns a user's own uploaded documents plus shared/demo documents
+    (user_id IS NULL, e.g. docs/sample_docs ingested via scripts/ingest.py).
+    user_id=None returns every document regardless of owner - used by
+    internal/non-request-scoped callers only, never by the /documents route.
+    """
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM documents ORDER BY ingested_at DESC")
+    if user_id is not None:
+        ph = _ph(1)
+        cursor.execute(
+            f"SELECT * FROM documents WHERE user_id = {ph} OR user_id IS NULL ORDER BY ingested_at DESC",
+            (user_id,),
+        )
+    else:
+        cursor.execute("SELECT * FROM documents ORDER BY ingested_at DESC")
     rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -467,3 +510,146 @@ def get_graph_data(doc_id: Optional[str] = None) -> Dict[str, Any]:
         ],
         "edges": [{"from": r["source_entity_id"], "to": r["target_entity_id"], "weight": r["weight"]} for r in edge_rows],
     }
+
+
+# --------------------------------------------------------------------------- #
+# Conversations + messages (per-document chat sessions)
+# --------------------------------------------------------------------------- #
+
+def create_conversation(conversation_id: str, user_id: str, doc_id: str) -> None:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    if settings.storage_mode == "supabase":
+        cursor.execute(
+            "INSERT INTO conversations (id, user_id, doc_id) VALUES (%s, %s, %s)",
+            (conversation_id, user_id, doc_id),
+        )
+    else:
+        cursor.execute(
+            "INSERT INTO conversations (id, user_id, doc_id) VALUES (?, ?, ?)",
+            (conversation_id, user_id, doc_id),
+        )
+    conn.commit()
+    conn.close()
+
+
+def list_conversations(user_id: str) -> List[Dict[str, Any]]:
+    """Joins in the conversation's document filename so the sidebar doesn't
+    need a second round trip per conversation to show what it's about."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = _ph(1)
+    cursor.execute(f"""
+        SELECT c.id, c.doc_id, c.title, c.created_at, c.updated_at, d.filename
+        FROM conversations c
+        LEFT JOIN documents d ON d.doc_id = c.doc_id
+        WHERE c.user_id = {ph}
+        ORDER BY c.updated_at DESC
+    """, (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = _ph(1)
+    cursor.execute(f"SELECT * FROM conversations WHERE id = {ph}", (conversation_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def delete_conversation(conversation_id: str) -> None:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = _ph(1)
+    cursor.execute(f"DELETE FROM messages WHERE conversation_id = {ph}", (conversation_id,))
+    cursor.execute(f"DELETE FROM conversations WHERE id = {ph}", (conversation_id,))
+    conn.commit()
+    conn.close()
+
+
+def touch_conversation(conversation_id: str, title: Optional[str] = None) -> None:
+    """Bumps updated_at on every new message, and sets title once (only
+    when it's still unset) from the conversation's first user message."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    if settings.storage_mode == "supabase":
+        if title is not None:
+            cursor.execute(
+                "UPDATE conversations SET updated_at = now(), title = COALESCE(title, %s) WHERE id = %s",
+                (title, conversation_id),
+            )
+        else:
+            cursor.execute("UPDATE conversations SET updated_at = now() WHERE id = %s", (conversation_id,))
+    else:
+        if title is not None:
+            cursor.execute(
+                "UPDATE conversations SET updated_at = CURRENT_TIMESTAMP, title = COALESCE(title, ?) WHERE id = ?",
+                (title, conversation_id),
+            )
+        else:
+            cursor.execute(
+                "UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (conversation_id,)
+            )
+    conn.commit()
+    conn.close()
+
+
+def insert_message(
+    conversation_id: str,
+    role: str,
+    content: str,
+    sources: Optional[List[Dict[str, Any]]] = None,
+    faithfulness_score: Optional[float] = None,
+) -> Dict[str, Any]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    sources_json = json.dumps(sources) if sources is not None else None
+    if settings.storage_mode == "supabase":
+        cursor.execute("""
+            INSERT INTO messages (conversation_id, role, content, sources_json, faithfulness_score)
+            VALUES (%s, %s, %s, %s, %s) RETURNING id, created_at
+        """, (conversation_id, role, content, sources_json, faithfulness_score))
+        row = cursor.fetchone()
+        conn.commit()
+    else:
+        cursor.execute("""
+            INSERT INTO messages (conversation_id, role, content, sources_json, faithfulness_score)
+            VALUES (?, ?, ?, ?, ?)
+        """, (conversation_id, role, content, sources_json, faithfulness_score))
+        conn.commit()
+        cursor.execute("SELECT id, created_at FROM messages WHERE id = ?", (cursor.lastrowid,))
+        row = cursor.fetchone()
+    conn.close()
+    return {
+        "id": row["id"],
+        "conversation_id": conversation_id,
+        "role": role,
+        "content": content,
+        "sources": sources or [],
+        "faithfulness_score": faithfulness_score,
+        "created_at": row["created_at"],
+    }
+
+
+def get_conversation_messages(conversation_id: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = _ph(1)
+    query = f"SELECT * FROM messages WHERE conversation_id = {ph} ORDER BY id ASC"
+    cursor.execute(query, (conversation_id,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    messages = []
+    for r in rows:
+        d = dict(r)
+        d["sources"] = (
+            d["sources_json"] if isinstance(d["sources_json"], list) else json.loads(d["sources_json"] or "[]")
+        ) if d.get("sources_json") is not None else []
+        messages.append(d)
+
+    return messages[-limit:] if limit else messages
