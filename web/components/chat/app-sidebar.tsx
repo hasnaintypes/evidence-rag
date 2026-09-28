@@ -3,6 +3,7 @@
 import { useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { Network, MessagesSquare, Plus, Upload } from "lucide-react";
 import {
   Sidebar,
@@ -16,6 +17,7 @@ import {
   SidebarMenuItem,
   SidebarMenuSkeleton,
 } from "@/components/ui/sidebar";
+import { Skeleton } from "@/components/ui/skeleton";
 import { createConversation, uploadDocument } from "@/lib/api";
 import { signOut } from "@/lib/auth";
 import { useConversations } from "@/hooks/use-conversations";
@@ -30,7 +32,7 @@ export function AppSidebar() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const { conversations, isLoading, refresh: refreshConversations } = useConversations();
-  const { documents, refresh: refreshDocuments } = useDocuments();
+  const { documents, isLoading: isLoadingDocuments, refresh: refreshDocuments } = useDocuments();
   const [isPickingDoc, setIsPickingDoc] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
 
@@ -40,10 +42,14 @@ export function AppSidebar() {
   }
 
   async function pickDocument(docId: string) {
-    const conversation = await createConversation(docId);
-    setIsPickingDoc(false);
-    refreshConversations();
-    router.push(`/chat/${conversation.id}`);
+    try {
+      const conversation = await createConversation(docId);
+      setIsPickingDoc(false);
+      refreshConversations();
+      router.push(`/chat/${conversation.id}`);
+    } catch {
+      toast.error("Couldn't start a new chat.");
+    }
   }
 
   async function handleFileSelected(event: React.ChangeEvent<HTMLInputElement>) {
@@ -55,6 +61,9 @@ export function AppSidebar() {
     try {
       await uploadDocument(file);
       await refreshDocuments();
+      toast.success(`"${file.name}" uploaded and indexed.`);
+    } catch {
+      toast.error(`Couldn't upload "${file.name}".`);
     } finally {
       setIsUploading(false);
     }
@@ -108,7 +117,14 @@ export function AppSidebar() {
                     onChange={handleFileSelected}
                   />
                 </SidebarMenuItem>
-                {documents.length === 0 ? (
+                {isLoadingDocuments ? (
+                  Array.from({ length: 3 }).map((_, i) => (
+                    <div key={i} className="flex items-center gap-2 px-2 py-1.5">
+                      <Skeleton className="size-4 shrink-0 rounded" />
+                      <Skeleton className="h-4 flex-1" />
+                    </div>
+                  ))
+                ) : documents.length === 0 ? (
                   <p className="px-2 py-1.5 text-xs text-muted-foreground">No documents yet - upload one above.</p>
                 ) : (
                   documents.map((doc) => (

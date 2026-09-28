@@ -2,14 +2,21 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { GraphView } from "@/components/graph/graph-view";
+import { Skeleton } from "@/components/ui/skeleton";
 import { getDocuments, getGraphData, getGraphSection } from "@/lib/api";
+import { useAuth } from "@/hooks/use-auth";
 import type { DocumentRecord, GraphData, GraphSection } from "@/lib/types";
 
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
 export default function GraphPage() {
+  const router = useRouter();
+  const { session, isLoading: isAuthLoading } = useAuth();
+
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [selectedDocId, setSelectedDocId] = useState<string>("");
   const [graphData, setGraphData] = useState<GraphData | null>(null);
@@ -20,23 +27,34 @@ export default function GraphPage() {
   const [selectedLabel, setSelectedLabel] = useState<string>("");
 
   useEffect(() => {
+    if (!isAuthLoading && !session) {
+      router.replace("/sign-in");
+    }
+  }, [isAuthLoading, session, router]);
+
+  useEffect(() => {
+    if (!session) return;
     getDocuments()
       .then(setDocuments)
       .catch(() => {
         // Filter dropdown just stays empty (full-corpus view still works) -
         // not worth a separate error state for a non-critical control.
       });
-  }, []);
+  }, [session]);
 
   useEffect(() => {
+    if (!session) return;
     setIsLoading(true);
     setError(null);
     setSelectedSection(null);
     getGraphData(selectedDocId || undefined)
       .then(setGraphData)
-      .catch(() => setError("Couldn't load the entity graph."))
+      .catch(() => {
+        setError("Couldn't load the entity graph.");
+        toast.error("Couldn't load the entity graph.");
+      })
       .finally(() => setIsLoading(false));
-  }, [selectedDocId]);
+  }, [selectedDocId, session]);
 
   async function handleNodeClick(entityId: number) {
     const node = graphData?.nodes.find((n) => n.id === entityId);
@@ -54,6 +72,15 @@ export default function GraphPage() {
   const selectedDoc = selectedSection
     ? documents.find((doc) => doc.doc_id === selectedSection.doc_id)
     : undefined;
+
+  if (isAuthLoading || !session) {
+    return (
+      <div className="flex flex-1 flex-col gap-4 p-6">
+        <Skeleton className="h-8 w-64" />
+        <Skeleton className="h-full w-full" />
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full flex-1 flex-col">
@@ -89,7 +116,9 @@ export default function GraphPage() {
       <div className="relative flex flex-1 overflow-hidden">
         <div className="flex-1">
           {isLoading ? (
-            <p className="p-6 text-sm text-muted-foreground">Loading graph…</p>
+            <div className="flex h-full flex-col gap-3 p-6">
+              <Skeleton className="h-full w-full" />
+            </div>
           ) : error ? (
             <p className="p-6 text-sm text-destructive">{error}</p>
           ) : !graphData || graphData.nodes.length === 0 ? (
@@ -118,9 +147,11 @@ export default function GraphPage() {
             </div>
 
             {!selectedSection ? (
-              <p className="mt-3 text-xs text-muted-foreground">
-                Loading source section…
-              </p>
+              <div className="mt-3 flex flex-col gap-2">
+                <Skeleton className="h-4 w-1/2" />
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-16 w-full" />
+              </div>
             ) : (
               <div className="mt-3 flex flex-col gap-2 text-xs">
                 {selectedDoc && (

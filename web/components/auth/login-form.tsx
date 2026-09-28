@@ -4,6 +4,7 @@ import { useState } from "react"
 import type { FormEvent } from "react"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
+import { toast } from "sonner"
 import { cn } from "cn"
 
 import { Button } from "@/components/ui/button"
@@ -24,6 +25,7 @@ export function LoginForm({ className, ...props }: React.ComponentProps<"div">) 
     setIsSubmitting(true)
     try {
       await signInWithPassword(email, password)
+      toast.success("Signed in.")
       router.push("/chat")
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.")

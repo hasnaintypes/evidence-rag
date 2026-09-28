@@ -96,3 +96,15 @@ export async function sendMessage(
   });
   return response.json() as Promise<ConversationMessage>;
 }
+
+export async function restoreCheckpoint(
+  conversationId: string,
+  messageId: number
+): Promise<ConversationMessage[]> {
+  const response = await apiFetch(
+    `/conversations/${encodeURIComponent(conversationId)}/checkpoints/${messageId}/restore`,
+    { method: "POST" }
+  );
+  const data = (await response.json()) as { messages: ConversationMessage[] };
+  return data.messages;
+}

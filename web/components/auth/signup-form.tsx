@@ -3,6 +3,7 @@
 import { useState } from "react"
 import type { FormEvent } from "react"
 import Link from "next/link"
+import { toast } from "sonner"
 import { cn } from "cn"
 
 import { Button } from "@/components/ui/button"
@@ -25,6 +26,7 @@ export function SignupForm({ className, ...props }: React.ComponentProps<"div">)
     try {
       await signUp(email, password)
       setNotice("Account created - check your email to confirm, then sign in.")
+      toast.success("Account created.")
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.")
     } finally {

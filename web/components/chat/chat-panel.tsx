@@ -1,11 +1,27 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import type { FormEvent, KeyboardEvent } from "react";
-import { Button } from "@/components/ui/button";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
+import {
+  Conversation,
+  ConversationContent,
+  ConversationEmptyState,
+  ConversationScrollButton,
+} from "@/components/ai-elements/conversation";
+import {
+  PromptInput,
+  PromptInputBody,
+  PromptInputTextarea,
+  PromptInputFooter,
+  PromptInputTools,
+  PromptInputSubmit,
+} from "@/components/ai-elements/prompt-input";
+import { Attachments, Attachment, AttachmentPreview, AttachmentInfo } from "@/components/ai-elements/attachments";
+import { Checkpoint, CheckpointIcon, CheckpointTrigger } from "@/components/ai-elements/checkpoint";
 import { ChatMessageBubble } from "@/components/chat/chat-message";
-import { getConversation, sendMessage } from "@/lib/api";
-import type { ChatMessage, ConversationMessage } from "@/lib/types";
+import { Skeleton } from "@/components/ui/skeleton";
+import { getConversation, restoreCheckpoint, sendMessage } from "@/lib/api";
+import type { ChatMessage, Conversation as ConversationRecord, ConversationMessage } from "@/lib/types";
 
 let messageIdCounter = 0;
 function nextMessageId() {
@@ -16,107 +32,81 @@ function nextMessageId() {
 function fromServerMessage(m: ConversationMessage): ChatMessage {
   return {
     id: `server-${m.id}`,
+    serverId: m.id,
     role: m.role,
     content: m.content,
+    thinking: m.thinking,
     sources: m.sources,
-    faithfulness:
-      m.faithfulness_score !== null ? { score: m.faithfulness_score, unsupported_claims: [] } : undefined,
+    faithfulness: m.faithfulness_score !== null ? { score: m.faithfulness_score, unsupported_claims: [] } : undefined,
   };
 }
 
+function MessageSkeleton({ align }: { align: "start" | "end" }) {
+  return (
+    <div className={`flex w-full ${align === "end" ? "justify-end" : "justify-start"}`}>
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-4 w-48" />
+        <Skeleton className="h-4 w-32" />
+      </div>
+    </div>
+  );
+}
+
 export function ChatPanel({ conversationId }: { conversationId: string }) {
+  const [conversation, setConversation] = useState<ConversationRecord | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
-  const [input, setInput] = useState("");
   const [advancedMode, setAdvancedMode] = useState(true);
   const [isSending, setIsSending] = useState(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     getConversation(conversationId)
-      .then(({ messages: history }) => setMessages(history.map(fromServerMessage)))
-      .catch(() => setMessages([]))
+      .then(({ conversation: conv, messages: history }) => {
+        setConversation(conv);
+        setMessages(history.map(fromServerMessage));
+      })
+      .catch(() => toast.error("Couldn't load this conversation."))
       .finally(() => setIsLoadingHistory(false));
   }, [conversationId]);
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages]);
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const trimmed = input.trim();
+  async function handleSubmit({ text }: { text: string }) {
+    const trimmed = text.trim();
     if (!trimmed || isSending) return;
 
-    const userMessage: ChatMessage = {
-      id: nextMessageId(),
-      role: "user",
-      content: trimmed,
-    };
+    const userMessage: ChatMessage = { id: nextMessageId(), role: "user", content: trimmed };
     const pendingId = nextMessageId();
 
-    setMessages((prev) => [
-      ...prev,
-      userMessage,
-      { id: pendingId, role: "assistant", content: "", pending: true },
-    ]);
-    setInput("");
+    setMessages((prev) => [...prev, userMessage, { id: pendingId, role: "assistant", content: "", pending: true }]);
     setIsSending(true);
 
     try {
       const result = await sendMessage(conversationId, trimmed, advancedMode);
-      setMessages((prev) =>
-        prev.map((message) =>
-          message.id === pendingId
-            ? {
-                ...message,
-                content: result.content,
-                sources: result.sources,
-                faithfulness:
-                  result.faithfulness_score !== null
-                    ? { score: result.faithfulness_score, unsupported_claims: [] }
-                    : undefined,
-                pending: false,
-              }
-            : message
-        )
-      );
+      setMessages((prev) => prev.map((m) => (m.id === pendingId ? { ...fromServerMessage(result), id: pendingId } : m)));
     } catch (error) {
-      setMessages((prev) =>
-        prev.map((message) =>
-          message.id === pendingId
-            ? {
-                ...message,
-                content:
-                  error instanceof Error
-                    ? `Something went wrong reaching the server: ${error.message}`
-                    : "Something went wrong reaching the server.",
-                pending: false,
-                error: true,
-              }
-            : message
-        )
-      );
+      const message = error instanceof Error ? error.message : "Something went wrong reaching the server.";
+      toast.error(message);
+      setMessages((prev) => prev.map((m) => (m.id === pendingId ? { ...m, content: message, pending: false, error: true } : m)));
     } finally {
       setIsSending(false);
     }
   }
 
-  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      event.currentTarget.form?.requestSubmit();
+  async function handleRestore(messageId: number) {
+    try {
+      const remaining = await restoreCheckpoint(conversationId, messageId);
+      setMessages(remaining.map(fromServerMessage));
+      toast.success("Restored to this point in the conversation.");
+    } catch {
+      toast.error("Couldn't restore this checkpoint.");
     }
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 px-4 py-6">
-      <header className="flex items-center justify-between border-b border-border pb-4">
+    <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col">
+      <header className="flex items-center justify-between border-b border-border px-4 py-4">
         <div>
           <h1 className="text-xl font-bold tracking-tight">EvidenceRAG</h1>
-          <p className="text-xs text-muted-foreground">
-            Ask a question about this document.
-          </p>
+          <p className="text-xs text-muted-foreground">Ask a question about this document.</p>
         </div>
         <label className="flex items-center gap-2 text-xs text-muted-foreground">
           <input
@@ -129,40 +119,65 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
         </label>
       </header>
 
-      <div className="flex flex-1 flex-col gap-3">
-        {isLoadingHistory ? (
-          <p className="mt-10 text-center text-sm text-muted-foreground">Loading conversation…</p>
-        ) : messages.length === 0 ? (
-          <p className="mt-10 text-center text-sm text-muted-foreground">
-            No messages yet — ask something about this document.
-          </p>
-        ) : (
-          messages.map((message) => (
-            <ChatMessageBubble key={message.id} message={message} />
-          ))
-        )}
-        <div ref={bottomRef} />
-      </div>
-
-      <form
-        onSubmit={handleSubmit}
-        className="flex flex-col gap-2 border-t border-border pt-4"
-      >
-        <textarea
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Ask a question…"
-          rows={2}
-          disabled={isSending}
-          className="w-full resize-none rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50"
-        />
-        <div className="flex justify-end">
-          <Button type="submit" disabled={isSending || !input.trim()}>
-            {isSending ? "Sending…" : "Send"}
-          </Button>
+      {conversation?.filename && (
+        <div className="border-b border-border px-4 py-2">
+          <Attachments variant="inline">
+            <Attachment
+              data={{ type: "file", id: conversation.doc_id, filename: conversation.filename, mediaType: "application/octet-stream", url: "" }}
+            >
+              <AttachmentPreview />
+              <AttachmentInfo />
+            </Attachment>
+          </Attachments>
         </div>
-      </form>
+      )}
+
+      <Conversation>
+        <ConversationContent>
+          {isLoadingHistory ? (
+            <>
+              <MessageSkeleton align="end" />
+              <MessageSkeleton align="start" />
+            </>
+          ) : messages.length === 0 ? (
+            <ConversationEmptyState
+              title="No messages yet"
+              description="Ask something about this document to get started."
+            />
+          ) : (
+            messages.map((message, index) => {
+              const isLastAssistantTurn =
+                message.role === "assistant" && !message.pending && message.serverId !== undefined;
+              const isFinalMessage = index === messages.length - 1;
+
+              return (
+                <div key={message.id} className="flex flex-col gap-2">
+                  <ChatMessageBubble message={message} />
+                  {isLastAssistantTurn && !isFinalMessage && (
+                    <Checkpoint>
+                      <CheckpointIcon />
+                      <CheckpointTrigger tooltip="Restore conversation to this point" onClick={() => handleRestore(message.serverId!)}>
+                        Restore here
+                      </CheckpointTrigger>
+                    </Checkpoint>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </ConversationContent>
+        <ConversationScrollButton />
+      </Conversation>
+
+      <PromptInput onSubmit={handleSubmit} className="border-t border-border p-4">
+        <PromptInputBody>
+          <PromptInputTextarea placeholder="Ask a question…" disabled={isSending} />
+        </PromptInputBody>
+        <PromptInputFooter>
+          <PromptInputTools />
+          <PromptInputSubmit status={isSending ? "submitted" : undefined} disabled={isSending} />
+        </PromptInputFooter>
+      </PromptInput>
     </div>
   );
 }

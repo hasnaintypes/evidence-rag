@@ -653,3 +653,18 @@ def get_conversation_messages(conversation_id: str, limit: Optional[int] = None)
         messages.append(d)
 
     return messages[-limit:] if limit else messages
+
+
+def delete_messages_after(conversation_id: str, after_message_id: int) -> None:
+    """Rewinds a conversation to a checkpoint: deletes every message after
+    (but not including) after_message_id, so the user can continue from
+    that point instead of the current end of the conversation."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    p1, p2 = _ph(1), _ph(1)
+    cursor.execute(
+        f"DELETE FROM messages WHERE conversation_id = {p1} AND id > {p2}",
+        (conversation_id, after_message_id),
+    )
+    conn.commit()
+    conn.close()

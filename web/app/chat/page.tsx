@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useConversations } from "@/hooks/use-conversations";
+import { Skeleton } from "@/components/ui/skeleton";
 
 export default function ChatIndexPage() {
   const router = useRouter();
@@ -15,7 +16,13 @@ export default function ChatIndexPage() {
   }, [isLoading, conversations, router]);
 
   if (isLoading || conversations.length > 0) {
-    return <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">Loading…</div>;
+    return (
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 p-4">
+        <Skeleton className="h-10 w-full" />
+        <Skeleton className="h-24 w-2/3" />
+        <Skeleton className="ml-auto h-16 w-1/2" />
+      </div>
+    );
   }
 
   return (

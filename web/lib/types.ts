@@ -25,8 +25,10 @@ export type ChatApiResponse = {
 
 export type ChatMessage = {
   id: string;
+  serverId?: number; // DB row id, when this message has been persisted - used to target a checkpoint restore
   role: "user" | "assistant";
   content: string;
+  thinking?: string;
   sources?: Source[];
   faithfulness?: Faithfulness;
   pending?: boolean;
