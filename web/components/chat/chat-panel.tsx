@@ -59,9 +59,11 @@ function timeOfDayGreeting(): string {
   return "Evening";
 }
 
-function displayName(email: string | undefined): string {
-  if (!email) return "there";
-  const local = email.split("@")[0];
+function displayName(user: { email?: string; user_metadata?: { full_name?: string } } | null | undefined): string {
+  const fullName = user?.user_metadata?.full_name?.trim();
+  if (fullName) return fullName.split(" ")[0];
+  if (!user?.email) return "there";
+  const local = user.email.split("@")[0];
   return local.charAt(0).toUpperCase() + local.slice(1);
 }
 
@@ -157,7 +159,7 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
     return (
       <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center gap-6 px-4">
         <div className="flex items-center gap-2 text-3xl font-semibold tracking-tight text-foreground">
-          Good {timeOfDayGreeting()}, {displayName(user?.email)}
+          Good {timeOfDayGreeting()}, {displayName(user)}
         </div>
         {attachmentChip && <div className="flex justify-center">{attachmentChip}</div>}
         <div className="w-full">{promptInput}</div>

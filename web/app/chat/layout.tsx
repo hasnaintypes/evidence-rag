@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { AppSidebar } from "@/components/chat/app-sidebar";
-import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
+import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/hooks/use-auth";
 
@@ -45,10 +45,7 @@ export default function ChatLayout({ children }: { children: React.ReactNode }) 
   return (
     <SidebarProvider>
       <AppSidebar />
-      <SidebarInset>
-        <SidebarTrigger className="m-2" />
-        {children}
-      </SidebarInset>
+      <SidebarInset>{children}</SidebarInset>
     </SidebarProvider>
   );
 }

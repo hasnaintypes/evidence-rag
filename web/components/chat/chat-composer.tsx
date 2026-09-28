@@ -4,7 +4,6 @@ import { useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Asterisk, Paperclip } from "lucide-react";
 import {
   PromptInput,
   PromptInputBody,
@@ -18,6 +17,7 @@ import {
 import { Attachments, Attachment, AttachmentPreview, AttachmentInfo, AttachmentRemove } from "@/components/ai-elements/attachments";
 import { createConversation, sendMessage, uploadDocument } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
+import { Paperclip } from "lucide-react";
 
 const ACCEPTED_EXTENSIONS = ".md,.pdf,.docx,.xlsx,.xls,.csv";
 
@@ -28,9 +28,11 @@ function timeOfDayGreeting(): string {
   return "Evening";
 }
 
-function displayName(email: string | undefined): string {
-  if (!email) return "there";
-  const local = email.split("@")[0];
+function displayName(user: { email?: string; user_metadata?: { full_name?: string } } | null | undefined): string {
+  const fullName = user?.user_metadata?.full_name?.trim();
+  if (fullName) return fullName.split(" ")[0];
+  if (!user?.email) return "there";
+  const local = user.email.split("@")[0];
   return local.charAt(0).toUpperCase() + local.slice(1);
 }
 
@@ -77,8 +79,7 @@ export function ChatComposer() {
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center gap-6 px-4">
       <div className="flex items-center gap-2 text-3xl font-semibold tracking-tight text-foreground">
-        <Asterisk className="size-7 text-muted-foreground" />
-        Good {timeOfDayGreeting()}, {displayName(user?.email)}
+        Good {timeOfDayGreeting()}, {displayName(user)}
       </div>
 
       <div className="w-full">

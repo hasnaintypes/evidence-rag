@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input"
 import { signUp } from "@/lib/auth"
 
 export function SignupForm({ className, ...props }: React.ComponentProps<"div">) {
+  const [name, setName] = useState("")
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -24,7 +25,7 @@ export function SignupForm({ className, ...props }: React.ComponentProps<"div">)
     setNotice(null)
     setIsSubmitting(true)
     try {
-      await signUp(email, password)
+      await signUp(email, password, name.trim())
       setNotice("Account created - check your email to confirm, then sign in.")
       toast.success("Account created.")
     } catch (err) {
@@ -47,6 +48,19 @@ export function SignupForm({ className, ...props }: React.ComponentProps<"div">)
               Already have an account? <Link href="/sign-in">Sign in</Link>
             </FieldDescription>
           </div>
+
+          <Field>
+            <FieldLabel htmlFor="name">Name</FieldLabel>
+            <Input
+              id="name"
+              type="text"
+              placeholder="Hasnain"
+              required
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              autoComplete="name"
+            />
+          </Field>
 
           <Field>
             <FieldLabel htmlFor="email">Email</FieldLabel>
