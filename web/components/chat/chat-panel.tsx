@@ -79,7 +79,6 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
   const [conversation, setConversation] = useState<ConversationRecord | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
-  const [advancedMode, setAdvancedMode] = useState(true);
   const [isSending, setIsSending] = useState(false);
   const [isAttaching, setIsAttaching] = useState(false);
 
@@ -104,7 +103,7 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
     setIsSending(true);
 
     try {
-      const result = await sendMessage(conversationId, trimmed, advancedMode);
+      const result = await sendMessage(conversationId, trimmed, true);
       setMessages((prev) => prev.map((m) => (m.id === pendingId ? { ...fromServerMessage(result), id: pendingId } : m)));
     } catch (error) {
       const message = error instanceof Error ? error.message : "Something went wrong reaching the server.";
@@ -145,18 +144,6 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
     }
   }
 
-  const advancedModeToggle = (
-    <label className="flex items-center gap-2 text-xs text-muted-foreground">
-      <input
-        type="checkbox"
-        checked={advancedMode}
-        onChange={(event) => setAdvancedMode(event.target.checked)}
-        className="size-3.5 accent-foreground"
-      />
-      Advanced retrieval
-    </label>
-  );
-
   const atDocCap = (conversation?.doc_ids.length ?? 0) >= MAX_CONVERSATION_DOCS;
 
   const promptInput = (
@@ -181,7 +168,6 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
             className="hidden"
             onChange={handleAttachFile}
           />
-          {advancedModeToggle}
         </PromptInputTools>
         <PromptInputSubmit status={isSending ? "submitted" : undefined} disabled={isSending} />
       </PromptInputFooter>

@@ -55,8 +55,10 @@ import {
   PopoverTrigger,
   PopoverContent,
 } from "@/components/ui/popover";
+import { SettingsDialog } from "@/components/settings/settings-dialog";
 import { signOut } from "@/lib/auth";
 import { deleteConversation, updateConversation } from "@/lib/api";
+import { avatarUrl } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
 import { useConversations } from "@/hooks/use-conversations";
 import type { Conversation } from "@/lib/types";
@@ -72,10 +74,6 @@ function displayName(email: string | undefined, fullName: string | undefined): s
   return email.split("@")[0];
 }
 
-function avatarUrl(seed: string | undefined): string {
-  return `https://api.dicebear.com/9.x/initials/svg?seed=${encodeURIComponent(seed ?? "?")}&backgroundType=gradientLinear`;
-}
-
 export function AppSidebar() {
   const pathname = usePathname();
   const router = useRouter();
@@ -86,9 +84,12 @@ export function AppSidebar() {
   const [renameTarget, setRenameTarget] = useState<Conversation | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const fullName = (user?.user_metadata as { full_name?: string } | undefined)?.full_name;
+  const metadata = user?.user_metadata as { full_name?: string; avatar_seed?: string } | undefined;
+  const fullName = metadata?.full_name;
   const name = displayName(user?.email, fullName);
+  const avatarSeed = metadata?.avatar_seed ?? fullName ?? user?.email;
 
   async function handleTogglePin(conversation: Conversation) {
     try {
@@ -171,7 +172,7 @@ export function AppSidebar() {
   const userSummary = (
     <>
       <Avatar>
-        <AvatarImage src={avatarUrl(fullName ?? user?.email)} alt={name} />
+        <AvatarImage src={avatarUrl(avatarSeed)} alt={name} />
         <AvatarFallback>{name.charAt(0).toUpperCase()}</AvatarFallback>
       </Avatar>
       <div className="grid flex-1 text-left text-sm leading-tight group-data-[collapsible=icon]:hidden">
@@ -277,8 +278,8 @@ export function AppSidebar() {
             </PopoverTrigger>
             <PopoverContent className="w-56 p-1" side="top" align="end" sideOffset={8}>
               <button
-                disabled
-                className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-sm text-foreground opacity-50 disabled:pointer-events-none [&_svg]:size-4"
+                onClick={() => setSettingsOpen(true)}
+                className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-sm hover:bg-accent hover:text-accent-foreground [&_svg]:size-4"
               >
                 <Settings />
                 Settings
@@ -341,6 +342,8 @@ export function AppSidebar() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} user={user} />
     </Sidebar>
   );
 }
