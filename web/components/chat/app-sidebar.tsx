@@ -10,8 +10,6 @@ import {
   Plus,
   FileText,
   Settings,
-  HelpCircle,
-  LogOut,
   MoreHorizontal,
   Pin,
   PinOff,
@@ -50,13 +48,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
-import {
-  Popover,
-  PopoverTrigger,
-  PopoverContent,
-} from "@/components/ui/popover";
 import { SettingsDialog } from "@/components/settings/settings-dialog";
-import { signOut } from "@/lib/auth";
 import { deleteConversation, updateConversation } from "@/lib/api";
 import { avatarUrl } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
@@ -263,46 +255,15 @@ export function AppSidebar() {
       <SidebarFooter>
         <div className="flex items-center gap-2 px-1 py-1">
           {userSummary}
-          <Popover>
-            <PopoverTrigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden"
-                />
-              }
-            >
-              <Settings className="size-4" />
-              <span className="sr-only">Settings</span>
-            </PopoverTrigger>
-            <PopoverContent className="w-56 p-1" side="top" align="end" sideOffset={8}>
-              <button
-                onClick={() => setSettingsOpen(true)}
-                className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-sm hover:bg-accent hover:text-accent-foreground [&_svg]:size-4"
-              >
-                <Settings />
-                Settings
-              </button>
-              <a
-                href="https://github.com/hasnaintypes/evidence-rag#readme"
-                target="_blank"
-                rel="noreferrer"
-                className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-sm hover:bg-accent hover:text-accent-foreground [&_svg]:size-4"
-              >
-                <HelpCircle />
-                Help
-              </a>
-              <div className="my-1 h-px bg-border" />
-              <button
-                onClick={() => signOut().then(() => router.push("/sign-in"))}
-                className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-sm text-destructive hover:bg-destructive/10 [&_svg]:size-4"
-              >
-                <LogOut />
-                Log out
-              </button>
-            </PopoverContent>
-          </Popover>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <Settings className="size-4" />
+            <span className="sr-only">Settings</span>
+          </Button>
         </div>
       </SidebarFooter>
 

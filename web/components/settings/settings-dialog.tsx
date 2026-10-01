@@ -196,10 +196,10 @@ export function SettingsDialog({
         if (next) setActiveSection("profile");
       }}
     >
-      <DialogContent className="flex h-[28rem] max-w-2xl flex-row gap-0 overflow-hidden p-0 sm:max-w-2xl">
+      <DialogContent className="flex h-[40rem] max-w-4xl flex-row gap-0 overflow-hidden p-0 sm:max-w-4xl">
         <DialogTitle className="sr-only">Settings</DialogTitle>
 
-        <aside className="flex w-44 shrink-0 flex-col gap-0.5 border-r border-border bg-muted/30 p-3">
+        <aside className="flex w-56 shrink-0 flex-col gap-0.5 border-r border-border bg-muted/30 p-3">
           <p className="mb-2 px-2.5 text-xs font-medium text-muted-foreground">Settings</p>
           {SECTIONS.map((section) => (
             <button
@@ -219,11 +219,13 @@ export function SettingsDialog({
           ))}
         </aside>
 
-        <div className="flex-1 overflow-y-auto p-6">
-          {activeSection === "profile" && <ProfileSection key={user.id} user={user} />}
-          {activeSection === "account" && (
-            <AccountSection user={user} onSignOut={() => signOut().then(() => onOpenChange(false))} />
-          )}
+        <div className="flex-1 overflow-y-auto p-8">
+          <div className="mx-auto max-w-xl">
+            {activeSection === "profile" && <ProfileSection key={user.id} user={user} />}
+            {activeSection === "account" && (
+              <AccountSection user={user} onSignOut={() => signOut().then(() => onOpenChange(false))} />
+            )}
+          </div>
         </div>
       </DialogContent>
     </Dialog>
