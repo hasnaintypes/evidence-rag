@@ -107,7 +107,7 @@ def hybrid_retrieve(
     query_embedding: List[float],
     top_k: int = 5,
     rrf_k: int = 60,
-    doc_id: Optional[str] = None,
+    doc_ids: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Executes hybrid search combining BM25 (sparse) and dense cosine
@@ -124,10 +124,10 @@ def hybrid_retrieve(
         query_embedding: Query vector for dense semantic similarity.
         top_k: Number of top fused results to return.
         rrf_k: RRF penalty constant controlling rank-position weighting.
-        doc_id: If set, scores are still computed against the full cached
+        doc_ids: If set, scores are still computed against the full cached
             corpus (ranks stay meaningful/cheap), but results are filtered
-            to this document before the top_k slice - conversations are
-            scoped to one document, so there's no need for a separate
+            to this list before the top_k slice - conversations are scoped
+            to up to 5 documents, so there's no need for a separate
             per-document index.
     """
     index = _get_index()
@@ -180,9 +180,10 @@ def hybrid_retrieve(
     sorted_chunks_by_rrf = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
 
     chunk_map = {chunk["id"]: chunk for chunk in all_chunks}
-    if doc_id:
+    if doc_ids:
+        doc_id_set = set(doc_ids)
         sorted_chunks_by_rrf = [
-            (chunk_id, score) for chunk_id, score in sorted_chunks_by_rrf if chunk_map[chunk_id].get("doc_id") == doc_id
+            (chunk_id, score) for chunk_id, score in sorted_chunks_by_rrf if chunk_map[chunk_id].get("doc_id") in doc_id_set
         ]
 
     final_retrieved_chunks = []

@@ -14,6 +14,8 @@ An explainable document question-answering system that parses technical document
 [![Gemini](https://img.shields.io/badge/LLM-Gemini-107C10?style=flat-square)](#architecture)
 [![Supabase](https://img.shields.io/badge/Auth-Supabase-3ECF8E?style=flat-square&logo=supabase&logoColor=white)](#authentication--conversations)
 
+**[Try the live demo →](https://evidence-rag.vercel.app)** — preloaded with the sample docs below, no setup required.
+
 </div>
 
 ---

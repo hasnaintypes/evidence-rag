@@ -1,6 +1,9 @@
 // Mirrors the JSON shape returned by the backend's POST /chat endpoint
 // (see server/src/query_pipeline.py's process_chat_query return dict).
 
+// Mirrors MAX_CONVERSATION_DOCS in server/src/storage/database.py.
+export const MAX_CONVERSATION_DOCS = 5;
+
 export type Source = {
   index: number;
   document: string;
@@ -52,8 +55,9 @@ export type DocumentRecord = {
 // (server/api/routers/conversations.py).
 export type Conversation = {
   id: string;
-  doc_id: string;
-  filename: string | null;
+  doc_ids: string[];
+  filenames: (string | null)[];
+  pinned: boolean;
   title: string | null;
   created_at: string;
   updated_at: string;

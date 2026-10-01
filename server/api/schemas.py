@@ -1,5 +1,5 @@
 from typing import Any, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ChatMessageIn(BaseModel):
@@ -8,13 +8,23 @@ class ChatMessageIn(BaseModel):
 
 
 class ConversationCreate(BaseModel):
+    doc_ids: list[str] = Field(min_length=1, max_length=5)
+
+
+class ConversationUpdate(BaseModel):
+    title: Optional[str] = None
+    pinned: Optional[bool] = None
+
+
+class AddConversationDocument(BaseModel):
     doc_id: str
 
 
 class ConversationOut(BaseModel):
     id: str
-    doc_id: str
-    filename: Optional[str] = None
+    doc_ids: list[str]
+    filenames: list[Optional[str]] = []
+    pinned: bool = False
     title: Optional[str] = None
     created_at: Any
     updated_at: Any

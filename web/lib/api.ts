@@ -66,11 +66,35 @@ export async function listConversations(): Promise<Conversation[]> {
   return data.conversations;
 }
 
-export async function createConversation(docId: string): Promise<Conversation> {
+export async function createConversation(docIds: string[]): Promise<Conversation> {
   const response = await apiFetch("/conversations", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ doc_ids: docIds }),
+  });
+  return response.json() as Promise<Conversation>;
+}
+
+export async function addDocumentToConversation(
+  conversationId: string,
+  docId: string
+): Promise<Conversation> {
+  const response = await apiFetch(`/conversations/${encodeURIComponent(conversationId)}/documents`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ doc_id: docId }),
+  });
+  return response.json() as Promise<Conversation>;
+}
+
+export async function updateConversation(
+  conversationId: string,
+  updates: { title?: string; pinned?: boolean }
+): Promise<Conversation> {
+  const response = await apiFetch(`/conversations/${encodeURIComponent(conversationId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
   });
   return response.json() as Promise<Conversation>;
 }

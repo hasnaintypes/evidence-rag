@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { ChangeEvent } from "react";
 import { toast } from "sonner";
 import {
   Conversation,
@@ -13,15 +14,20 @@ import {
   PromptInputTextarea,
   PromptInputFooter,
   PromptInputTools,
+  PromptInputButton,
   PromptInputSubmit,
 } from "@/components/ai-elements/prompt-input";
 import { Attachments, Attachment, AttachmentPreview, AttachmentInfo } from "@/components/ai-elements/attachments";
 import { Checkpoint, CheckpointIcon, CheckpointTrigger } from "@/components/ai-elements/checkpoint";
 import { ChatMessageBubble } from "@/components/chat/chat-message";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getConversation, restoreCheckpoint, sendMessage } from "@/lib/api";
+import { addDocumentToConversation, getConversation, restoreCheckpoint, sendMessage, uploadDocument } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
+import { MAX_CONVERSATION_DOCS } from "@/lib/types";
 import type { ChatMessage, Conversation as ConversationRecord, ConversationMessage } from "@/lib/types";
+import { Loader2, Paperclip } from "lucide-react";
+
+const ACCEPTED_EXTENSIONS = ".md,.pdf,.docx,.xlsx,.xls,.csv";
 
 let messageIdCounter = 0;
 function nextMessageId() {
@@ -69,11 +75,13 @@ function displayName(user: { email?: string; user_metadata?: { full_name?: strin
 
 export function ChatPanel({ conversationId }: { conversationId: string }) {
   const { user } = useAuth();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [conversation, setConversation] = useState<ConversationRecord | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [advancedMode, setAdvancedMode] = useState(true);
   const [isSending, setIsSending] = useState(false);
+  const [isAttaching, setIsAttaching] = useState(false);
 
   useEffect(() => {
     getConversation(conversationId)
@@ -107,6 +115,26 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
     }
   }
 
+  async function handleAttachFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+
+    setIsAttaching(true);
+    const toastId = toast.loading(`Processing "${file.name}"…`);
+    try {
+      const { docId } = await uploadDocument(file);
+      const updated = await addDocumentToConversation(conversationId, docId);
+      setConversation(updated);
+      toast.success(`"${file.name}" added to this chat.`, { id: toastId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : `Couldn't attach "${file.name}".`;
+      toast.error(message, { id: toastId });
+    } finally {
+      setIsAttaching(false);
+    }
+  }
+
   async function handleRestore(messageId: number) {
     try {
       const remaining = await restoreCheckpoint(conversationId, messageId);
@@ -129,26 +157,54 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
     </label>
   );
 
+  const atDocCap = (conversation?.doc_ids.length ?? 0) >= MAX_CONVERSATION_DOCS;
+
   const promptInput = (
     <PromptInput onSubmit={handleSubmit}>
       <PromptInputBody>
         <PromptInputTextarea placeholder="Ask a question…" disabled={isSending} />
       </PromptInputBody>
       <PromptInputFooter>
-        <PromptInputTools>{advancedModeToggle}</PromptInputTools>
+        <PromptInputTools>
+          <PromptInputButton
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isSending || isAttaching || atDocCap}
+            tooltip={atDocCap ? `Max ${MAX_CONVERSATION_DOCS} documents per chat` : "Attach a document"}
+          >
+            {isAttaching ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
+          </PromptInputButton>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept={ACCEPTED_EXTENSIONS}
+            className="hidden"
+            onChange={handleAttachFile}
+          />
+          {advancedModeToggle}
+        </PromptInputTools>
         <PromptInputSubmit status={isSending ? "submitted" : undefined} disabled={isSending} />
       </PromptInputFooter>
     </PromptInput>
   );
 
-  const attachmentChip = conversation?.filename && (
+  const attachmentChip = conversation && conversation.doc_ids.length > 0 && (
     <Attachments variant="inline">
-      <Attachment
-        data={{ type: "file", id: conversation.doc_id, filename: conversation.filename, mediaType: "application/octet-stream", url: "" }}
-      >
-        <AttachmentPreview />
-        <AttachmentInfo />
-      </Attachment>
+      {conversation.doc_ids.map((docId, index) => (
+        <Attachment
+          key={docId}
+          data={{
+            type: "file",
+            id: docId,
+            filename: conversation.filenames[index] ?? docId,
+            mediaType: "application/octet-stream",
+            url: "",
+          }}
+        >
+          <AttachmentPreview />
+          <AttachmentInfo />
+        </Attachment>
+      ))}
     </Attachments>
   );
 

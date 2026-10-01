@@ -13,14 +13,14 @@ MAX_HOPS = 2  # initial retrieval pass + at most 1 follow-up hop, never more
 SNIPPET_MAX_CHARS = 280  # citation snippet length - enough to verify a claim, not the whole chunk
 
 
-def _retrieve(query_text: str, query_embedding: list, top_k: int, doc_id: str = None) -> list:
+def _retrieve(query_text: str, query_embedding: list, top_k: int, doc_ids: list = None) -> list:
     """
     Returns (id, chunk_text, source_file, page_number, node_type,
     heading_path, parent_id, rrf_score) tuples, consumed unmodified by
     every downstream stage (rerank, grade, compress, parent-expansion,
     follow-up hop).
     """
-    return hybrid_retrieve(query_text=query_text, query_embedding=query_embedding, top_k=top_k, doc_id=doc_id)
+    return hybrid_retrieve(query_text=query_text, query_embedding=query_embedding, top_k=top_k, doc_ids=doc_ids)
 
 
 def _format_history(history: list) -> str:
@@ -37,7 +37,7 @@ def _format_history(history: list) -> str:
     return "CONVERSATION SO FAR:\n" + "\n".join(lines) + "\n\n"
 
 
-def process_chat_query(query: str, advanced_mode: bool = True, doc_id: str = None, history: list = None) -> dict:
+def process_chat_query(query: str, advanced_mode: bool = True, doc_ids: list = None, history: list = None) -> dict:
     """
     RAG pipeline: query expansion -> hybrid retrieval -> rerank -> grade ->
     compress (+ parent expansion) -> [optional single follow-up hop] -> generate.
@@ -48,8 +48,8 @@ def process_chat_query(query: str, advanced_mode: bool = True, doc_id: str = Non
     is worse than an explicit "insufficient context" reply, because it
     fails silently on any query the fallback list wasn't written for.
 
-    doc_id: scopes retrieval to a single document (conversations are
-    attached to exactly one document - see api/routers/conversations.py).
+    doc_ids: scopes retrieval to a conversation's attached documents (up to
+    5 - see api/routers/conversations.py).
     history: prior turns in the conversation, [{"role", "content"}, ...],
     folded into the generation prompt so follow-ups resolve correctly.
     """
@@ -73,7 +73,7 @@ def process_chat_query(query: str, advanced_mode: bool = True, doc_id: str = Non
 
     search_width = 8 if advanced_mode else 4
     for q_track in expanded_queries:
-        retrieved = _retrieve(query_text=q_track, query_embedding=query_embedding, top_k=search_width, doc_id=doc_id)
+        retrieved = _retrieve(query_text=q_track, query_embedding=query_embedding, top_k=search_width, doc_ids=doc_ids)
         for chunk in retrieved:
             if chunk["id"] not in seen_chunk_ids:
                 seen_chunk_ids.add(chunk["id"])
@@ -138,7 +138,7 @@ def process_chat_query(query: str, advanced_mode: bool = True, doc_id: str = Non
             followup_candidates = []
             for sub_q in subqueries:
                 sub_embedding = get_embedding(sub_q)
-                retrieved = _retrieve(query_text=sub_q, query_embedding=sub_embedding, top_k=search_width, doc_id=doc_id)
+                retrieved = _retrieve(query_text=sub_q, query_embedding=sub_embedding, top_k=search_width, doc_ids=doc_ids)
                 for chunk in retrieved:
                     if chunk["id"] not in seen_chunk_ids:
                         seen_chunk_ids.add(chunk["id"])

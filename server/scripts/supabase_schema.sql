@@ -29,11 +29,19 @@ alter table documents add column if not exists user_id text;
 create table if not exists conversations (
     id text primary key,
     user_id text not null,
-    doc_id text not null,
+    doc_ids text not null,
+    pinned boolean not null default false,
     title text,
     created_at timestamptz default now(),
     updated_at timestamptz default now()
 );
+
+-- Migration for conversations tables created before multi-document chats -
+-- doc_ids stores a JSON array of doc_id strings (max 5), replacing the old
+-- single doc_id column.
+alter table conversations drop column if exists doc_id;
+alter table conversations add column if not exists doc_ids text not null default '[]';
+alter table conversations add column if not exists pinned boolean not null default false;
 
 create table if not exists messages (
     id serial primary key,

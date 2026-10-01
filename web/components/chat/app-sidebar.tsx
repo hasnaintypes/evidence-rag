@@ -1,8 +1,23 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
-import { Network, MessagesSquare, Plus, FileText, Settings, HelpCircle, LogOut, ChevronsUpDown } from "lucide-react";
+import { toast } from "sonner";
+import {
+  Network,
+  MessagesSquare,
+  Plus,
+  FileText,
+  Settings,
+  HelpCircle,
+  LogOut,
+  MoreHorizontal,
+  Pin,
+  PinOff,
+  Pencil,
+  Trash2,
+} from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -12,24 +27,39 @@ import {
   SidebarHeader,
   SidebarFooter,
   SidebarMenu,
+  SidebarMenuAction,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarMenuSkeleton,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogClose,
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
   DropdownMenuContent,
-  DropdownMenuLabel,
-  DropdownMenuGroup,
   DropdownMenuItem,
-  DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import {
+  Popover,
+  PopoverTrigger,
+  PopoverContent,
+} from "@/components/ui/popover";
 import { signOut } from "@/lib/auth";
+import { deleteConversation, updateConversation } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { useConversations } from "@/hooks/use-conversations";
+import type { Conversation } from "@/lib/types";
 
 const NAV_LINKS = [
   { href: "/documents", label: "Documents", icon: FileText },
@@ -52,10 +82,91 @@ export function AppSidebar() {
   const params = useParams<{ conversationId?: string }>();
 
   const { user } = useAuth();
-  const { conversations, isLoading } = useConversations();
+  const { conversations, isLoading, refresh } = useConversations();
+  const [renameTarget, setRenameTarget] = useState<Conversation | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
 
   const fullName = (user?.user_metadata as { full_name?: string } | undefined)?.full_name;
   const name = displayName(user?.email, fullName);
+
+  async function handleTogglePin(conversation: Conversation) {
+    try {
+      await updateConversation(conversation.id, { pinned: !conversation.pinned });
+      refresh();
+    } catch {
+      toast.error("Couldn't update this chat.");
+    }
+  }
+
+  function openRename(conversation: Conversation) {
+    setRenameTarget(conversation);
+    setRenameValue(conversation.title ?? "");
+  }
+
+  async function submitRename() {
+    if (!renameTarget) return;
+    const title = renameValue.trim();
+    if (!title) return;
+    try {
+      await updateConversation(renameTarget.id, { title });
+      setRenameTarget(null);
+      refresh();
+    } catch {
+      toast.error("Couldn't rename this chat.");
+    }
+  }
+
+  async function confirmDelete() {
+    if (!deleteTarget) return;
+    try {
+      await deleteConversation(deleteTarget.id);
+      const wasActive = params.conversationId === deleteTarget.id;
+      setDeleteTarget(null);
+      refresh();
+      if (wasActive) router.push("/chat/new");
+    } catch {
+      toast.error("Couldn't delete this chat.");
+    }
+  }
+
+  const pinnedConversations = conversations.filter((c) => c.pinned);
+  const unpinnedConversations = conversations.filter((c) => !c.pinned);
+
+  function renderConversationItem(conversation: Conversation) {
+    return (
+      <SidebarMenuItem key={conversation.id}>
+        <SidebarMenuButton
+          isActive={params.conversationId === conversation.id}
+          tooltip={conversation.title ?? conversation.filenames[0] ?? undefined}
+          render={<Link href={`/chat/${conversation.id}`} />}
+        >
+          <MessagesSquare />
+          <span className="truncate">{conversation.title ?? conversation.filenames[0] ?? "New chat"}</span>
+        </SidebarMenuButton>
+        <DropdownMenu>
+          <DropdownMenuTrigger render={<SidebarMenuAction showOnHover />}>
+            <MoreHorizontal />
+            <span className="sr-only">Chat options</span>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" side="right" sideOffset={8}>
+            <DropdownMenuItem onClick={() => handleTogglePin(conversation)}>
+              {conversation.pinned ? <PinOff /> : <Pin />}
+              {conversation.pinned ? "Unpin" : "Pin"}
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => openRename(conversation)}>
+              <Pencil />
+              Rename
+            </DropdownMenuItem>
+            <DropdownMenuItem variant="destructive" onClick={() => setDeleteTarget(conversation)}>
+              <Trash2 />
+              Delete
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </SidebarMenuItem>
+    );
+  }
 
   const userSummary = (
     <>
@@ -106,90 +217,130 @@ export function AppSidebar() {
           </SidebarGroupContent>
         </SidebarGroup>
 
-        <SidebarGroup>
-          <SidebarGroupLabel>Conversations</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {isLoading ? (
-                Array.from({ length: 3 }).map((_, i) => (
+        {isLoading ? (
+          <SidebarGroup>
+            <SidebarGroupLabel>Conversations</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {Array.from({ length: 3 }).map((_, i) => (
                   <SidebarMenuItem key={i}>
                     <SidebarMenuSkeleton />
                   </SidebarMenuItem>
-                ))
-              ) : conversations.length === 0 ? (
-                <p className="px-2 py-1.5 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
-                  No conversations yet.
-                </p>
-              ) : (
-                conversations.map((conversation) => (
-                  <SidebarMenuItem key={conversation.id}>
-                    <SidebarMenuButton
-                      isActive={params.conversationId === conversation.id}
-                      tooltip={conversation.title ?? conversation.filename ?? undefined}
-                      render={<Link href={`/chat/${conversation.id}`} />}
-                    >
-                      <MessagesSquare />
-                      <span className="truncate">{conversation.title ?? conversation.filename ?? "New chat"}</span>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
-                ))
-              )}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ) : conversations.length === 0 ? (
+          <SidebarGroup>
+            <SidebarGroupLabel>Conversations</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <p className="px-2 py-1.5 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
+                No conversations yet.
+              </p>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ) : (
+          <>
+            {pinnedConversations.length > 0 && (
+              <SidebarGroup>
+                <SidebarGroupLabel>Pinned</SidebarGroupLabel>
+                <SidebarGroupContent>
+                  <SidebarMenu>{pinnedConversations.map(renderConversationItem)}</SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+            )}
+            <SidebarGroup>
+              <SidebarGroupLabel>Conversations</SidebarGroupLabel>
+              <SidebarGroupContent>
+                <SidebarMenu>{unpinnedConversations.map(renderConversationItem)}</SidebarMenu>
+              </SidebarGroupContent>
+            </SidebarGroup>
+          </>
+        )}
       </SidebarContent>
 
       <SidebarFooter>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <SidebarMenuButton
-                    size="lg"
-                    className="data-popup-open:bg-sidebar-accent data-popup-open:text-sidebar-accent-foreground"
-                  />
-                }
+        <div className="flex items-center gap-2 px-1 py-1">
+          {userSummary}
+          <Popover>
+            <PopoverTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden"
+                />
+              }
+            >
+              <Settings className="size-4" />
+              <span className="sr-only">Settings</span>
+            </PopoverTrigger>
+            <PopoverContent className="w-56 p-1" side="top" align="end" sideOffset={8}>
+              <button
+                disabled
+                className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-sm text-foreground opacity-50 disabled:pointer-events-none [&_svg]:size-4"
               >
-                {userSummary}
-                <ChevronsUpDown className="ml-auto size-4 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                className="min-w-56 rounded-lg"
-                side="top"
-                align="start"
-                sideOffset={8}
+                <Settings />
+                Settings
+              </button>
+              <a
+                href="https://github.com/hasnaintypes/evidence-rag#readme"
+                target="_blank"
+                rel="noreferrer"
+                className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-sm hover:bg-accent hover:text-accent-foreground [&_svg]:size-4"
               >
-                <DropdownMenuGroup>
-                  <DropdownMenuLabel className="p-0 font-normal">
-                    <div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">{userSummary}</div>
-                  </DropdownMenuLabel>
-                </DropdownMenuGroup>
-                <DropdownMenuSeparator />
-                <DropdownMenuGroup>
-                  <DropdownMenuItem disabled>
-                    <Settings />
-                    Settings
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    render={
-                      <a href="https://github.com/hasnaintypes/evidence-rag#readme" target="_blank" rel="noreferrer" />
-                    }
-                  >
-                    <HelpCircle />
-                    Help
-                  </DropdownMenuItem>
-                </DropdownMenuGroup>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem variant="destructive" onClick={() => signOut().then(() => router.push("/sign-in"))}>
-                  <LogOut />
-                  Log out
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </SidebarMenuItem>
-        </SidebarMenu>
+                <HelpCircle />
+                Help
+              </a>
+              <div className="my-1 h-px bg-border" />
+              <button
+                onClick={() => signOut().then(() => router.push("/sign-in"))}
+                className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-sm text-destructive hover:bg-destructive/10 [&_svg]:size-4"
+              >
+                <LogOut />
+                Log out
+              </button>
+            </PopoverContent>
+          </Popover>
+        </div>
       </SidebarFooter>
+
+      <Dialog open={!!renameTarget} onOpenChange={(open) => !open && setRenameTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Rename this chat</DialogTitle>
+          </DialogHeader>
+          <Input
+            value={renameValue}
+            onChange={(event) => setRenameValue(event.target.value)}
+            onKeyDown={(event) => event.key === "Enter" && submitRename()}
+            autoFocus
+          />
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
+            <Button onClick={submitRename} disabled={!renameValue.trim()}>
+              Rename
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete this chat?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {`"${deleteTarget?.title ?? deleteTarget?.filenames[0] ?? "This chat"}" and all its messages will be permanently deleted.`}
+          </p>
+          <DialogFooter>
+            <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
+            <Button variant="destructive" onClick={confirmDelete}>
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Sidebar>
   );
 }

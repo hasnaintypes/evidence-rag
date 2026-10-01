@@ -73,7 +73,8 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS conversations (
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
-            doc_id TEXT NOT NULL,
+            doc_ids TEXT NOT NULL,
+            pinned INTEGER NOT NULL DEFAULT 0,
             title TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -516,39 +517,64 @@ def get_graph_data(doc_id: Optional[str] = None) -> Dict[str, Any]:
 # Conversations + messages (per-document chat sessions)
 # --------------------------------------------------------------------------- #
 
-def create_conversation(conversation_id: str, user_id: str, doc_id: str) -> None:
+MAX_CONVERSATION_DOCS = 5
+
+
+def _filenames_for_doc_ids(cursor, doc_ids: List[str]) -> Dict[str, str]:
+    """Batch-fetches filename for each doc_id (one query regardless of how
+    many conversations/doc_ids are involved), since doc_ids is a JSON
+    column and can't be SQL-joined directly."""
+    if not doc_ids:
+        return {}
+    ph = _ph(len(doc_ids))
+    cursor.execute(f"SELECT doc_id, filename FROM documents WHERE doc_id IN ({ph})", tuple(doc_ids))
+    return {r["doc_id"]: r["filename"] for r in cursor.fetchall()}
+
+
+def _hydrate_conversation_row(row: Dict[str, Any], filename_map: Dict[str, str]) -> Dict[str, Any]:
+    doc_ids = json.loads(row["doc_ids"])
+    row["doc_ids"] = doc_ids
+    row["filenames"] = [filename_map.get(d) for d in doc_ids]
+    row["pinned"] = bool(row["pinned"])
+    return row
+
+
+def create_conversation(conversation_id: str, user_id: str, doc_ids: List[str]) -> None:
     conn = get_db_connection()
     cursor = conn.cursor()
     if settings.storage_mode == "supabase":
         cursor.execute(
-            "INSERT INTO conversations (id, user_id, doc_id) VALUES (%s, %s, %s)",
-            (conversation_id, user_id, doc_id),
+            "INSERT INTO conversations (id, user_id, doc_ids) VALUES (%s, %s, %s)",
+            (conversation_id, user_id, json.dumps(doc_ids)),
         )
     else:
         cursor.execute(
-            "INSERT INTO conversations (id, user_id, doc_id) VALUES (?, ?, ?)",
-            (conversation_id, user_id, doc_id),
+            "INSERT INTO conversations (id, user_id, doc_ids) VALUES (?, ?, ?)",
+            (conversation_id, user_id, json.dumps(doc_ids)),
         )
     conn.commit()
     conn.close()
 
 
 def list_conversations(user_id: str) -> List[Dict[str, Any]]:
-    """Joins in the conversation's document filename so the sidebar doesn't
-    need a second round trip per conversation to show what it's about."""
+    """Pinned conversations first, then most-recently-updated. Document
+    filenames are resolved with one batched query across all conversations
+    rather than per-conversation (doc_ids is JSON, so it can't be SQL-joined
+    like the old single-doc_id column was)."""
     conn = get_db_connection()
     cursor = conn.cursor()
     ph = _ph(1)
     cursor.execute(f"""
-        SELECT c.id, c.doc_id, c.title, c.created_at, c.updated_at, d.filename
-        FROM conversations c
-        LEFT JOIN documents d ON d.doc_id = c.doc_id
-        WHERE c.user_id = {ph}
-        ORDER BY c.updated_at DESC
+        SELECT id, doc_ids, pinned, title, created_at, updated_at
+        FROM conversations
+        WHERE user_id = {ph}
+        ORDER BY pinned DESC, updated_at DESC
     """, (user_id,))
-    rows = cursor.fetchall()
+    rows = [dict(r) for r in cursor.fetchall()]
+    all_doc_ids = {d for r in rows for d in json.loads(r["doc_ids"])}
+    filename_map = _filenames_for_doc_ids(cursor, list(all_doc_ids))
     conn.close()
-    return [dict(r) for r in rows]
+    return [_hydrate_conversation_row(r, filename_map) for r in rows]
 
 
 def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
@@ -557,8 +583,71 @@ def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
     ph = _ph(1)
     cursor.execute(f"SELECT * FROM conversations WHERE id = {ph}", (conversation_id,))
     row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return None
+    row = dict(row)
+    filename_map = _filenames_for_doc_ids(cursor, json.loads(row["doc_ids"]))
     conn.close()
-    return dict(row) if row else None
+    return _hydrate_conversation_row(row, filename_map)
+
+
+def add_document_to_conversation(conversation_id: str, doc_id: str) -> List[str]:
+    """Appends doc_id to a conversation's document set, capped at
+    MAX_CONVERSATION_DOCS. Raises ValueError on cap/duplicate so the router
+    can turn it into a 400."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = _ph(1)
+    cursor.execute(f"SELECT doc_ids FROM conversations WHERE id = {ph}", (conversation_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        raise ValueError("Conversation not found.")
+    doc_ids = json.loads(row["doc_ids"])
+    if doc_id in doc_ids:
+        conn.close()
+        raise ValueError("Document is already attached to this conversation.")
+    if len(doc_ids) >= MAX_CONVERSATION_DOCS:
+        conn.close()
+        raise ValueError(f"A conversation can have at most {MAX_CONVERSATION_DOCS} documents.")
+    doc_ids.append(doc_id)
+    if settings.storage_mode == "supabase":
+        cursor.execute(
+            "UPDATE conversations SET doc_ids = %s, updated_at = now() WHERE id = %s",
+            (json.dumps(doc_ids), conversation_id),
+        )
+    else:
+        cursor.execute(
+            "UPDATE conversations SET doc_ids = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (json.dumps(doc_ids), conversation_id),
+        )
+    conn.commit()
+    conn.close()
+    return doc_ids
+
+
+def update_conversation(
+    conversation_id: str, title: Optional[str] = None, pinned: Optional[bool] = None
+) -> None:
+    """Partial update for rename/pin - only touches the fields passed in."""
+    if title is None and pinned is None:
+        return
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = _ph(1)
+    sets = []
+    params: List[Any] = []
+    if title is not None:
+        sets.append(f"title = {ph}")
+        params.append(title)
+    if pinned is not None:
+        sets.append(f"pinned = {ph}")
+        params.append(pinned if settings.storage_mode == "supabase" else int(pinned))
+    params.append(conversation_id)
+    cursor.execute(f"UPDATE conversations SET {', '.join(sets)} WHERE id = {ph}", tuple(params))
+    conn.commit()
+    conn.close()
 
 
 def delete_conversation(conversation_id: str) -> None:

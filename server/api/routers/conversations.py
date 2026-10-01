@@ -3,13 +3,15 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.deps import get_current_user, CurrentUser
-from api.schemas import ChatMessageIn, ConversationCreate
+from api.schemas import ChatMessageIn, ConversationCreate, ConversationUpdate, AddConversationDocument
 from src.query_pipeline import process_chat_query
 from src.storage.database import (
     create_conversation,
     list_conversations,
     get_conversation,
     delete_conversation,
+    add_document_to_conversation,
+    update_conversation,
     insert_message,
     get_conversation_messages,
     touch_conversation,
@@ -34,7 +36,7 @@ def _get_owned_conversation(conversation_id: str, user: CurrentUser) -> dict:
 @router.post("/conversations")
 async def create_conversation_endpoint(body: ConversationCreate, user: CurrentUser = Depends(get_current_user)):
     conversation_id = uuid.uuid4().hex
-    create_conversation(conversation_id, user_id=user.id, doc_id=body.doc_id)
+    create_conversation(conversation_id, user_id=user.id, doc_ids=body.doc_ids)
     return get_conversation(conversation_id)
 
 
@@ -57,6 +59,27 @@ async def delete_conversation_endpoint(conversation_id: str, user: CurrentUser =
     return {"status": "deleted"}
 
 
+@router.patch("/conversations/{conversation_id}")
+async def update_conversation_endpoint(
+    conversation_id: str, body: ConversationUpdate, user: CurrentUser = Depends(get_current_user)
+):
+    _get_owned_conversation(conversation_id, user)
+    update_conversation(conversation_id, title=body.title, pinned=body.pinned)
+    return get_conversation(conversation_id)
+
+
+@router.post("/conversations/{conversation_id}/documents")
+async def add_conversation_document_endpoint(
+    conversation_id: str, body: AddConversationDocument, user: CurrentUser = Depends(get_current_user)
+):
+    _get_owned_conversation(conversation_id, user)
+    try:
+        add_document_to_conversation(conversation_id, body.doc_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return get_conversation(conversation_id)
+
+
 @router.post("/conversations/{conversation_id}/checkpoints/{message_id}/restore")
 async def restore_checkpoint_endpoint(
     conversation_id: str, message_id: int, user: CurrentUser = Depends(get_current_user)
@@ -73,8 +96,8 @@ async def send_message_endpoint(
     conversation_id: str, body: ChatMessageIn, user: CurrentUser = Depends(get_current_user)
 ):
     """
-    Replaces the old flat POST /chat: scoped to one conversation's document
-    (doc_id), and folds recent turns into the prompt so follow-ups work.
+    Replaces the old flat POST /chat: scoped to one conversation's documents
+    (doc_ids, up to 5), and folds recent turns into the prompt so follow-ups work.
     """
     conversation = _get_owned_conversation(conversation_id, user)
 
@@ -87,7 +110,7 @@ async def send_message_endpoint(
         result = process_chat_query(
             body.message,
             advanced_mode=body.advanced_mode,
-            doc_id=conversation["doc_id"],
+            doc_ids=conversation["doc_ids"],
             history=history,
         )
     except Exception as e:
