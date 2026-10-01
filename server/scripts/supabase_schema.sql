@@ -19,12 +19,23 @@ create table if not exists documents (
     node_count integer default 0,
     chunk_count integer default 0,
     embedding_model text,
-    user_id text
+    user_id text,
+    status text default 'ready',
+    chunks_indexed integer default 0,
+    chunks_total integer default 0
 );
 
 -- Migration for documents tables created before per-user ownership was
 -- added - NULL means a shared/demo document (e.g. docs/sample_docs).
 alter table documents add column if not exists user_id text;
+
+-- Migration for documents tables created before background-job ingestion -
+-- status tracks 'processing'/'ready'/'failed' while chunks are embedded
+-- concurrently in the background, chunks_indexed/chunks_total back the
+-- upload progress poll (see GET /documents/{doc_id}/status).
+alter table documents add column if not exists status text default 'ready';
+alter table documents add column if not exists chunks_indexed integer default 0;
+alter table documents add column if not exists chunks_total integer default 0;
 
 create table if not exists conversations (
     id text primary key,

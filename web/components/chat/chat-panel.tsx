@@ -122,7 +122,10 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
     setIsAttaching(true);
     const toastId = toast.loading(`Processing "${file.name}"…`);
     try {
-      const { docId } = await uploadDocument(file);
+      const { docId } = await uploadDocument(file, (indexed, total) => {
+        if (total === 0) return;
+        toast.loading(`Processing "${file.name}" (${indexed}/${total} chunks)…`, { id: toastId });
+      });
       const updated = await addDocumentToConversation(conversationId, docId);
       setConversation(updated);
       toast.success(`"${file.name}" added to this chat.`, { id: toastId });
@@ -175,7 +178,7 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
   );
 
   const attachmentChip = conversation && conversation.doc_ids.length > 0 && (
-    <Attachments variant="inline">
+    <Attachments variant="card">
       {conversation.doc_ids.map((docId, index) => (
         <Attachment
           key={docId}

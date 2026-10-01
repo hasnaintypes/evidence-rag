@@ -36,7 +36,7 @@ export type AttachmentMediaCategory =
   | "source"
   | "unknown";
 
-export type AttachmentVariant = "grid" | "inline" | "list";
+export type AttachmentVariant = "grid" | "inline" | "list" | "card";
 
 const mediaCategoryIcons: Record<AttachmentMediaCategory, typeof ImageIcon> = {
   audio: Music2Icon,
@@ -215,6 +215,10 @@ export const Attachment = ({
             "flex w-full items-center gap-3 rounded-lg border p-3",
             "hover:bg-accent/50",
           ],
+          variant === "card" && [
+            "flex w-56 flex-col gap-2 rounded-xl bg-muted/50 p-3",
+            "hover:bg-muted",
+          ],
           className
         )}
         {...props}
@@ -266,6 +270,7 @@ export const AttachmentPreview = ({
         variant === "grid" && "size-full bg-muted",
         variant === "inline" && "size-5 rounded bg-background",
         variant === "list" && "size-12 rounded bg-muted",
+        variant === "card" && "size-8 rounded-md bg-background",
         className
       )}
       {...props}
@@ -296,8 +301,8 @@ export const AttachmentInfo = ({
   }
 
   return (
-    <div className={cn("min-w-0 flex-1", className)} {...props}>
-      <span className="block truncate">{label}</span>
+    <div className={cn(variant === "card" ? "min-w-0 w-full" : "min-w-0 flex-1", className)} {...props}>
+      <span className={cn("block", variant === "card" ? "line-clamp-2 text-sm" : "truncate")}>{label}</span>
       {showMediaType && data.mediaType && (
         <span className="block truncate text-muted-foreground text-xs">
           {data.mediaType}
@@ -352,6 +357,13 @@ export const AttachmentRemove = ({
           "[&>svg]:size-2.5",
         ],
         variant === "list" && ["size-8 shrink-0 rounded p-0", "[&>svg]:size-4"],
+        variant === "card" && [
+          "absolute top-1.5 right-1.5 size-5 rounded-full p-0",
+          "bg-background/80 backdrop-blur-sm",
+          "opacity-0 transition-opacity group-hover:opacity-100",
+          "hover:bg-background",
+          "[&>svg]:size-2.5",
+        ],
         className
       )}
       onClick={handleClick}

@@ -62,11 +62,14 @@ export function ChatComposer() {
   const isUploading = attachments.some((a) => a.isUploading);
 
   async function startUpload(file: File) {
-    const localId = `${file.name}-${file.size}-${Date.now()}-${Math.random()}`;
+    const localId = crypto.randomUUID();
     setAttachments((prev) => [...prev, { localId, file, docId: null, isUploading: true }]);
     const toastId = toast.loading(`Processing "${file.name}"…`);
     try {
-      const result = await uploadDocument(file);
+      const result = await uploadDocument(file, (indexed, total) => {
+        if (removedIds.current.has(localId) || total === 0) return;
+        toast.loading(`Processing "${file.name}" (${indexed}/${total} chunks)…`, { id: toastId });
+      });
       if (removedIds.current.has(localId)) return;
       setAttachments((prev) => prev.map((a) => (a.localId === localId ? { ...a, docId: result.docId, isUploading: false } : a)));
       toast.success(`"${file.name}" is ready.`, { id: toastId });
@@ -130,7 +133,7 @@ export function ChatComposer() {
         <PromptInput onSubmit={handleSubmit}>
           {attachments.length > 0 && (
             <PromptInputHeader>
-              <Attachments variant="inline">
+              <Attachments variant="card">
                 {attachments.map((a) => (
                   <Attachment
                     key={a.localId}

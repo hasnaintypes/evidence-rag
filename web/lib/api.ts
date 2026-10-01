@@ -33,14 +33,49 @@ async function apiFetch(path: string, init: RequestInit = {}): Promise<Response>
   return response;
 }
 
-export async function uploadDocument(file: File): Promise<{ docId: string }> {
+export type DocumentStatus = {
+  status: "processing" | "ready" | "failed";
+  chunks_indexed: number;
+  chunks_total: number;
+  chunk_count: number;
+};
+
+export async function getDocumentStatus(docId: string): Promise<DocumentStatus> {
+  const response = await apiFetch(`/documents/${encodeURIComponent(docId)}/status`);
+  return response.json() as Promise<DocumentStatus>;
+}
+
+const UPLOAD_POLL_INTERVAL_MS = 1500;
+const UPLOAD_POLL_TIMEOUT_MS = 10 * 60 * 1000; // generous ceiling even for very large documents
+
+export async function uploadDocument(
+  file: File,
+  onProgress?: (chunksIndexed: number, chunksTotal: number) => void
+): Promise<{ docId: string }> {
   const form = new FormData();
   form.append("file", file);
   // No Content-Type header here - the browser sets the multipart boundary
   // itself when given a FormData body; setting it manually breaks the parse.
   const response = await apiFetch("/upload", { method: "POST", body: form });
-  const data = (await response.json()) as { doc_id: string };
-  return { docId: data.doc_id };
+  const data = (await response.json()) as { status: string; doc_id: string };
+
+  if (data.status !== "processing") {
+    // "unchanged" - already fully indexed (hash-based dedup), nothing to poll for.
+    return { docId: data.doc_id };
+  }
+
+  // Indexing runs as a background job on the server - poll until it's
+  // ready/failed instead of the request blocking open for however long
+  // that takes (minutes, for a large document).
+  const deadline = Date.now() + UPLOAD_POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, UPLOAD_POLL_INTERVAL_MS));
+    const docStatus = await getDocumentStatus(data.doc_id);
+    onProgress?.(docStatus.chunks_indexed, docStatus.chunks_total);
+    if (docStatus.status === "ready") return { docId: data.doc_id };
+    if (docStatus.status === "failed") throw new Error(`Couldn't index "${file.name}".`);
+  }
+  throw new Error(`Indexing "${file.name}" is taking too long - try again later.`);
 }
 
 export async function getDocuments(): Promise<DocumentRecord[]> {

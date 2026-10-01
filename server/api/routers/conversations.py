@@ -20,6 +20,13 @@ from src.storage.database import (
 
 router = APIRouter()
 
+# Plain `def`, not `async def`, on every route below: they all call
+# synchronous/blocking code (psycopg2, the Gemini SDK) and FastAPI runs
+# `async def` handlers directly on the single event loop with no
+# automatic thread offload - a blocking call in one would stall every
+# other concurrent request. Plain `def` handlers get dispatched to
+# FastAPI's thread pool instead.
+
 HISTORY_TURNS = 6  # prior turns folded into the generation prompt - bounded so the prompt doesn't grow unbounded over a long conversation
 TITLE_MAX_CHARS = 60
 
@@ -34,54 +41,54 @@ def _get_owned_conversation(conversation_id: str, user: CurrentUser) -> dict:
 
 
 @router.post("/conversations")
-async def create_conversation_endpoint(body: ConversationCreate, user: CurrentUser = Depends(get_current_user)):
+def create_conversation_endpoint(body: ConversationCreate, user: CurrentUser = Depends(get_current_user)):
     conversation_id = uuid.uuid4().hex
-    create_conversation(conversation_id, user_id=user.id, doc_ids=body.doc_ids)
-    return get_conversation(conversation_id)
+    return create_conversation(conversation_id, user_id=user.id, doc_ids=body.doc_ids)
 
 
 @router.get("/conversations")
-async def list_conversations_endpoint(user: CurrentUser = Depends(get_current_user)):
+def list_conversations_endpoint(user: CurrentUser = Depends(get_current_user)):
     """Sidebar conversation list, newest-first, each with its document's filename attached."""
     return {"conversations": list_conversations(user.id)}
 
 
 @router.get("/conversations/{conversation_id}")
-async def get_conversation_endpoint(conversation_id: str, user: CurrentUser = Depends(get_current_user)):
+def get_conversation_endpoint(conversation_id: str, user: CurrentUser = Depends(get_current_user)):
     conversation = _get_owned_conversation(conversation_id, user)
     return {"conversation": conversation, "messages": get_conversation_messages(conversation_id)}
 
 
 @router.delete("/conversations/{conversation_id}")
-async def delete_conversation_endpoint(conversation_id: str, user: CurrentUser = Depends(get_current_user)):
+def delete_conversation_endpoint(conversation_id: str, user: CurrentUser = Depends(get_current_user)):
     _get_owned_conversation(conversation_id, user)
     delete_conversation(conversation_id)
     return {"status": "deleted"}
 
 
 @router.patch("/conversations/{conversation_id}")
-async def update_conversation_endpoint(
+def update_conversation_endpoint(
     conversation_id: str, body: ConversationUpdate, user: CurrentUser = Depends(get_current_user)
 ):
-    _get_owned_conversation(conversation_id, user)
-    update_conversation(conversation_id, title=body.title, pinned=body.pinned)
-    return get_conversation(conversation_id)
+    matched = update_conversation(conversation_id, user_id=user.id, title=body.title, pinned=body.pinned)
+    if not matched:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {"status": "updated"}
 
 
 @router.post("/conversations/{conversation_id}/documents")
-async def add_conversation_document_endpoint(
+def add_conversation_document_endpoint(
     conversation_id: str, body: AddConversationDocument, user: CurrentUser = Depends(get_current_user)
 ):
-    _get_owned_conversation(conversation_id, user)
     try:
-        add_document_to_conversation(conversation_id, body.doc_id)
+        return add_document_to_conversation(conversation_id, user_id=user.id, doc_id=body.doc_id)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return get_conversation(conversation_id)
+        detail = str(e)
+        status_code = 404 if detail == "Conversation not found." else 400
+        raise HTTPException(status_code=status_code, detail=detail)
 
 
 @router.post("/conversations/{conversation_id}/checkpoints/{message_id}/restore")
-async def restore_checkpoint_endpoint(
+def restore_checkpoint_endpoint(
     conversation_id: str, message_id: int, user: CurrentUser = Depends(get_current_user)
 ):
     """Rewinds the conversation to right after message_id, deleting
@@ -92,7 +99,7 @@ async def restore_checkpoint_endpoint(
 
 
 @router.post("/conversations/{conversation_id}/messages")
-async def send_message_endpoint(
+def send_message_endpoint(
     conversation_id: str, body: ChatMessageIn, user: CurrentUser = Depends(get_current_user)
 ):
     """

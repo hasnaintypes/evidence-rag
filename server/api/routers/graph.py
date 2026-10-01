@@ -7,14 +7,14 @@ router = APIRouter()
 
 
 @router.get("/graph")
-async def graph_endpoint(doc_id: str = None, user: CurrentUser = Depends(get_current_user)):
+def graph_endpoint(doc_id: str = None, user: CurrentUser = Depends(get_current_user)):
     """Returns entity co-occurrence graph data for visualization.
     Pass ?doc_id=... to scope to one document, omit for the full graph."""
     return get_graph_data(doc_id)
 
 
 @router.get("/graph/section/{node_id}")
-async def graph_section_endpoint(node_id: str, user: CurrentUser = Depends(get_current_user)):
+def graph_section_endpoint(node_id: str, user: CurrentUser = Depends(get_current_user)):
     """Returns the source section behind a graph node, for the UI's
     click-to-inspect panel. The frontend already has the doc_id -> filename
     mapping from /documents, so this only needs to return the node itself."""

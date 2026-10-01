@@ -18,16 +18,70 @@ DB_PATH = "data/rag.db"
 # so every caller elsewhere in the codebase is unchanged either way.
 # --------------------------------------------------------------------------- #
 
+_supabase_pool = None  # lazy ThreadedConnectionPool, see _get_supabase_pool()
+
+
+def _get_supabase_pool():
+    """
+    A fresh psycopg2.connect() per call (the old behavior) pays a full
+    TCP+TLS+auth handshake to Supabase's pooler on every single DB touch -
+    and a single API request often does 2-3 of those sequentially (e.g.
+    PATCH /conversations/{id}: owner check, update, re-fetch). Pooled once
+    at process startup, connections are reused instead.
+    ThreadedConnectionPool (not SimpleConnectionPool) because routes run
+    as plain `def` handlers, which FastAPI executes on a thread pool -
+    concurrent requests can hit this pool from different threads at once.
+    # ponytail: fixed-size pool (maxconn=10), tune if Railway's instance
+    # size changes or request concurrency grows past this.
+    """
+    global _supabase_pool
+    if _supabase_pool is None:
+        import psycopg2.pool
+        import psycopg2.extras
+        if not settings.supabase_db_url:
+            raise RuntimeError("STORAGE_MODE=supabase requires SUPABASE_DB_URL to be set.")
+        _supabase_pool = psycopg2.pool.ThreadedConnectionPool(
+            minconn=1, maxconn=10, dsn=settings.supabase_db_url, cursor_factory=psycopg2.extras.RealDictCursor
+        )
+    return _supabase_pool
+
+
+class _PooledConnection:
+    """Proxies a pooled psycopg2 connection so every existing `conn.close()`
+    call site (unchanged, scattered throughout this file) returns the
+    connection to the pool instead of tearing down the session."""
+
+    def __init__(self, pool, conn):
+        self._pool = pool
+        self._conn = conn
+
+    def close(self):
+        # Every read leaves the connection mid-transaction (psycopg2
+        # defaults to autocommit=False, and callers here never call
+        # commit()/rollback() after a plain SELECT) - rollback() is a
+        # cheap no-op in that case and also what recovers a connection
+        # left in an aborted-transaction state after a caller hit an
+        # exception before commit(). Only a genuinely dead connection
+        # (network drop) fails here, in which case discard it instead of
+        # pooling a connection the next borrower can't use.
+        try:
+            if not self._conn.closed:
+                self._conn.rollback()
+            self._pool.putconn(self._conn, close=self._conn.closed)
+        except Exception:
+            self._pool.putconn(self._conn, close=True)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
 def get_db_connection():
     """Returns a DB-API connection for the active storage backend.
     Rows are dict-like in both cases (sqlite3.Row / RealDictCursor) so
     row["col"] and dict(row) work identically regardless of storage_mode."""
     if settings.storage_mode == "supabase":
-        import psycopg2
-        import psycopg2.extras
-        if not settings.supabase_db_url:
-            raise RuntimeError("STORAGE_MODE=supabase requires SUPABASE_DB_URL to be set.")
-        return psycopg2.connect(settings.supabase_db_url, cursor_factory=psycopg2.extras.RealDictCursor)
+        pool = _get_supabase_pool()
+        return _PooledConnection(pool, pool.getconn())
 
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
@@ -65,7 +119,10 @@ def init_db() -> None:
             node_count INTEGER DEFAULT 0,
             chunk_count INTEGER DEFAULT 0,
             embedding_model TEXT,
-            user_id TEXT
+            user_id TEXT,
+            status TEXT DEFAULT 'ready',
+            chunks_indexed INTEGER DEFAULT 0,
+            chunks_total INTEGER DEFAULT 0
         )
     """)
 
@@ -219,9 +276,15 @@ def _migrate_missing_columns(cursor, table_name: str, expected_columns: dict) ->
 # --------------------------------------------------------------------------- #
 
 def get_document_hash(doc_id: str) -> Optional[str]:
+    """Only a successfully-completed ingest counts as "already indexed"
+    for dedup purposes - a row stuck at status='processing' (background
+    task crashed/container restarted mid-ingest) or 'failed' must not
+    short-circuit a retry as "unchanged", since no chunks actually got
+    embedded for it."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(f"SELECT file_hash FROM documents WHERE doc_id = {_ph(1)}", (doc_id,))
+    ph = _ph(1)
+    cursor.execute(f"SELECT file_hash FROM documents WHERE doc_id = {ph} AND status = 'ready'", (doc_id,))
     row = cursor.fetchone()
     conn.close()
     return row["file_hash"] if row else None
@@ -266,6 +329,97 @@ def upsert_document_record(
         """, (doc_id, filename, file_hash, node_count, chunk_count, embedding_model, user_id))
     conn.commit()
     conn.close()
+
+
+def mark_document_processing(
+    doc_id: str, filename: str, file_hash: str, user_id: Optional[str], node_count: int, chunks_total: int
+) -> None:
+    """Upserts the documents row at the start of a background ingest, before
+    any chunk is actually embedded - status='processing' so GET
+    /documents/{doc_id}/status has something real to report immediately,
+    and so a page refresh mid-upload can resume polling instead of the doc
+    silently not existing yet."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    if settings.storage_mode == "supabase":
+        cursor.execute("""
+            INSERT INTO documents (doc_id, filename, file_hash, node_count, chunk_count, user_id, status, chunks_indexed, chunks_total)
+            VALUES (%s, %s, %s, %s, 0, %s, 'processing', 0, %s)
+            ON CONFLICT (doc_id) DO UPDATE SET
+                filename = EXCLUDED.filename,
+                file_hash = EXCLUDED.file_hash,
+                ingested_at = now(),
+                node_count = EXCLUDED.node_count,
+                chunk_count = 0,
+                user_id = EXCLUDED.user_id,
+                status = 'processing',
+                chunks_indexed = 0,
+                chunks_total = EXCLUDED.chunks_total
+        """, (doc_id, filename, file_hash, node_count, user_id, chunks_total))
+    else:
+        cursor.execute("""
+            INSERT INTO documents (doc_id, filename, file_hash, node_count, chunk_count, user_id, status, chunks_indexed, chunks_total)
+            VALUES (?, ?, ?, ?, 0, ?, 'processing', 0, ?)
+            ON CONFLICT(doc_id) DO UPDATE SET
+                filename = excluded.filename,
+                file_hash = excluded.file_hash,
+                ingested_at = CURRENT_TIMESTAMP,
+                node_count = excluded.node_count,
+                chunk_count = 0,
+                user_id = excluded.user_id,
+                status = 'processing',
+                chunks_indexed = 0,
+                chunks_total = excluded.chunks_total
+        """, (doc_id, filename, file_hash, node_count, user_id, chunks_total))
+    conn.commit()
+    conn.close()
+
+
+def set_document_progress(doc_id: str, chunks_indexed: int) -> None:
+    """Syncs chunks_indexed to the given count. Called periodically (not
+    once per chunk - a DB round trip per embedding completion measurably
+    slowed down the concurrent embed pool it was meant to just observe)
+    by a single flusher thread reading an in-memory counter, so this is
+    a plain SET rather than an increment - no concurrent writers to race."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = _ph(1)
+    cursor.execute(f"UPDATE documents SET chunks_indexed = {ph} WHERE doc_id = {ph}", (chunks_indexed, doc_id,))
+    conn.commit()
+    conn.close()
+
+
+def mark_document_ready(doc_id: str, chunk_count: int, embedding_model: str) -> None:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = _ph(1)
+    cursor.execute(
+        f"UPDATE documents SET status = 'ready', chunk_count = {ph}, chunks_indexed = {ph}, embedding_model = {ph} WHERE doc_id = {ph}",
+        (chunk_count, chunk_count, embedding_model, doc_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def mark_document_failed(doc_id: str) -> None:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = _ph(1)
+    cursor.execute(f"UPDATE documents SET status = 'failed' WHERE doc_id = {ph}", (doc_id,))
+    conn.commit()
+    conn.close()
+
+
+def get_document_status(doc_id: str) -> Optional[Dict[str, Any]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = _ph(1)
+    cursor.execute(
+        f"SELECT status, chunks_indexed, chunks_total, chunk_count FROM documents WHERE doc_id = {ph}", (doc_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 def get_indexed_embedding_models() -> List[str]:
@@ -341,6 +495,66 @@ def insert_nodes(nodes: List[Any]) -> None:
                 d.get("heading_path", ""), d.get("content", ""), d.get("page"),
                 json.dumps(bbox) if bbox else None, d.get("order", 0), json.dumps(metadata),
             ))
+    conn.commit()
+    conn.close()
+
+
+def insert_chunks_batch(items: List[tuple]) -> None:
+    """Same row shape as insert_chunk(), but all rows in a single round
+    trip instead of one per chunk. Measured: embedding calls parallelize
+    ~4.6x with concurrency, but N individual INSERTs don't speed up much
+    under concurrent load (connection-pool contention + GIL-bound vector-
+    literal formatting) - batching sidesteps that by paying the network
+    round trip once regardless of chunk count.
+    items: list of (chunk_dict, embedding) tuples, same shape insert_chunk() takes."""
+    if not items:
+        return
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    if settings.storage_mode == "supabase":
+        import psycopg2.extras
+        rows = []
+        for chunk, embedding in items:
+            meta = chunk["metadata"]
+            bbox = meta.get("bbox")
+            embedding_literal = "[" + ",".join(str(float(x)) for x in embedding) + "]"
+            rows.append((
+                meta.get("doc_id"), meta.get("source_file", ""), meta.get("page_number", 1),
+                meta.get("chunk_index", 0), chunk["chunk_text"], embedding_literal,
+                meta.get("node_type", "paragraph"), meta.get("heading_path", ""),
+                json.dumps(meta.get("node_ids", [])), meta.get("parent_id"),
+                json.dumps(bbox) if bbox else None,
+            ))
+        psycopg2.extras.execute_values(
+            cursor,
+            """INSERT INTO document_chunks
+                (doc_id, source_file, page_number, chunk_index, chunk_text, embedding,
+                 node_type, heading_path, node_ids, parent_id, bbox)
+               VALUES %s""",
+            rows,
+            template="(%s, %s, %s, %s, %s, %s::vector, %s, %s, %s, %s, %s)",
+        )
+    else:
+        rows = []
+        for chunk, embedding in items:
+            meta = chunk["metadata"]
+            bbox = meta.get("bbox")
+            embedding_blob = json.dumps(embedding).encode("utf-8")
+            rows.append((
+                meta.get("doc_id"), meta.get("source_file", ""), meta.get("page_number", 1),
+                meta.get("chunk_index", 0), chunk["chunk_text"], embedding_blob,
+                meta.get("node_type", "paragraph"), meta.get("heading_path", ""),
+                json.dumps(meta.get("node_ids", [])), meta.get("parent_id"),
+                json.dumps(bbox) if bbox else None,
+            ))
+        cursor.executemany("""
+            INSERT INTO document_chunks
+                (doc_id, source_file, page_number, chunk_index, chunk_text, embedding,
+                 node_type, heading_path, node_ids, parent_id, bbox)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, rows)
+
     conn.commit()
     conn.close()
 
@@ -539,21 +753,36 @@ def _hydrate_conversation_row(row: Dict[str, Any], filename_map: Dict[str, str])
     return row
 
 
-def create_conversation(conversation_id: str, user_id: str, doc_ids: List[str]) -> None:
+def create_conversation(conversation_id: str, user_id: str, doc_ids: List[str]) -> Dict[str, Any]:
+    """Returns the hydrated conversation directly (INSERT ... RETURNING +
+    one filename lookup on the same connection) instead of making the
+    caller round-trip again for what INSERT already knows - this and the
+    other write paths below used to pay a separate ownership SELECT and/or
+    a full re-fetch per call, each a ~300ms+ network round trip."""
     conn = get_db_connection()
     cursor = conn.cursor()
     if settings.storage_mode == "supabase":
         cursor.execute(
-            "INSERT INTO conversations (id, user_id, doc_ids) VALUES (%s, %s, %s)",
+            "INSERT INTO conversations (id, user_id, doc_ids) VALUES (%s, %s, %s) RETURNING created_at, updated_at",
             (conversation_id, user_id, json.dumps(doc_ids)),
         )
     else:
         cursor.execute(
-            "INSERT INTO conversations (id, user_id, doc_ids) VALUES (?, ?, ?)",
+            "INSERT INTO conversations (id, user_id, doc_ids) VALUES (?, ?, ?) RETURNING created_at, updated_at",
             (conversation_id, user_id, json.dumps(doc_ids)),
         )
+    timestamps = dict(cursor.fetchone())
+    filename_map = _filenames_for_doc_ids(cursor, doc_ids)
     conn.commit()
     conn.close()
+    row = {
+        "id": conversation_id,
+        "doc_ids": json.dumps(doc_ids),
+        "pinned": False,
+        "title": None,
+        **timestamps,
+    }
+    return _hydrate_conversation_row(row, filename_map)
 
 
 def list_conversations(user_id: str) -> List[Dict[str, Any]]:
@@ -592,18 +821,25 @@ def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
     return _hydrate_conversation_row(row, filename_map)
 
 
-def add_document_to_conversation(conversation_id: str, doc_id: str) -> List[str]:
+def add_document_to_conversation(conversation_id: str, user_id: str, doc_id: str) -> Dict[str, Any]:
     """Appends doc_id to a conversation's document set, capped at
-    MAX_CONVERSATION_DOCS. Raises ValueError on cap/duplicate so the router
-    can turn it into a 400."""
+    MAX_CONVERSATION_DOCS. Ownership is folded into this function's own
+    SELECT (WHERE id AND user_id) instead of a separate caller-side
+    ownership check, and the updated conversation is hydrated here (one
+    more query, same connection) instead of the caller re-fetching from
+    scratch - 3 round trips total instead of the previous 5 (separate
+    ownership check + internal read + write + full re-fetch's own 2).
+    Raises ValueError (not-found/duplicate/cap) so the router can map the
+    message to the right status code."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    ph = _ph(1)
-    cursor.execute(f"SELECT doc_ids FROM conversations WHERE id = {ph}", (conversation_id,))
+    ph = _ph(2)
+    cursor.execute(f"SELECT * FROM conversations WHERE id = {_ph(1)} AND user_id = {_ph(1)}", (conversation_id, user_id))
     row = cursor.fetchone()
     if not row:
         conn.close()
         raise ValueError("Conversation not found.")
+    row = dict(row)
     doc_ids = json.loads(row["doc_ids"])
     if doc_id in doc_ids:
         conn.close()
@@ -614,25 +850,34 @@ def add_document_to_conversation(conversation_id: str, doc_id: str) -> List[str]
     doc_ids.append(doc_id)
     if settings.storage_mode == "supabase":
         cursor.execute(
-            "UPDATE conversations SET doc_ids = %s, updated_at = now() WHERE id = %s",
+            "UPDATE conversations SET doc_ids = %s, updated_at = now() WHERE id = %s RETURNING updated_at",
             (json.dumps(doc_ids), conversation_id),
         )
     else:
         cursor.execute(
-            "UPDATE conversations SET doc_ids = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            "UPDATE conversations SET doc_ids = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? RETURNING updated_at",
             (json.dumps(doc_ids), conversation_id),
         )
+    row["updated_at"] = cursor.fetchone()["updated_at"]
+    row["doc_ids"] = json.dumps(doc_ids)
+    filename_map = _filenames_for_doc_ids(cursor, doc_ids)
     conn.commit()
     conn.close()
-    return doc_ids
+    return _hydrate_conversation_row(row, filename_map)
 
 
 def update_conversation(
-    conversation_id: str, title: Optional[str] = None, pinned: Optional[bool] = None
-) -> None:
-    """Partial update for rename/pin - only touches the fields passed in."""
+    conversation_id: str, user_id: str, title: Optional[str] = None, pinned: Optional[bool] = None
+) -> bool:
+    """Partial update for rename/pin - only touches the fields passed in,
+    and folds the ownership check into this UPDATE's WHERE clause (one
+    round trip) instead of a separate SELECT first. Returns whether a row
+    matched, so the caller can 404 on not-found/not-owned without an
+    extra query. No re-fetch afterward - callers that don't need the
+    updated row back (the sidebar's pin/rename, which just calls
+    refresh()) shouldn't pay for one."""
     if title is None and pinned is None:
-        return
+        return True
     conn = get_db_connection()
     cursor = conn.cursor()
     ph = _ph(1)
@@ -645,9 +890,14 @@ def update_conversation(
         sets.append(f"pinned = {ph}")
         params.append(pinned if settings.storage_mode == "supabase" else int(pinned))
     params.append(conversation_id)
-    cursor.execute(f"UPDATE conversations SET {', '.join(sets)} WHERE id = {ph}", tuple(params))
+    params.append(user_id)
+    cursor.execute(
+        f"UPDATE conversations SET {', '.join(sets)} WHERE id = {ph} AND user_id = {ph}", tuple(params)
+    )
+    matched = cursor.rowcount > 0
     conn.commit()
     conn.close()
+    return matched
 
 
 def delete_conversation(conversation_id: str) -> None:
