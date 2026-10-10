@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -15,7 +15,7 @@ import {
   PromptInputSubmit,
 } from "@/components/ai-elements/prompt-input";
 import { Attachments, Attachment, AttachmentPreview, AttachmentInfo, AttachmentRemove } from "@/components/ai-elements/attachments";
-import { createConversation, sendMessage, uploadDocument } from "@/lib/api";
+import { createConversation, sendMessage, subscribeToDocumentStatus, uploadDocument } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { MAX_CONVERSATION_DOCS } from "@/lib/types";
 import { Loader2, Paperclip } from "lucide-react";
@@ -56,26 +56,53 @@ export function ChatComposer() {
   const { user } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const removedIds = useRef<Set<string>>(new Set());
+  const statusUnsubscribes = useRef<Record<string, () => void>>({});
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const isUploading = attachments.some((a) => a.isUploading);
 
+  useEffect(() => {
+    const unsubscribes = statusUnsubscribes.current;
+    return () => {
+      Object.values(unsubscribes).forEach((unsubscribe) => unsubscribe());
+    };
+  }, []);
+
   async function startUpload(file: File) {
     const localId = crypto.randomUUID();
     setAttachments((prev) => [...prev, { localId, file, docId: null, isUploading: true }]);
-    const toastId = toast.loading(`Processing "${file.name}"…`);
     try {
-      const result = await uploadDocument(file, (indexed, total) => {
-        if (removedIds.current.has(localId) || total === 0) return;
-        toast.loading(`Processing "${file.name}" (${indexed}/${total} chunks)…`, { id: toastId });
-      });
+      // Upload only - returns right away. A document that still needs
+      // embedding keeps isUploading true (so the chip keeps its spinner),
+      // but the wait for "done" is now event-driven over
+      // subscribeToDocumentStatus's SSE stream instead of a client poll.
+      const { docId, status } = await uploadDocument(file);
       if (removedIds.current.has(localId)) return;
-      setAttachments((prev) => prev.map((a) => (a.localId === localId ? { ...a, docId: result.docId, isUploading: false } : a)));
-      toast.success(`"${file.name}" is ready.`, { id: toastId });
+
+      if (status === "ready") {
+        setAttachments((prev) => prev.map((a) => (a.localId === localId ? { ...a, docId, isUploading: false } : a)));
+        return;
+      }
+
+      statusUnsubscribes.current[docId] = subscribeToDocumentStatus(docId, (docStatus) => {
+        if (removedIds.current.has(localId)) {
+          statusUnsubscribes.current[docId]?.();
+          delete statusUnsubscribes.current[docId];
+          return;
+        }
+        if (docStatus.status === "ready") {
+          setAttachments((prev) => prev.map((a) => (a.localId === localId ? { ...a, docId, isUploading: false } : a)));
+          delete statusUnsubscribes.current[docId];
+        } else if (docStatus.status === "failed") {
+          toast.error(`Couldn't index "${file.name}".`);
+          setAttachments((prev) => prev.filter((a) => a.localId !== localId));
+          delete statusUnsubscribes.current[docId];
+        }
+      });
     } catch {
       if (removedIds.current.has(localId)) return;
-      toast.error(`Couldn't process "${file.name}".`, { id: toastId });
+      toast.error(`Couldn't attach "${file.name}".`);
       setAttachments((prev) => prev.filter((a) => a.localId !== localId));
     }
   }

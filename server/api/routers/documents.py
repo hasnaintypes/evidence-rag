@@ -1,7 +1,9 @@
+import json
 import os
+import time
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from api.deps import get_current_user, CurrentUser
 from src.storage.database import list_documents, get_document_status
@@ -83,12 +85,60 @@ def upload_file_endpoint(
 
 @router.get("/documents/{doc_id}/status")
 def document_status_endpoint(doc_id: str, user: CurrentUser = Depends(get_current_user)):
-    """Polled by the upload UI while status=="processing" to show real
-    progress (chunks_indexed/chunks_total) instead of a frozen spinner."""
+    """One-shot status read, used by the UI for the initial render before
+    the live stream below takes over."""
     status = get_document_status(doc_id)
     if not status:
         raise HTTPException(status_code=404, detail="Document not found.")
     return status
+
+
+SSE_WATCH_INTERVAL_SECONDS = 1.0
+
+
+def _document_status_stream(doc_id: str):
+    """
+    Pushes a status event to the client whenever it changes, instead of the
+    UI re-requesting on a timer - a single long-lived connection replaces
+    what used to be a client-side setInterval poll loop. The server still
+    re-reads the row on an interval under the hood (finish_ingest's progress
+    writer runs on its own background thread with no event to subscribe to
+    directly), but that cost is ours to pay once here rather than once per
+    connected client re-fetching over and over.
+
+    A plain generator (not async) because the rest of this API is sync for
+    DB connection pooling - Starlette runs it in the threadpool, same as
+    any other sync route.
+    """
+    last_payload = None
+    while True:
+        status = get_document_status(doc_id)
+        if not status:
+            yield f"event: error\ndata: {json.dumps({'detail': 'Document not found.'})}\n\n"
+            return
+
+        payload = json.dumps(status)
+        if payload != last_payload:
+            yield f"data: {payload}\n\n"
+            last_payload = payload
+
+        if status["status"] in ("ready", "failed"):
+            return
+
+        time.sleep(SSE_WATCH_INTERVAL_SECONDS)
+
+
+@router.get("/documents/{doc_id}/events")
+def document_status_events(doc_id: str, user: CurrentUser = Depends(get_current_user)):
+    """Server-Sent Events stream of a document's indexing status - the
+    production-grade replacement for polling GET /documents/{doc_id}/status
+    on an interval. Closes itself once the document reaches a terminal
+    state (ready/failed)."""
+    return StreamingResponse(
+        _document_status_stream(doc_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 def _safe_filename(filename: str) -> str:

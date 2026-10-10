@@ -18,5 +18,16 @@ export function useConversations() {
     refresh();
   }, [refresh]);
 
-  return { conversations, isLoading, refresh };
+  // Patches the local list in place instead of refetching - pin/rename
+  // reflect instantly instead of flashing the whole sidebar back to its
+  // loading skeleton for a round trip.
+  const update = useCallback((id: string, patch: Partial<Conversation>) => {
+    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+  }, []);
+
+  const remove = useCallback((id: string) => {
+    setConversations((prev) => prev.filter((c) => c.id !== id));
+  }, []);
+
+  return { conversations, isLoading, refresh, update, remove };
 }

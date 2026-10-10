@@ -17,11 +17,20 @@ import {
   PromptInputButton,
   PromptInputSubmit,
 } from "@/components/ai-elements/prompt-input";
-import { Attachments, Attachment, AttachmentPreview, AttachmentInfo } from "@/components/ai-elements/attachments";
 import { Checkpoint, CheckpointIcon, CheckpointTrigger } from "@/components/ai-elements/checkpoint";
 import { ChatMessageBubble } from "@/components/chat/chat-message";
+import { AttachmentChips } from "@/components/chat/attachment-chips";
 import { Skeleton } from "@/components/ui/skeleton";
-import { addDocumentToConversation, getConversation, restoreCheckpoint, sendMessage, uploadDocument } from "@/lib/api";
+import {
+  addDocumentToConversation,
+  getConversation,
+  getDocumentStatus,
+  restoreCheckpoint,
+  sendMessage,
+  subscribeToDocumentStatus,
+  uploadDocument,
+  type DocumentStatus,
+} from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { MAX_CONVERSATION_DOCS } from "@/lib/types";
 import type { ChatMessage, Conversation as ConversationRecord, ConversationMessage } from "@/lib/types";
@@ -51,8 +60,9 @@ function MessageSkeleton({ align }: { align: "start" | "end" }) {
   return (
     <div className={`flex w-full ${align === "end" ? "justify-end" : "justify-start"}`}>
       <div className="flex flex-col gap-2">
-        <Skeleton className="h-4 w-48" />
-        <Skeleton className="h-4 w-32" />
+        <Skeleton className="h-4 w-64" />
+        <Skeleton className="h-4 w-52" />
+        <Skeleton className="h-4 w-36" />
       </div>
     </div>
   );
@@ -81,25 +91,69 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [isSending, setIsSending] = useState(false);
   const [isAttaching, setIsAttaching] = useState(false);
+  const [pendingAttachments, setPendingAttachments] = useState<{ docId: string; filename: string }[]>([]);
+  const [docStatuses, setDocStatuses] = useState<Record<string, DocumentStatus["status"]>>({});
+  const statusUnsubscribes = useRef<Record<string, () => void>>({});
 
   useEffect(() => {
     getConversation(conversationId)
       .then(({ conversation: conv, messages: history }) => {
         setConversation(conv);
         setMessages(history.map(fromServerMessage));
+
+        // A document can still be indexing from a previous visit (closed
+        // the tab, or the SSE connection dropped) - reconcile against the
+        // current server state instead of assuming "ready" just because
+        // there's no live subscription for it yet.
+        conv.doc_ids.forEach((docId, index) => {
+          getDocumentStatus(docId)
+            .then((docStatus) => {
+              if (docStatus.status !== "processing") return;
+              setDocStatuses((prev) => ({ ...prev, [docId]: "processing" }));
+              watchDocumentStatus(docId, conv.filenames[index] ?? docId);
+            })
+            .catch(() => {});
+        });
       })
       .catch(() => toast.error("Couldn't load this conversation."))
       .finally(() => setIsLoadingHistory(false));
   }, [conversationId]);
 
+  useEffect(() => {
+    const unsubscribes = statusUnsubscribes.current;
+    return () => {
+      Object.values(unsubscribes).forEach((unsubscribe) => unsubscribe());
+    };
+  }, []);
+
+  function watchDocumentStatus(docId: string, filename: string) {
+    statusUnsubscribes.current[docId]?.();
+    statusUnsubscribes.current[docId] = subscribeToDocumentStatus(docId, (status) => {
+      setDocStatuses((prev) => ({ ...prev, [docId]: status.status }));
+      if (status.status === "ready") {
+        toast.success(`"${filename}" finished indexing - ready to search.`);
+        delete statusUnsubscribes.current[docId];
+      } else if (status.status === "failed") {
+        toast.error(`Couldn't index "${filename}".`);
+        delete statusUnsubscribes.current[docId];
+      }
+    });
+  }
+
   async function handleSubmit({ text }: { text: string }) {
     const trimmed = text.trim();
     if (!trimmed || isSending) return;
 
-    const userMessage: ChatMessage = { id: nextMessageId(), role: "user", content: trimmed };
+    const userMessage: ChatMessage = {
+      id: nextMessageId(),
+      role: "user",
+      content: trimmed,
+      attachments: pendingAttachments.length > 0 ? pendingAttachments : undefined,
+    };
     const pendingId = nextMessageId();
 
     setMessages((prev) => [...prev, userMessage, { id: pendingId, role: "assistant", content: "", pending: true }]);
+    setPendingAttachments([]);
     setIsSending(true);
 
     try {
@@ -120,18 +174,25 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
     if (!file) return;
 
     setIsAttaching(true);
-    const toastId = toast.loading(`Processing "${file.name}"…`);
     try {
-      const { docId } = await uploadDocument(file, (indexed, total) => {
-        if (total === 0) return;
-        toast.loading(`Processing "${file.name}" (${indexed}/${total} chunks)…`, { id: toastId });
-      });
+      // Upload only - returns as soon as the file is saved and the fast
+      // parse/chunk phase is done. Embedding runs as a server-side
+      // background job (see /upload), so it's never waited on here: the
+      // file is attached and usable right away, and docStatuses/the SSE
+      // watch below just reflects when it finishes indexing.
+      const { docId, status } = await uploadDocument(file);
       const updated = await addDocumentToConversation(conversationId, docId);
       setConversation(updated);
-      toast.success(`"${file.name}" added to this chat.`, { id: toastId });
+      setPendingAttachments((prev) => [...prev, { docId, filename: file.name }]);
+      toast.success(`"${file.name}" attached.`);
+
+      if (status === "processing") {
+        setDocStatuses((prev) => ({ ...prev, [docId]: "processing" }));
+        watchDocumentStatus(docId, file.name);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : `Couldn't attach "${file.name}".`;
-      toast.error(message, { id: toastId });
+      toast.error(message);
     } finally {
       setIsAttaching(false);
     }
@@ -151,6 +212,11 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
 
   const promptInput = (
     <PromptInput onSubmit={handleSubmit}>
+      {pendingAttachments.length > 0 && (
+        <div className="px-3 pt-3">
+          <AttachmentChips attachments={pendingAttachments} statuses={docStatuses} />
+        </div>
+      )}
       <PromptInputBody>
         <PromptInputTextarea placeholder="Ask a question…" disabled={isSending} />
       </PromptInputBody>
@@ -177,26 +243,6 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
     </PromptInput>
   );
 
-  const attachmentChip = conversation && conversation.doc_ids.length > 0 && (
-    <Attachments variant="card">
-      {conversation.doc_ids.map((docId, index) => (
-        <Attachment
-          key={docId}
-          data={{
-            type: "file",
-            id: docId,
-            filename: conversation.filenames[index] ?? docId,
-            mediaType: "application/octet-stream",
-            url: "",
-          }}
-        >
-          <AttachmentPreview />
-          <AttachmentInfo />
-        </Attachment>
-      ))}
-    </Attachments>
-  );
-
   // Empty conversation: centered greeting + prompt input, like a fresh
   // chat landing screen. Once the first message goes out, the layout
   // below takes over - scrollable history with the input pinned to the bottom.
@@ -206,7 +252,6 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
         <div className="flex items-center gap-2 text-3xl font-semibold tracking-tight text-foreground">
           Good {timeOfDayGreeting()}, {displayName(user)}
         </div>
-        {attachmentChip && <div className="flex justify-center">{attachmentChip}</div>}
         <div className="w-full">{promptInput}</div>
       </div>
     );
@@ -214,12 +259,12 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
 
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col">
-      {attachmentChip && <div className="border-b border-border px-4 py-2">{attachmentChip}</div>}
-
       <Conversation>
         <ConversationContent>
           {isLoadingHistory ? (
             <>
+              <MessageSkeleton align="end" />
+              <MessageSkeleton align="start" />
               <MessageSkeleton align="end" />
               <MessageSkeleton align="start" />
             </>
@@ -231,7 +276,7 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
 
               return (
                 <div key={message.id} className="flex flex-col gap-2">
-                  <ChatMessageBubble message={message} />
+                  <ChatMessageBubble message={message} docStatuses={docStatuses} />
                   {isLastAssistantTurn && !isFinalMessage && (
                     <Checkpoint>
                       <CheckpointIcon />

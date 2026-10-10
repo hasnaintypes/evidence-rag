@@ -72,7 +72,7 @@ export function AppSidebar() {
   const params = useParams<{ conversationId?: string }>();
 
   const { user } = useAuth();
-  const { conversations, isLoading, refresh } = useConversations();
+  const { conversations, isLoading, refresh, update, remove } = useConversations();
   const [renameTarget, setRenameTarget] = useState<Conversation | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
@@ -84,10 +84,12 @@ export function AppSidebar() {
   const avatarSeed = metadata?.avatar_seed ?? fullName ?? user?.email;
 
   async function handleTogglePin(conversation: Conversation) {
+    const wasPinned = conversation.pinned;
+    update(conversation.id, { pinned: !wasPinned });
     try {
-      await updateConversation(conversation.id, { pinned: !conversation.pinned });
-      refresh();
+      await updateConversation(conversation.id, { pinned: !wasPinned });
     } catch {
+      update(conversation.id, { pinned: wasPinned });
       toast.error("Couldn't update this chat.");
     }
   }
@@ -101,25 +103,29 @@ export function AppSidebar() {
     if (!renameTarget) return;
     const title = renameValue.trim();
     if (!title) return;
+    const previousTitle = renameTarget.title;
+    update(renameTarget.id, { title });
+    setRenameTarget(null);
     try {
       await updateConversation(renameTarget.id, { title });
-      setRenameTarget(null);
-      refresh();
     } catch {
+      update(renameTarget.id, { title: previousTitle });
       toast.error("Couldn't rename this chat.");
     }
   }
 
   async function confirmDelete() {
     if (!deleteTarget) return;
+    const target = deleteTarget;
+    const wasActive = params.conversationId === target.id;
+    remove(target.id);
+    setDeleteTarget(null);
+    if (wasActive) router.push("/chat/new");
     try {
-      await deleteConversation(deleteTarget.id);
-      const wasActive = params.conversationId === deleteTarget.id;
-      setDeleteTarget(null);
-      refresh();
-      if (wasActive) router.push("/chat/new");
+      await deleteConversation(target.id);
     } catch {
       toast.error("Couldn't delete this chat.");
+      refresh(); // simplest correct rollback - resync the list from the server
     }
   }
 
@@ -215,9 +221,9 @@ export function AppSidebar() {
             <SidebarGroupLabel>Conversations</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
-                {Array.from({ length: 3 }).map((_, i) => (
+                {Array.from({ length: 6 }).map((_, i) => (
                   <SidebarMenuItem key={i}>
-                    <SidebarMenuSkeleton />
+                    <SidebarMenuSkeleton showIcon />
                   </SidebarMenuItem>
                 ))}
               </SidebarMenu>

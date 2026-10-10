@@ -1,6 +1,7 @@
 "use client";
 
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
+import { AttachmentChips } from "@/components/chat/attachment-chips";
 import { Reasoning, ReasoningTrigger, ReasoningContent } from "@/components/ai-elements/reasoning";
 import { Sources, SourcesTrigger, SourcesContent } from "@/components/ai-elements/sources";
 import { InlineCitation, InlineCitationCard, InlineCitationCardBody } from "@/components/ai-elements/inline-citation";
@@ -8,6 +9,7 @@ import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Badge } from "@/components/ui/badge";
 import { HoverCardTrigger } from "@/components/ui/hover-card";
 import { cn } from "@/lib/utils";
+import type { DocumentStatus } from "@/lib/api";
 import type { ChatMessage } from "@/lib/types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
@@ -17,7 +19,13 @@ function sourceHref(document: string, page: number | null) {
   return page ? `${url}#page=${page}` : url;
 }
 
-export function ChatMessageBubble({ message }: { message: ChatMessage }) {
+export function ChatMessageBubble({
+  message,
+  docStatuses = {},
+}: {
+  message: ChatMessage;
+  docStatuses?: Record<string, DocumentStatus["status"]>;
+}) {
   const isUser = message.role === "user";
 
   if (message.pending) {
@@ -32,6 +40,10 @@ export function ChatMessageBubble({ message }: { message: ChatMessage }) {
 
   return (
     <Message from={message.role}>
+      {isUser && message.attachments && message.attachments.length > 0 && (
+        <AttachmentChips attachments={message.attachments} statuses={docStatuses} />
+      )}
+
       <MessageContent className={cn(message.error && "bg-destructive/10 text-destructive")}>
         <MessageResponse>{message.content}</MessageResponse>
       </MessageContent>

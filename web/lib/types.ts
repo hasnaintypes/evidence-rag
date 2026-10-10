@@ -36,6 +36,7 @@ export type ChatMessage = {
   faithfulness?: Faithfulness;
   pending?: boolean;
   error?: boolean;
+  attachments?: { docId: string; filename: string }[];
 };
 
 // Mirrors GET /documents (see server/src/storage/database.py's
