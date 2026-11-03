@@ -222,6 +222,7 @@ def process_chat_query(
             generation_failed=False,
             faithfulness_score=None,
             unsupported_claims=[],
+            user_id=user_id,
         )
         return {
             "reply": (
@@ -311,6 +312,7 @@ ANSWER:"""
         generation_failed=generation_failed,
         faithfulness_score=faithfulness_score,
         unsupported_claims=unsupported_claims,
+        user_id=user_id,
     )
 
     return {
