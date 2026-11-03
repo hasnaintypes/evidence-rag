@@ -39,18 +39,21 @@ def init_telemetry_table() -> None:
             generation_failed INTEGER DEFAULT 0,
             telemetry_json TEXT,
             faithfulness_score REAL,
-            unsupported_claims_json TEXT
+            unsupported_claims_json TEXT,
+            user_id TEXT
         )
     """)
 
-    # Migration for query_log tables created before faithfulness scoring
-    # was added - CREATE TABLE IF NOT EXISTS above is a no-op on an
-    # existing table, so older DBs need these columns added explicitly.
+    # Migration for query_log tables created before faithfulness scoring /
+    # user_id were added - CREATE TABLE IF NOT EXISTS above is a no-op on
+    # an existing table, so older DBs need these columns added explicitly.
     existing_columns = {row[1] for row in cursor.execute("PRAGMA table_info(query_log)").fetchall()}
     if "faithfulness_score" not in existing_columns:
         cursor.execute("ALTER TABLE query_log ADD COLUMN faithfulness_score REAL")
     if "unsupported_claims_json" not in existing_columns:
         cursor.execute("ALTER TABLE query_log ADD COLUMN unsupported_claims_json TEXT")
+    if "user_id" not in existing_columns:
+        cursor.execute("ALTER TABLE query_log ADD COLUMN user_id TEXT")
 
     conn.commit()
     conn.close()
@@ -90,6 +93,7 @@ def log_query_event(
     generation_failed: bool = False,
     faithfulness_score: Optional[float] = None,
     unsupported_claims: Optional[list] = None,
+    user_id: Optional[str] = None,
 ) -> None:
     """
     Persists one query's outcome to query_log. Called at the end of
@@ -97,6 +101,11 @@ def log_query_event(
     (e.g. to spot queries that repeatedly fail generation, stages that
     are consistently slow, or answers that keep coming back unfaithful
     to their retrieved context) without needing external log aggregation.
+
+    user_id ties a row to the caller (None for pipeline calls that don't
+    have one, e.g. scripts/run_eval.py) - this is what retention/export
+    tooling keys off (see scripts/purge_query_log.py and
+    QUERY_LOG_RETENTION_DAYS in src/config.py).
 
     Failures here are swallowed rather than raised - telemetry logging
     must never break the actual chat response.
@@ -110,8 +119,8 @@ def log_query_event(
                 """
                 INSERT INTO query_log
                     (query, advanced_mode, hop_count, chunk_count, top_rerank_score, generation_failed,
-                     telemetry_json, faithfulness_score, unsupported_claims_json)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     telemetry_json, faithfulness_score, unsupported_claims_json, user_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
                 (
                     query,
@@ -123,6 +132,7 @@ def log_query_event(
                     json.dumps(telemetry),
                     faithfulness_score,
                     unsupported_claims_json,
+                    user_id,
                 ),
             )
         else:
@@ -130,8 +140,8 @@ def log_query_event(
                 """
                 INSERT INTO query_log
                     (query, advanced_mode, hop_count, chunk_count, top_rerank_score, generation_failed,
-                     telemetry_json, faithfulness_score, unsupported_claims_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     telemetry_json, faithfulness_score, unsupported_claims_json, user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     query,
@@ -143,6 +153,7 @@ def log_query_event(
                     json.dumps(telemetry),
                     faithfulness_score,
                     unsupported_claims_json,
+                    user_id,
                 ),
             )
         conn.commit()

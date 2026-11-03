@@ -121,7 +121,8 @@ create table if not exists query_log (
     generation_failed integer default 0,
     telemetry_json jsonb,
     faithfulness_score real,
-    unsupported_claims_json jsonb
+    unsupported_claims_json jsonb,
+    user_id text
 );
 
 -- Migration for query_log tables created before faithfulness scoring was
@@ -129,6 +130,11 @@ create table if not exists query_log (
 -- supported by its retrieved chunks) - no-ops on a fresh table.
 alter table query_log add column if not exists faithfulness_score real;
 alter table query_log add column if not exists unsupported_claims_json jsonb;
+-- user_id ties a row to the caller, so retention/export tooling
+-- (scripts/purge_query_log.py) and a future "export/delete my data"
+-- flow have something to key off - see QUERY_LOG_RETENTION_DAYS in
+-- src/config.py for the retention policy itself.
+alter table query_log add column if not exists user_id text;
 
 create index if not exists idx_nodes_parent on knowledge_nodes(parent_id);
 create index if not exists idx_nodes_doc on knowledge_nodes(doc_id);
