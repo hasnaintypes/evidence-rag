@@ -35,6 +35,18 @@ Workflow rules for anyone (human or agent) making code changes in this repositor
   up with `git fetch --prune` to drop any now-stale local remote-tracking refs). Don't
   leave merged branches lying around.
 
+## Formatting
+
+- `.editorconfig` (root) sets indentation/line-ending/charset defaults across editors.
+  `.gitattributes` normalizes line endings to LF in the repo regardless of checkout OS.
+- Python is formatted with `ruff format` (`ruff format .` from `server/`); TypeScript/web
+  with Prettier (`pnpm format` from `web/`, or `pnpm format:check` to verify without
+  writing). Both are enforced in CI (`ruff format --check`, `pnpm format:check`) - run the
+  write variant before committing rather than hand-formatting to match.
+- `web/eslint.config.mjs` loads `eslint-config-prettier` last, which disables any
+  stylistic ESLint rule that would conflict with Prettier - if you add a new ESLint
+  config block, keep it last in the chain for the same reason.
+
 ## Tests & CI scope
 
 - CI currently gates on lint (`ruff check`, pyflakes rules only — see `server/pyproject.toml`
