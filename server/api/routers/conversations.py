@@ -17,6 +17,7 @@ from src.storage.database import (
     get_conversation_messages,
     touch_conversation,
     delete_messages_after,
+    all_documents_accessible,
 )
 
 router = APIRouter()
@@ -43,6 +44,8 @@ def _get_owned_conversation(conversation_id: str, user: CurrentUser) -> dict:
 
 @router.post("/conversations")
 def create_conversation_endpoint(body: ConversationCreate, user: CurrentUser = Depends(get_current_user)):
+    if not all_documents_accessible(body.doc_ids, user.id):
+        raise HTTPException(status_code=404, detail="One or more documents were not found.")
     conversation_id = uuid.uuid4().hex
     return create_conversation(conversation_id, user_id=user.id, doc_ids=body.doc_ids)
 
@@ -96,6 +99,8 @@ def update_conversation_endpoint(
 def add_conversation_document_endpoint(
     conversation_id: str, body: AddConversationDocument, user: CurrentUser = Depends(get_current_user)
 ):
+    if not all_documents_accessible([body.doc_id], user.id):
+        raise HTTPException(status_code=404, detail="Document not found.")
     try:
         return add_document_to_conversation(conversation_id, user_id=user.id, doc_id=body.doc_id)
     except ValueError as e:

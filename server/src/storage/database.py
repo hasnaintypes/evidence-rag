@@ -777,6 +777,29 @@ def get_graph_data(doc_id: Optional[str] = None, allowed_doc_ids: Optional[List[
 MAX_CONVERSATION_DOCS = 5
 
 
+def all_documents_accessible(doc_ids: List[str], user_id: str) -> bool:
+    """
+    True only if every doc_id exists and is either shared/demo (user_id IS
+    NULL) or owned by `user_id`. Used before a conversation is created or
+    a document is attached to one (api/routers/conversations.py) - without
+    this, a caller could attach an arbitrary/guessed doc_id belonging to
+    another user and have process_chat_query() retrieve its content, since
+    retrieval only filters by the conversation's doc_ids, never by owner.
+    """
+    if not doc_ids:
+        return True
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = _ph(len(doc_ids))
+    cursor.execute(
+        f"SELECT doc_id FROM documents WHERE doc_id IN ({ph}) AND (user_id IS NULL OR user_id = {_ph(1)})",
+        tuple(doc_ids) + (user_id,),
+    )
+    accessible_ids = {r["doc_id"] for r in cursor.fetchall()}
+    conn.close()
+    return accessible_ids == set(doc_ids)
+
+
 def _filenames_for_doc_ids(cursor, doc_ids: List[str]) -> Dict[str, str]:
     """Batch-fetches filename for each doc_id (one query regardless of how
     many conversations/doc_ids are involved), since doc_ids is a JSON
