@@ -38,8 +38,9 @@ const ShimmerComponent = ({
   duration = 2,
   spread = 2,
 }: TextShimmerProps) => {
-  const MotionComponent = getMotionComponent(
-    Component as keyof JSX.IntrinsicElements
+  const MotionComponent = useMemo(
+    () => getMotionComponent(Component as keyof JSX.IntrinsicElements),
+    [Component]
   );
 
   const dynamicSpread = useMemo(
@@ -48,6 +49,11 @@ const ShimmerComponent = ({
   );
 
   return (
+    // getMotionComponent() returns the same cached reference for a given
+    // element (motionComponentCache above), so MotionComponent is
+    // referentially stable across renders despite this rule's static
+    // analysis treating any render-time factory call as unstable.
+    // eslint-disable-next-line react-hooks/static-components
     <MotionComponent
       animate={{ backgroundPosition: "0% center" }}
       className={cn(
