@@ -73,6 +73,15 @@ class Settings(BaseSettings):
     supabase_key: Optional[str] = None
     supabase_storage_bucket: str = "documents"
 
+    # --- Signed source-citation links (see src/security.py) ---
+    # GET /source/{filename} can't require an Authorization header (the
+    # frontend opens it via plain <a href> navigation, which can't attach
+    # one), so ownership is instead enforced via a short-lived signed
+    # token embedded in the link. Set this explicitly in production; it
+    # falls back to gemini_api_key only so existing local setups don't
+    # need a new required env var.
+    source_link_secret: Optional[str] = None
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 
