@@ -422,6 +422,36 @@ def get_document_status(doc_id: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
+def get_document_record(doc_id: str) -> Optional[Dict[str, Any]]:
+    """Returns {"user_id", "filename"} for doc_id (user_id None means
+    shared/demo), or None if no document with this doc_id exists. Used to
+    enforce ownership on the document/graph routes - see api/deps.py's
+    require_document_access()."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = _ph(1)
+    cursor.execute(f"SELECT user_id, filename FROM documents WHERE doc_id = {ph}", (doc_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def document_filename_accessible(filename: str, user_id: str) -> bool:
+    """True if `filename` belongs to a shared/demo document (user_id IS
+    NULL) or to one owned by `user_id`. Used by GET /source/{filename},
+    which can't carry an Authorization header - see src/security.py for
+    how the caller's identity is established for this route instead."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT 1 FROM documents WHERE filename = {_ph(1)} AND (user_id IS NULL OR user_id = {_ph(1)}) LIMIT 1",
+        (filename, user_id),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
+
+
 def get_indexed_embedding_models() -> List[str]:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -700,21 +730,34 @@ def upsert_edge(doc_id: str, source_entity_id: int, target_entity_id: int) -> No
     conn.close()
 
 
-def get_graph_data(doc_id: Optional[str] = None) -> Dict[str, Any]:
+def get_graph_data(doc_id: Optional[str] = None, allowed_doc_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    """
+    allowed_doc_ids scopes the "full graph" (doc_id=None) case to one
+    caller's own + shared documents, instead of every user's entities -
+    see api/routers/graph.py's graph_endpoint(). Ignored when doc_id is
+    given; the router checks that doc_id itself is accessible first.
+    """
+    if allowed_doc_ids is not None and not doc_id and not allowed_doc_ids:
+        return {"nodes": [], "edges": []}
+
     conn = get_db_connection()
     cursor = conn.cursor()
-    ph = _ph(1)
 
     if doc_id:
-        cursor.execute(f"SELECT id, name, doc_id, node_id FROM entities WHERE doc_id = {ph}", (doc_id,))
+        ph = _ph(1)
+        entity_where, entity_params = f"WHERE doc_id = {ph}", (doc_id,)
+    elif allowed_doc_ids is not None:
+        ph = _ph(len(allowed_doc_ids))
+        entity_where, entity_params = f"WHERE doc_id IN ({ph})", tuple(allowed_doc_ids)
     else:
-        cursor.execute("SELECT id, name, doc_id, node_id FROM entities")
+        entity_where, entity_params = "", ()
+
+    cursor.execute(f"SELECT id, name, doc_id, node_id FROM entities {entity_where}", entity_params)
     entity_rows = cursor.fetchall()
 
-    if doc_id:
-        cursor.execute(f"SELECT source_entity_id, target_entity_id, weight FROM entity_edges WHERE doc_id = {ph}", (doc_id,))
-    else:
-        cursor.execute("SELECT source_entity_id, target_entity_id, weight FROM entity_edges")
+    cursor.execute(
+        f"SELECT source_entity_id, target_entity_id, weight FROM entity_edges {entity_where}", entity_params
+    )
     edge_rows = cursor.fetchall()
 
     conn.close()
@@ -833,7 +876,6 @@ def add_document_to_conversation(conversation_id: str, user_id: str, doc_id: str
     message to the right status code."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    ph = _ph(2)
     cursor.execute(f"SELECT * FROM conversations WHERE id = {_ph(1)} AND user_id = {_ph(1)}", (conversation_id, user_id))
     row = cursor.fetchone()
     if not row:
