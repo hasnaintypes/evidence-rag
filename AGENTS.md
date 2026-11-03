@@ -30,6 +30,10 @@ Workflow rules for anyone (human or agent) making code changes in this repositor
   explicitly accepted as follow-up work (ideally as a tracked GitHub issue).
 - Merge only after CI is green and the review pass is resolved. Prefer squash or a clean
   merge over force-pushing history.
+- Delete the feature branch immediately after it's merged (`gh pr merge --delete-branch`
+  handles both the remote branch and, if it's checked out locally, the local one; follow
+  up with `git fetch --prune` to drop any now-stale local remote-tracking refs). Don't
+  leave merged branches lying around.
 
 ## Tests & CI scope
 
