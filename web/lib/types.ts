@@ -10,6 +10,11 @@ export type Source = {
   page: number | null;
   section: string;
   snippet: string;
+  // Signed, short-lived token required by GET /source/{filename} - see
+  // server/src/security.py. Null only for a source shape built without
+  // one (shouldn't happen from the real API; keeps this field optional
+  // for safety).
+  source_token: string | null;
 };
 
 export type Faithfulness = {
@@ -106,4 +111,5 @@ export type GraphSection = {
   heading_path: string | null;
   content: string | null;
   page: number | null;
+  source_token: string;
 };

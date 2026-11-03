@@ -171,9 +171,9 @@ export default function GraphPage() {
                 )}
                 {selectedDoc && (
                   <a
-                    href={`${API_BASE_URL}/source/${encodeURIComponent(selectedDoc.filename)}${
-                      selectedSection.page ? `#page=${selectedSection.page}` : ""
-                    }`}
+                    href={`${API_BASE_URL}/source/${encodeURIComponent(selectedDoc.filename)}?token=${encodeURIComponent(
+                      selectedSection.source_token
+                    )}${selectedSection.page ? `#page=${selectedSection.page}` : ""}`}
                     target="_blank"
                     rel="noreferrer"
                     className="mt-1 text-primary hover:underline"
