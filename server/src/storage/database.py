@@ -38,6 +38,7 @@ def _get_supabase_pool():
     if _supabase_pool is None:
         import psycopg2.pool
         import psycopg2.extras
+
         if not settings.supabase_db_url:
             raise RuntimeError("STORAGE_MODE=supabase requires SUPABASE_DB_URL to be set.")
         _supabase_pool = psycopg2.pool.ThreadedConnectionPool(
@@ -207,39 +208,51 @@ def init_db() -> None:
     conn.commit()
 
     # --- Migration pass: patch any pre-existing table missing new columns ---
-    _migrate_missing_columns(cursor, "documents", {
-        "filename": "TEXT",
-        "file_hash": "TEXT",
-        "node_count": "INTEGER DEFAULT 0",
-        "chunk_count": "INTEGER DEFAULT 0",
-        "embedding_model": "TEXT",
-        "user_id": "TEXT",
-    })
-    _migrate_missing_columns(cursor, "knowledge_nodes", {
-        "doc_id": "TEXT",
-        "parent_id": "TEXT",
-        "type": "TEXT",
-        "level": "INTEGER DEFAULT 0",
-        "heading_path": "TEXT",
-        "content": "TEXT",
-        "page": "INTEGER",
-        "bbox": "TEXT",
-        "node_order": "INTEGER",
-        "metadata": "TEXT",
-    })
-    _migrate_missing_columns(cursor, "document_chunks", {
-        "doc_id": "TEXT",
-        "source_file": "TEXT",
-        "page_number": "INTEGER DEFAULT 1",
-        "chunk_index": "INTEGER",
-        "chunk_text": "TEXT",
-        "embedding": "BLOB",
-        "node_type": "TEXT DEFAULT 'paragraph'",
-        "heading_path": "TEXT",
-        "node_ids": "TEXT",
-        "parent_id": "TEXT",
-        "bbox": "TEXT",
-    })
+    _migrate_missing_columns(
+        cursor,
+        "documents",
+        {
+            "filename": "TEXT",
+            "file_hash": "TEXT",
+            "node_count": "INTEGER DEFAULT 0",
+            "chunk_count": "INTEGER DEFAULT 0",
+            "embedding_model": "TEXT",
+            "user_id": "TEXT",
+        },
+    )
+    _migrate_missing_columns(
+        cursor,
+        "knowledge_nodes",
+        {
+            "doc_id": "TEXT",
+            "parent_id": "TEXT",
+            "type": "TEXT",
+            "level": "INTEGER DEFAULT 0",
+            "heading_path": "TEXT",
+            "content": "TEXT",
+            "page": "INTEGER",
+            "bbox": "TEXT",
+            "node_order": "INTEGER",
+            "metadata": "TEXT",
+        },
+    )
+    _migrate_missing_columns(
+        cursor,
+        "document_chunks",
+        {
+            "doc_id": "TEXT",
+            "source_file": "TEXT",
+            "page_number": "INTEGER DEFAULT 1",
+            "chunk_index": "INTEGER",
+            "chunk_text": "TEXT",
+            "embedding": "BLOB",
+            "node_type": "TEXT DEFAULT 'paragraph'",
+            "heading_path": "TEXT",
+            "node_ids": "TEXT",
+            "parent_id": "TEXT",
+            "bbox": "TEXT",
+        },
+    )
     conn.commit()
 
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_nodes_parent ON knowledge_nodes(parent_id)")
@@ -275,6 +288,7 @@ def _migrate_missing_columns(cursor, table_name: str, expected_columns: dict) ->
 # and embedding-model consistency checks
 # --------------------------------------------------------------------------- #
 
+
 def get_document_hash(doc_id: str) -> Optional[str]:
     """Only a successfully-completed ingest counts as "already indexed"
     for dedup purposes - a row stuck at status='processing' (background
@@ -302,7 +316,8 @@ def upsert_document_record(
     conn = get_db_connection()
     cursor = conn.cursor()
     if settings.storage_mode == "supabase":
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO documents (doc_id, filename, file_hash, node_count, chunk_count, embedding_model, user_id)
             VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (doc_id) DO UPDATE SET
@@ -313,9 +328,12 @@ def upsert_document_record(
                 chunk_count = EXCLUDED.chunk_count,
                 embedding_model = EXCLUDED.embedding_model,
                 user_id = EXCLUDED.user_id
-        """, (doc_id, filename, file_hash, node_count, chunk_count, embedding_model, user_id))
+        """,
+            (doc_id, filename, file_hash, node_count, chunk_count, embedding_model, user_id),
+        )
     else:
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO documents (doc_id, filename, file_hash, node_count, chunk_count, embedding_model, user_id)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(doc_id) DO UPDATE SET
@@ -326,7 +344,9 @@ def upsert_document_record(
                 chunk_count = excluded.chunk_count,
                 embedding_model = excluded.embedding_model,
                 user_id = excluded.user_id
-        """, (doc_id, filename, file_hash, node_count, chunk_count, embedding_model, user_id))
+        """,
+            (doc_id, filename, file_hash, node_count, chunk_count, embedding_model, user_id),
+        )
     conn.commit()
     conn.close()
 
@@ -342,7 +362,8 @@ def mark_document_processing(
     conn = get_db_connection()
     cursor = conn.cursor()
     if settings.storage_mode == "supabase":
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO documents (doc_id, filename, file_hash, node_count, chunk_count, user_id, status, chunks_indexed, chunks_total)
             VALUES (%s, %s, %s, %s, 0, %s, 'processing', 0, %s)
             ON CONFLICT (doc_id) DO UPDATE SET
@@ -355,9 +376,12 @@ def mark_document_processing(
                 status = 'processing',
                 chunks_indexed = 0,
                 chunks_total = EXCLUDED.chunks_total
-        """, (doc_id, filename, file_hash, node_count, user_id, chunks_total))
+        """,
+            (doc_id, filename, file_hash, node_count, user_id, chunks_total),
+        )
     else:
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO documents (doc_id, filename, file_hash, node_count, chunk_count, user_id, status, chunks_indexed, chunks_total)
             VALUES (?, ?, ?, ?, 0, ?, 'processing', 0, ?)
             ON CONFLICT(doc_id) DO UPDATE SET
@@ -370,7 +394,9 @@ def mark_document_processing(
                 status = 'processing',
                 chunks_indexed = 0,
                 chunks_total = excluded.chunks_total
-        """, (doc_id, filename, file_hash, node_count, user_id, chunks_total))
+        """,
+            (doc_id, filename, file_hash, node_count, user_id, chunks_total),
+        )
     conn.commit()
     conn.close()
 
@@ -384,7 +410,13 @@ def set_document_progress(doc_id: str, chunks_indexed: int) -> None:
     conn = get_db_connection()
     cursor = conn.cursor()
     ph = _ph(1)
-    cursor.execute(f"UPDATE documents SET chunks_indexed = {ph} WHERE doc_id = {ph}", (chunks_indexed, doc_id,))
+    cursor.execute(
+        f"UPDATE documents SET chunks_indexed = {ph} WHERE doc_id = {ph}",
+        (
+            chunks_indexed,
+            doc_id,
+        ),
+    )
     conn.commit()
     conn.close()
 
@@ -522,6 +554,7 @@ def list_documents(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
 # Knowledge tree (nodes)
 # --------------------------------------------------------------------------- #
 
+
 def insert_nodes(nodes: List[Any]) -> None:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -531,23 +564,45 @@ def insert_nodes(nodes: List[Any]) -> None:
         bbox = d.get("bbox")
         metadata = d.get("metadata", {})
         if is_supabase:
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO knowledge_nodes (id, doc_id, parent_id, type, level, heading_path, content, page, bbox, node_order, metadata)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                d["id"], d["doc_id"], d.get("parent_id"), d["type"], d.get("level", 0),
-                d.get("heading_path", ""), d.get("content", ""), d.get("page"),
-                json.dumps(bbox) if bbox else None, d.get("order", 0), json.dumps(metadata),
-            ))
+            """,
+                (
+                    d["id"],
+                    d["doc_id"],
+                    d.get("parent_id"),
+                    d["type"],
+                    d.get("level", 0),
+                    d.get("heading_path", ""),
+                    d.get("content", ""),
+                    d.get("page"),
+                    json.dumps(bbox) if bbox else None,
+                    d.get("order", 0),
+                    json.dumps(metadata),
+                ),
+            )
         else:
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO knowledge_nodes (id, doc_id, parent_id, type, level, heading_path, content, page, bbox, node_order, metadata)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                d["id"], d["doc_id"], d.get("parent_id"), d["type"], d.get("level", 0),
-                d.get("heading_path", ""), d.get("content", ""), d.get("page"),
-                json.dumps(bbox) if bbox else None, d.get("order", 0), json.dumps(metadata),
-            ))
+            """,
+                (
+                    d["id"],
+                    d["doc_id"],
+                    d.get("parent_id"),
+                    d["type"],
+                    d.get("level", 0),
+                    d.get("heading_path", ""),
+                    d.get("content", ""),
+                    d.get("page"),
+                    json.dumps(bbox) if bbox else None,
+                    d.get("order", 0),
+                    json.dumps(metadata),
+                ),
+            )
     conn.commit()
     conn.close()
 
@@ -567,18 +622,27 @@ def insert_chunks_batch(items: List[tuple]) -> None:
 
     if settings.storage_mode == "supabase":
         import psycopg2.extras
+
         rows = []
         for chunk, embedding in items:
             meta = chunk["metadata"]
             bbox = meta.get("bbox")
             embedding_literal = "[" + ",".join(str(float(x)) for x in embedding) + "]"
-            rows.append((
-                meta.get("doc_id"), meta.get("source_file", ""), meta.get("page_number", 1),
-                meta.get("chunk_index", 0), chunk["chunk_text"], embedding_literal,
-                meta.get("node_type", "paragraph"), meta.get("heading_path", ""),
-                json.dumps(meta.get("node_ids", [])), meta.get("parent_id"),
-                json.dumps(bbox) if bbox else None,
-            ))
+            rows.append(
+                (
+                    meta.get("doc_id"),
+                    meta.get("source_file", ""),
+                    meta.get("page_number", 1),
+                    meta.get("chunk_index", 0),
+                    chunk["chunk_text"],
+                    embedding_literal,
+                    meta.get("node_type", "paragraph"),
+                    meta.get("heading_path", ""),
+                    json.dumps(meta.get("node_ids", [])),
+                    meta.get("parent_id"),
+                    json.dumps(bbox) if bbox else None,
+                )
+            )
         psycopg2.extras.execute_values(
             cursor,
             """INSERT INTO document_chunks
@@ -594,19 +658,30 @@ def insert_chunks_batch(items: List[tuple]) -> None:
             meta = chunk["metadata"]
             bbox = meta.get("bbox")
             embedding_blob = json.dumps(embedding).encode("utf-8")
-            rows.append((
-                meta.get("doc_id"), meta.get("source_file", ""), meta.get("page_number", 1),
-                meta.get("chunk_index", 0), chunk["chunk_text"], embedding_blob,
-                meta.get("node_type", "paragraph"), meta.get("heading_path", ""),
-                json.dumps(meta.get("node_ids", [])), meta.get("parent_id"),
-                json.dumps(bbox) if bbox else None,
-            ))
-        cursor.executemany("""
+            rows.append(
+                (
+                    meta.get("doc_id"),
+                    meta.get("source_file", ""),
+                    meta.get("page_number", 1),
+                    meta.get("chunk_index", 0),
+                    chunk["chunk_text"],
+                    embedding_blob,
+                    meta.get("node_type", "paragraph"),
+                    meta.get("heading_path", ""),
+                    json.dumps(meta.get("node_ids", [])),
+                    meta.get("parent_id"),
+                    json.dumps(bbox) if bbox else None,
+                )
+            )
+        cursor.executemany(
+            """
             INSERT INTO document_chunks
                 (doc_id, source_file, page_number, chunk_index, chunk_text, embedding,
                  node_type, heading_path, node_ids, parent_id, bbox)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, rows)
+        """,
+            rows,
+        )
 
     conn.commit()
     conn.close()
@@ -642,6 +717,7 @@ def get_children(node_id: str) -> List[Dict[str, Any]]:
 # Retrieval chunks (dense + sparse index source)
 # --------------------------------------------------------------------------- #
 
+
 def insert_chunk(chunk: Dict[str, Any], embedding: List[float]) -> None:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -652,32 +728,50 @@ def insert_chunk(chunk: Dict[str, Any], embedding: List[float]) -> None:
         # pgvector accepts its text literal ("[0.1,0.2,...]") cast to
         # ::vector - no extra adapter package needed for a plain insert.
         embedding_literal = "[" + ",".join(str(float(x)) for x in embedding) + "]"
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO document_chunks
                 (doc_id, source_file, page_number, chunk_index, chunk_text, embedding,
                  node_type, heading_path, node_ids, parent_id, bbox)
             VALUES (%s, %s, %s, %s, %s, %s::vector, %s, %s, %s, %s, %s)
-        """, (
-            meta.get("doc_id"), meta.get("source_file", ""), meta.get("page_number", 1),
-            meta.get("chunk_index", 0), chunk["chunk_text"], embedding_literal,
-            meta.get("node_type", "paragraph"), meta.get("heading_path", ""),
-            json.dumps(meta.get("node_ids", [])), meta.get("parent_id"),
-            json.dumps(bbox) if bbox else None,
-        ))
+        """,
+            (
+                meta.get("doc_id"),
+                meta.get("source_file", ""),
+                meta.get("page_number", 1),
+                meta.get("chunk_index", 0),
+                chunk["chunk_text"],
+                embedding_literal,
+                meta.get("node_type", "paragraph"),
+                meta.get("heading_path", ""),
+                json.dumps(meta.get("node_ids", [])),
+                meta.get("parent_id"),
+                json.dumps(bbox) if bbox else None,
+            ),
+        )
     else:
         embedding_blob = json.dumps(embedding).encode("utf-8")
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO document_chunks
                 (doc_id, source_file, page_number, chunk_index, chunk_text, embedding,
                  node_type, heading_path, node_ids, parent_id, bbox)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            meta.get("doc_id"), meta.get("source_file", ""), meta.get("page_number", 1),
-            meta.get("chunk_index", 0), chunk["chunk_text"], embedding_blob,
-            meta.get("node_type", "paragraph"), meta.get("heading_path", ""),
-            json.dumps(meta.get("node_ids", [])), meta.get("parent_id"),
-            json.dumps(bbox) if bbox else None,
-        ))
+        """,
+            (
+                meta.get("doc_id"),
+                meta.get("source_file", ""),
+                meta.get("page_number", 1),
+                meta.get("chunk_index", 0),
+                chunk["chunk_text"],
+                embedding_blob,
+                meta.get("node_type", "paragraph"),
+                meta.get("heading_path", ""),
+                json.dumps(meta.get("node_ids", [])),
+                meta.get("parent_id"),
+                json.dumps(bbox) if bbox else None,
+            ),
+        )
     conn.commit()
     conn.close()
 
@@ -709,21 +803,28 @@ def get_all_chunks_for_sparse() -> List[Dict[str, Any]]:
 # Entity graph (entities + co-occurrence edges)
 # --------------------------------------------------------------------------- #
 
+
 def upsert_entity(doc_id: str, name: str, node_id: str) -> int:
     conn = get_db_connection()
     cursor = conn.cursor()
     if settings.storage_mode == "supabase":
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO entities (doc_id, name, node_id) VALUES (%s, %s, %s)
             ON CONFLICT (doc_id, name) DO NOTHING
-        """, (doc_id, name, node_id))
+        """,
+            (doc_id, name, node_id),
+        )
         conn.commit()
         cursor.execute("SELECT id FROM entities WHERE doc_id = %s AND name = %s", (doc_id, name))
     else:
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO entities (doc_id, name, node_id) VALUES (?, ?, ?)
             ON CONFLICT(doc_id, name) DO NOTHING
-        """, (doc_id, name, node_id))
+        """,
+            (doc_id, name, node_id),
+        )
         conn.commit()
         cursor.execute("SELECT id FROM entities WHERE doc_id = ? AND name = ?", (doc_id, name))
 
@@ -736,19 +837,25 @@ def upsert_edge(doc_id: str, source_entity_id: int, target_entity_id: int) -> No
     conn = get_db_connection()
     cursor = conn.cursor()
     if settings.storage_mode == "supabase":
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO entity_edges (doc_id, source_entity_id, target_entity_id, weight)
             VALUES (%s, %s, %s, 1)
             ON CONFLICT (source_entity_id, target_entity_id) DO UPDATE SET
                 weight = entity_edges.weight + 1
-        """, (doc_id, source_entity_id, target_entity_id))
+        """,
+            (doc_id, source_entity_id, target_entity_id),
+        )
     else:
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO entity_edges (doc_id, source_entity_id, target_entity_id, weight)
             VALUES (?, ?, ?, 1)
             ON CONFLICT(source_entity_id, target_entity_id) DO UPDATE SET
                 weight = weight + 1
-        """, (doc_id, source_entity_id, target_entity_id))
+        """,
+            (doc_id, source_entity_id, target_entity_id),
+        )
     conn.commit()
     conn.close()
 
@@ -778,18 +885,17 @@ def get_graph_data(doc_id: Optional[str] = None, allowed_doc_ids: Optional[List[
     cursor.execute(f"SELECT id, name, doc_id, node_id FROM entities {entity_where}", entity_params)
     entity_rows = cursor.fetchall()
 
-    cursor.execute(
-        f"SELECT source_entity_id, target_entity_id, weight FROM entity_edges {entity_where}", entity_params
-    )
+    cursor.execute(f"SELECT source_entity_id, target_entity_id, weight FROM entity_edges {entity_where}", entity_params)
     edge_rows = cursor.fetchall()
 
     conn.close()
     return {
         "nodes": [
-            {"id": r["id"], "label": r["name"], "doc_id": r["doc_id"], "node_id": r["node_id"]}
-            for r in entity_rows
+            {"id": r["id"], "label": r["name"], "doc_id": r["doc_id"], "node_id": r["node_id"]} for r in entity_rows
         ],
-        "edges": [{"from": r["source_entity_id"], "to": r["target_entity_id"], "weight": r["weight"]} for r in edge_rows],
+        "edges": [
+            {"from": r["source_entity_id"], "to": r["target_entity_id"], "weight": r["weight"]} for r in edge_rows
+        ],
     }
 
 
@@ -882,12 +988,15 @@ def list_conversations(user_id: str) -> List[Dict[str, Any]]:
     conn = get_db_connection()
     cursor = conn.cursor()
     ph = _ph(1)
-    cursor.execute(f"""
+    cursor.execute(
+        f"""
         SELECT id, doc_ids, pinned, title, created_at, updated_at
         FROM conversations
         WHERE user_id = {ph}
         ORDER BY pinned DESC, updated_at DESC
-    """, (user_id,))
+    """,
+        (user_id,),
+    )
     rows = [dict(r) for r in cursor.fetchall()]
     all_doc_ids = {d for r in rows for d in json.loads(r["doc_ids"])}
     filename_map = _filenames_for_doc_ids(cursor, list(all_doc_ids))
@@ -922,7 +1031,9 @@ def add_document_to_conversation(conversation_id: str, user_id: str, doc_id: str
     message to the right status code."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(f"SELECT * FROM conversations WHERE id = {_ph(1)} AND user_id = {_ph(1)}", (conversation_id, user_id))
+    cursor.execute(
+        f"SELECT * FROM conversations WHERE id = {_ph(1)} AND user_id = {_ph(1)}", (conversation_id, user_id)
+    )
     row = cursor.fetchone()
     if not row:
         conn.close()
@@ -979,9 +1090,7 @@ def update_conversation(
         params.append(pinned if settings.storage_mode == "supabase" else int(pinned))
     params.append(conversation_id)
     params.append(user_id)
-    cursor.execute(
-        f"UPDATE conversations SET {', '.join(sets)} WHERE id = {ph} AND user_id = {ph}", tuple(params)
-    )
+    cursor.execute(f"UPDATE conversations SET {', '.join(sets)} WHERE id = {ph} AND user_id = {ph}", tuple(params))
     matched = cursor.rowcount > 0
     conn.commit()
     conn.close()
@@ -1018,9 +1127,7 @@ def touch_conversation(conversation_id: str, title: Optional[str] = None) -> Non
                 (title, conversation_id),
             )
         else:
-            cursor.execute(
-                "UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (conversation_id,)
-            )
+            cursor.execute("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (conversation_id,))
     conn.commit()
     conn.close()
 
@@ -1036,17 +1143,23 @@ def insert_message(
     cursor = conn.cursor()
     sources_json = json.dumps(sources) if sources is not None else None
     if settings.storage_mode == "supabase":
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO messages (conversation_id, role, content, sources_json, faithfulness_score)
             VALUES (%s, %s, %s, %s, %s) RETURNING id, created_at
-        """, (conversation_id, role, content, sources_json, faithfulness_score))
+        """,
+            (conversation_id, role, content, sources_json, faithfulness_score),
+        )
         row = cursor.fetchone()
         conn.commit()
     else:
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT INTO messages (conversation_id, role, content, sources_json, faithfulness_score)
             VALUES (?, ?, ?, ?, ?)
-        """, (conversation_id, role, content, sources_json, faithfulness_score))
+        """,
+            (conversation_id, role, content, sources_json, faithfulness_score),
+        )
         conn.commit()
         cursor.execute("SELECT id, created_at FROM messages WHERE id = ?", (cursor.lastrowid,))
         row = cursor.fetchone()
@@ -1075,8 +1188,10 @@ def get_conversation_messages(conversation_id: str, limit: Optional[int] = None)
     for r in rows:
         d = dict(r)
         d["sources"] = (
-            d["sources_json"] if isinstance(d["sources_json"], list) else json.loads(d["sources_json"] or "[]")
-        ) if d.get("sources_json") is not None else []
+            (d["sources_json"] if isinstance(d["sources_json"], list) else json.loads(d["sources_json"] or "[]"))
+            if d.get("sources_json") is not None
+            else []
+        )
         messages.append(d)
 
     return messages[-limit:] if limit else messages

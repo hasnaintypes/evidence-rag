@@ -7,6 +7,7 @@ statements against `public.*`) - existing user accounts are untouched.
 Usage: python scripts/reset_data.py [--yes]
   --yes  skip the confirmation prompt (for CI/scripted use)
 """
+
 import os
 import sys
 
@@ -44,9 +45,7 @@ def reset_data() -> None:
         for table in TABLES:
             cursor.execute(f"DELETE FROM {table}")
         cursor.execute(
-            "DELETE FROM sqlite_sequence WHERE name IN ({})".format(
-                ", ".join("?" for _ in TABLES)
-            ),
+            "DELETE FROM sqlite_sequence WHERE name IN ({})".format(", ".join("?" for _ in TABLES)),
             TABLES,
         )
 

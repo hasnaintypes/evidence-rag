@@ -45,7 +45,9 @@ export async function getDocumentStatus(docId: string): Promise<DocumentStatus> 
   return response.json() as Promise<DocumentStatus>;
 }
 
-export async function uploadDocument(file: File): Promise<{ docId: string; status: DocumentStatus["status"] }> {
+export async function uploadDocument(
+  file: File,
+): Promise<{ docId: string; status: DocumentStatus["status"] }> {
   const form = new FormData();
   form.append("file", file);
   // No Content-Type header here - the browser sets the multipart boundary
@@ -74,7 +76,10 @@ export async function uploadDocument(file: File): Promise<{ docId: string; statu
 const SSE_MAX_RECONNECT_ATTEMPTS = 5;
 const SSE_RECONNECT_BASE_DELAY_MS = 1000;
 
-export function subscribeToDocumentStatus(docId: string, onUpdate: (status: DocumentStatus) => void): () => void {
+export function subscribeToDocumentStatus(
+  docId: string,
+  onUpdate: (status: DocumentStatus) => void,
+): () => void {
   const controller = new AbortController();
   let attempt = 0;
 
@@ -158,19 +163,22 @@ export async function createConversation(docIds: string[]): Promise<Conversation
 
 export async function addDocumentToConversation(
   conversationId: string,
-  docId: string
+  docId: string,
 ): Promise<Conversation> {
-  const response = await apiFetch(`/conversations/${encodeURIComponent(conversationId)}/documents`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ doc_id: docId }),
-  });
+  const response = await apiFetch(
+    `/conversations/${encodeURIComponent(conversationId)}/documents`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doc_id: docId }),
+    },
+  );
   return response.json() as Promise<Conversation>;
 }
 
 export async function updateConversation(
   conversationId: string,
-  updates: { title?: string; pinned?: boolean }
+  updates: { title?: string; pinned?: boolean },
 ): Promise<Conversation> {
   const response = await apiFetch(`/conversations/${encodeURIComponent(conversationId)}`, {
     method: "PATCH",
@@ -181,7 +189,7 @@ export async function updateConversation(
 }
 
 export async function getConversation(
-  conversationId: string
+  conversationId: string,
 ): Promise<{ conversation: Conversation; messages: ConversationMessage[] }> {
   const response = await apiFetch(`/conversations/${encodeURIComponent(conversationId)}`);
   return response.json();
@@ -194,7 +202,7 @@ export async function deleteConversation(conversationId: string): Promise<void> 
 export async function sendMessage(
   conversationId: string,
   message: string,
-  advancedMode: boolean
+  advancedMode: boolean,
 ): Promise<ConversationMessage> {
   const response = await apiFetch(`/conversations/${encodeURIComponent(conversationId)}/messages`, {
     method: "POST",
@@ -206,11 +214,11 @@ export async function sendMessage(
 
 export async function restoreCheckpoint(
   conversationId: string,
-  messageId: number
+  messageId: number,
 ): Promise<ConversationMessage[]> {
   const response = await apiFetch(
     `/conversations/${encodeURIComponent(conversationId)}/checkpoints/${messageId}/restore`,
-    { method: "POST" }
+    { method: "POST" },
   );
   const data = (await response.json()) as { messages: ConversationMessage[] };
   return data.messages;

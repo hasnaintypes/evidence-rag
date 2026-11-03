@@ -33,10 +33,10 @@ def compress_context_chunks(query: str, chunks: List[Dict[str, Any]]) -> List[Di
         if chunk.get("page_number") in (1, 2, "1", "2"):
             lines = chunk["chunk_text"].split("\n")
             clean_lines = [
-                line.strip() for line in lines
+                line.strip()
+                for line in lines
                 if line.strip()
-                and not any(noise in line.lower() for noise in
-                            ["no part of this", "subject to change", "all rights"])
+                and not any(noise in line.lower() for noise in ["no part of this", "subject to change", "all rights"])
             ]
             chunk["chunk_text"] = "\n".join(clean_lines)
             _attach_parent_context(chunk)

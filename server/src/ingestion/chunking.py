@@ -108,7 +108,7 @@ def _node_to_chunk(
             "chunk_index": chunk_index,
             "node_type": node.type.value if isinstance(node.type, NodeType) else node.type,
             "heading_path": node.heading_path,
-            "node_ids": node_ids,      # used by compression.py for parent expansion
+            "node_ids": node_ids,  # used by compression.py for parent expansion
             "parent_id": node.parent_id,
             "bbox": node.bbox,
         },
@@ -120,7 +120,10 @@ def _node_to_chunk(
 # parse_to_tree, e.g. markdown_parser.py / docx_parser.py / xlsx_parser.py)
 # --------------------------------------------------------------------------- #
 
-def chunk_document(file_path: str, content: str, chunk_size: int = 500, chunk_overlap: int = 50) -> List[Dict[str, Any]]:
+
+def chunk_document(
+    file_path: str, content: str, chunk_size: int = 500, chunk_overlap: int = 50
+) -> List[Dict[str, Any]]:
     """
     Splits document content into token/character-aware chunks and attaches structural metadata.
 
@@ -140,7 +143,7 @@ def chunk_document(file_path: str, content: str, chunk_size: int = 500, chunk_ov
 
     # Check if the document contains explicit page markers (inserted by PDFParser)
     # e.g., "[Page 1]\nOperational steps..."
-    page_segments = re.split(r'\[Page\s+(\d+)\]\n', content)
+    page_segments = re.split(r"\[Page\s+(\d+)\]\n", content)
 
     if len(page_segments) > 1:
         # Document has explicit page structure (PDF mode)
@@ -162,18 +165,20 @@ def chunk_document(file_path: str, content: str, chunk_size: int = 500, chunk_ov
                     continue
 
                 for i in range(0, len(words), chunk_size - chunk_overlap):
-                    chunk_words = words[i:i + chunk_size]
+                    chunk_words = words[i : i + chunk_size]
                     chunk_text = " ".join(chunk_words)
 
                     if chunk_text.strip():
-                        chunks_data.append({
-                            "chunk_text": chunk_text,
-                            "metadata": {
-                                "source_file": filename,
-                                "page_number": page_num,
-                                "chunk_index": chunk_index
+                        chunks_data.append(
+                            {
+                                "chunk_text": chunk_text,
+                                "metadata": {
+                                    "source_file": filename,
+                                    "page_number": page_num,
+                                    "chunk_index": chunk_index,
+                                },
                             }
-                        })
+                        )
                         chunk_index += 1
             except StopIteration:
                 break
@@ -183,19 +188,17 @@ def chunk_document(file_path: str, content: str, chunk_size: int = 500, chunk_ov
         chunk_index = 0
 
         for i in range(0, len(words), chunk_size - chunk_overlap):
-            chunk_words = words[i:i + chunk_size]
+            chunk_words = words[i : i + chunk_size]
             chunk_text = " ".join(chunk_words)
 
             if chunk_text.strip():
                 # For non-PDF assets, default page_number to 1 or log row indices if available
-                chunks_data.append({
-                    "chunk_text": chunk_text,
-                    "metadata": {
-                        "source_file": filename,
-                        "page_number": 1,
-                        "chunk_index": chunk_index
+                chunks_data.append(
+                    {
+                        "chunk_text": chunk_text,
+                        "metadata": {"source_file": filename, "page_number": 1, "chunk_index": chunk_index},
                     }
-                })
+                )
                 chunk_index += 1
 
     return chunks_data

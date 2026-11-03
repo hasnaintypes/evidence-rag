@@ -104,11 +104,23 @@ function ProfileSection({ user }: { user: User }) {
           <AvatarFallback>{name.charAt(0).toUpperCase()}</AvatarFallback>
         </Avatar>
         <div className="flex gap-2">
-          <Button type="button" variant="outline" size="sm" onClick={handleShuffleAvatar} disabled={isShuffling}>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={handleShuffleAvatar}
+            disabled={isShuffling}
+          >
             Shuffle avatar
           </Button>
           {avatarSeed && (
-            <Button type="button" variant="ghost" size="sm" onClick={handleResetAvatar} disabled={isShuffling}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={handleResetAvatar}
+              disabled={isShuffling}
+            >
               Reset
             </Button>
           )}
@@ -118,7 +130,12 @@ function ProfileSection({ user }: { user: User }) {
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="settings-full-name">Full name</Label>
-          <Input id="settings-full-name" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Your name" />
+          <Input
+            id="settings-full-name"
+            value={fullName}
+            onChange={(e) => setFullName(e.target.value)}
+            placeholder="Your name"
+          />
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="settings-profession">Profession</Label>
@@ -133,7 +150,13 @@ function ProfileSection({ user }: { user: User }) {
 
       <div className="flex flex-col gap-1.5">
         <Label htmlFor="settings-bio">Bio</Label>
-        <Textarea id="settings-bio" value={bio} onChange={(e) => setBio(e.target.value)} placeholder="A short bio" rows={3} />
+        <Textarea
+          id="settings-bio"
+          value={bio}
+          onChange={(e) => setBio(e.target.value)}
+          placeholder="A short bio"
+          rows={3}
+        />
       </div>
 
       <Button type="submit" disabled={isSaving} className="self-start">
@@ -210,7 +233,7 @@ export function SettingsDialog({
                 "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors [&_svg]:size-4",
                 activeSection === section.id
                   ? "bg-accent text-accent-foreground"
-                  : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                  : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
               )}
             >
               <section.icon />
@@ -223,7 +246,10 @@ export function SettingsDialog({
           <div className="mx-auto max-w-xl">
             {activeSection === "profile" && <ProfileSection key={user.id} user={user} />}
             {activeSection === "account" && (
-              <AccountSection user={user} onSignOut={() => signOut().then(() => onOpenChange(false))} />
+              <AccountSection
+                user={user}
+                onSignOut={() => signOut().then(() => onOpenChange(false))}
+              />
             )}
           </div>
         </div>

@@ -4,7 +4,11 @@ import { Message, MessageContent, MessageResponse } from "@/components/ai-elemen
 import { AttachmentChips } from "@/components/chat/attachment-chips";
 import { Reasoning, ReasoningTrigger, ReasoningContent } from "@/components/ai-elements/reasoning";
 import { Sources, SourcesTrigger, SourcesContent } from "@/components/ai-elements/sources";
-import { InlineCitation, InlineCitationCard, InlineCitationCardBody } from "@/components/ai-elements/inline-citation";
+import {
+  InlineCitation,
+  InlineCitationCard,
+  InlineCitationCardBody,
+} from "@/components/ai-elements/inline-citation";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Badge } from "@/components/ui/badge";
 import { HoverCardTrigger } from "@/components/ui/hover-card";
@@ -84,8 +88,12 @@ export function ChatMessageBubble({
                     </span>
                   </HoverCardTrigger>
                   <InlineCitationCardBody>
-                    <p className="mb-1 truncate text-sm font-medium leading-tight">{source.section}</p>
-                    <p className="line-clamp-4 text-sm leading-relaxed text-muted-foreground">{source.snippet}</p>
+                    <p className="mb-1 truncate text-sm font-medium leading-tight">
+                      {source.section}
+                    </p>
+                    <p className="line-clamp-4 text-sm leading-relaxed text-muted-foreground">
+                      {source.snippet}
+                    </p>
                   </InlineCitationCardBody>
                 </InlineCitationCard>
               </InlineCitation>

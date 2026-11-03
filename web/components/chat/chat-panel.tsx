@@ -33,7 +33,11 @@ import {
 } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { MAX_CONVERSATION_DOCS } from "@/lib/types";
-import type { ChatMessage, Conversation as ConversationRecord, ConversationMessage } from "@/lib/types";
+import type {
+  ChatMessage,
+  Conversation as ConversationRecord,
+  ConversationMessage,
+} from "@/lib/types";
 import { Loader2, Paperclip } from "lucide-react";
 
 const ACCEPTED_EXTENSIONS = ".md,.pdf,.docx,.xlsx,.xls,.csv";
@@ -52,7 +56,10 @@ function fromServerMessage(m: ConversationMessage): ChatMessage {
     content: m.content,
     thinking: m.thinking,
     sources: m.sources,
-    faithfulness: m.faithfulness_score !== null ? { score: m.faithfulness_score, unsupported_claims: [] } : undefined,
+    faithfulness:
+      m.faithfulness_score !== null
+        ? { score: m.faithfulness_score, unsupported_claims: [] }
+        : undefined,
   };
 }
 
@@ -75,7 +82,9 @@ function timeOfDayGreeting(): string {
   return "Evening";
 }
 
-function displayName(user: { email?: string; user_metadata?: { full_name?: string } } | null | undefined): string {
+function displayName(
+  user: { email?: string; user_metadata?: { full_name?: string } } | null | undefined,
+): string {
   const fullName = user?.user_metadata?.full_name?.trim();
   if (fullName) return fullName.split(" ")[0];
   if (!user?.email) return "there";
@@ -91,7 +100,9 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const [isSending, setIsSending] = useState(false);
   const [isAttaching, setIsAttaching] = useState(false);
-  const [pendingAttachments, setPendingAttachments] = useState<{ docId: string; filename: string }[]>([]);
+  const [pendingAttachments, setPendingAttachments] = useState<
+    { docId: string; filename: string }[]
+  >([]);
   const [docStatuses, setDocStatuses] = useState<Record<string, DocumentStatus["status"]>>({});
   const statusUnsubscribes = useRef<Record<string, () => void>>({});
 
@@ -152,17 +163,28 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
     };
     const pendingId = nextMessageId();
 
-    setMessages((prev) => [...prev, userMessage, { id: pendingId, role: "assistant", content: "", pending: true }]);
+    setMessages((prev) => [
+      ...prev,
+      userMessage,
+      { id: pendingId, role: "assistant", content: "", pending: true },
+    ]);
     setPendingAttachments([]);
     setIsSending(true);
 
     try {
       const result = await sendMessage(conversationId, trimmed, true);
-      setMessages((prev) => prev.map((m) => (m.id === pendingId ? { ...fromServerMessage(result), id: pendingId } : m)));
+      setMessages((prev) =>
+        prev.map((m) => (m.id === pendingId ? { ...fromServerMessage(result), id: pendingId } : m)),
+      );
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Something went wrong reaching the server.";
+      const message =
+        error instanceof Error ? error.message : "Something went wrong reaching the server.";
       toast.error(message);
-      setMessages((prev) => prev.map((m) => (m.id === pendingId ? { ...m, content: message, pending: false, error: true } : m)));
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === pendingId ? { ...m, content: message, pending: false, error: true } : m,
+        ),
+      );
     } finally {
       setIsSending(false);
     }
@@ -226,9 +248,15 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
             type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={isSending || isAttaching || atDocCap}
-            tooltip={atDocCap ? `Max ${MAX_CONVERSATION_DOCS} documents per chat` : "Attach a document"}
+            tooltip={
+              atDocCap ? `Max ${MAX_CONVERSATION_DOCS} documents per chat` : "Attach a document"
+            }
           >
-            {isAttaching ? <Loader2 className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
+            {isAttaching ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Paperclip className="size-4" />
+            )}
           </PromptInputButton>
           <input
             ref={fileInputRef}
@@ -280,7 +308,10 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
                   {isLastAssistantTurn && !isFinalMessage && (
                     <Checkpoint>
                       <CheckpointIcon />
-                      <CheckpointTrigger tooltip="Restore conversation to this point" onClick={() => handleRestore(message.serverId!)}>
+                      <CheckpointTrigger
+                        tooltip="Restore conversation to this point"
+                        onClick={() => handleRestore(message.serverId!)}
+                      >
                         Restore here
                       </CheckpointTrigger>
                     </Checkpoint>

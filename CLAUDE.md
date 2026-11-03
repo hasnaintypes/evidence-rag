@@ -29,10 +29,13 @@ python scripts/run_eval.py       # Precision@5 / Recall@5 / MRR / faithfulness o
 python scripts/compare_eval.py   # diffs the fresh run against docs/eval_baseline.json, writes server/eval_status.txt
 python scripts/test_connection.py  # quick Gemini API connectivity check
 python scripts/reset_data.py       # wipe local SQLite/file storage
+ruff check .                        # lint (pyflakes rules only - see pyproject.toml)
+ruff format .                       # format (format .--check to verify without writing)
 ```
 
-CI (`.github/workflows/eval.yml`) runs this eval harness, not a test suite, and only on PRs/pushes
-touching `server/src/retrieval/**`, `server/src/ingestion/**`, `server/src/query_pipeline.py`, or
+CI (`.github/workflows/ci.yml`) runs `ruff check`/`ruff format --check`, gating every PR/push.
+`.github/workflows/eval.yml` runs the eval harness above, but only on PRs/pushes touching
+`server/src/retrieval/**`, `server/src/ingestion/**`, `server/src/query_pipeline.py`, or
 `docs/eval_set.json`. It auto-commits `docs/eval_baseline.json` on merges to `main`.
 
 ### Web (`web/`)
@@ -43,6 +46,7 @@ cp .env.example .env   # NEXT_PUBLIC_API_URL, NEXT_PUBLIC_SUPABASE_URL, NEXT_PUB
 pnpm dev               # next dev
 pnpm build
 pnpm lint              # eslint
+pnpm format            # prettier --write (format:check to verify without writing)
 ```
 
 No `pnpm test` script exists.

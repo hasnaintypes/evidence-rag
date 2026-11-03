@@ -141,7 +141,9 @@ export function AppSidebar() {
           render={<Link href={`/chat/${conversation.id}`} />}
         >
           <MessagesSquare />
-          <span className="truncate">{conversation.title ?? conversation.filenames[0] ?? "New chat"}</span>
+          <span className="truncate">
+            {conversation.title ?? conversation.filenames[0] ?? "New chat"}
+          </span>
         </SidebarMenuButton>
         <DropdownMenu>
           <DropdownMenuTrigger render={<SidebarMenuAction showOnHover />}>
@@ -199,14 +201,22 @@ export function AppSidebar() {
           <SidebarGroupContent>
             <SidebarMenu className="gap-1.5">
               <SidebarMenuItem>
-                <SidebarMenuButton isActive={pathname === "/chat/new"} tooltip="New chat" render={<Link href="/chat/new" />}>
+                <SidebarMenuButton
+                  isActive={pathname === "/chat/new"}
+                  tooltip="New chat"
+                  render={<Link href="/chat/new" />}
+                >
                   <Plus />
                   <span>New chat</span>
                 </SidebarMenuButton>
               </SidebarMenuItem>
               {NAV_LINKS.map((link) => (
                 <SidebarMenuItem key={link.href}>
-                  <SidebarMenuButton isActive={pathname === link.href} tooltip={link.label} render={<Link href={link.href} />}>
+                  <SidebarMenuButton
+                    isActive={pathname === link.href}
+                    tooltip={link.label}
+                    render={<Link href={link.href} />}
+                  >
                     <link.icon />
                     <span>{link.label}</span>
                   </SidebarMenuButton>

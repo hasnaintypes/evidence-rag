@@ -5,9 +5,14 @@ from typing import List, Dict, Any
 
 from src.config import settings
 from src.storage.database import (
-    insert_chunks_batch, insert_nodes, get_document_hash,
-    delete_document_data, mark_document_processing,
-    set_document_progress, mark_document_ready, mark_document_failed,
+    insert_chunks_batch,
+    insert_nodes,
+    get_document_hash,
+    delete_document_data,
+    mark_document_processing,
+    set_document_progress,
+    mark_document_ready,
+    mark_document_failed,
 )
 from src.ingestion.parsers import get_parser
 from src.ingestion.parsers.base import NodeType
@@ -24,19 +29,19 @@ from src.graph import build_document_graph
 # allows more headroom than this leaves on the table.
 EMBED_CONCURRENCY = 6
 
-SUPPORTED_EXTENSIONS = ['.md', '.pdf', '.docx', '.xlsx', '.xls', '.csv']
+SUPPORTED_EXTENSIONS = [".md", ".pdf", ".docx", ".xlsx", ".xls", ".csv"]
 
 # Explicit per-extension MIME types for Supabase Storage uploads - the
 # client defaults to "text/plain" for everything if not told otherwise,
 # which would fail the bucket's allowed_mime_types check for every format
 # except .md.
 EXTENSION_MIME_TYPES = {
-    '.md': 'text/markdown',
-    '.pdf': 'application/pdf',
-    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    '.xls': 'application/vnd.ms-excel',
-    '.csv': 'text/csv',
+    ".md": "text/markdown",
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xls": "application/vnd.ms-excel",
+    ".csv": "text/csv",
 }
 
 
@@ -148,8 +153,12 @@ def prepare_ingest(file_path: str, filename: str, user_id: str = None) -> dict:
     indexable = [item for item in chunks_data if item["chunk_text"].strip()]
 
     mark_document_processing(
-        doc_id, filename, file_hash=current_hash, user_id=user_id,
-        node_count=len(chunks_data), chunks_total=len(indexable),
+        doc_id,
+        filename,
+        file_hash=current_hash,
+        user_id=user_id,
+        node_count=len(chunks_data),
+        chunks_total=len(indexable),
     )
 
     return {"status": "ready_to_index", "doc_id": doc_id, "chunks_data": indexable}

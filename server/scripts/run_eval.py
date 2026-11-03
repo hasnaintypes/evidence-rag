@@ -66,9 +66,16 @@ def evaluate_negative_control(reply: str) -> bool:
     """
     reply_lower = reply.lower()
     honest_decline_signals = [
-        "no relevant content", "insufficient context", "unable to produce",
-        "not found", "cannot answer", "no information", "not contain",
-        "does not", "doesn't contain", "not available in",
+        "no relevant content",
+        "insufficient context",
+        "unable to produce",
+        "not found",
+        "cannot answer",
+        "no information",
+        "not contain",
+        "does not",
+        "doesn't contain",
+        "not available in",
     ]
     return any(signal in reply_lower for signal in honest_decline_signals)
 
@@ -158,7 +165,9 @@ def summarize(results: list) -> dict:
         "avg_mrr": round(sum(r["mrr"] for r in scored) / n, 3) if n else 0.0,
         "negative_control_count": len(negative_controls),
         "negative_control_honest": honest_declines,
-        "avg_faithfulness": round(sum(faithfulness_scores) / faithfulness_scored_count, 3) if faithfulness_scored_count else None,
+        "avg_faithfulness": round(sum(faithfulness_scores) / faithfulness_scored_count, 3)
+        if faithfulness_scored_count
+        else None,
         "faithfulness_scored_count": faithfulness_scored_count,
         "faithfulness_total_count": len(results),
     }

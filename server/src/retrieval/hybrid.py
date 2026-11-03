@@ -23,8 +23,8 @@ from src.llm import EMBEDDING_MODEL_NAME
 
 _cache: Dict[str, Any] = {
     "chunk_count": None,
-    "chunks": None,          # List[Dict] - full chunk payloads, index-aligned with embedding_matrix
-    "bm25": None,            # BM25Okapi instance built once
+    "chunks": None,  # List[Dict] - full chunk payloads, index-aligned with embedding_matrix
+    "bm25": None,  # BM25Okapi instance built once
     "embedding_matrix": None,  # np.ndarray, shape (n_chunks, dim), L2-normalized rows
 }
 
@@ -163,8 +163,7 @@ def hybrid_retrieve(
     dense_ranked_indices = np.argsort(dense_scores)[::-1]
 
     dense_ranks: Dict[Any, int] = {
-        all_chunks[chunk_arr_idx]["id"]: rank_idx + 1
-        for rank_idx, chunk_arr_idx in enumerate(dense_ranked_indices)
+        all_chunks[chunk_arr_idx]["id"]: rank_idx + 1 for rank_idx, chunk_arr_idx in enumerate(dense_ranked_indices)
     }
 
     # --- LAYER 3: RECIPROCAL RANK FUSION ---
@@ -183,7 +182,9 @@ def hybrid_retrieve(
     if doc_ids:
         doc_id_set = set(doc_ids)
         sorted_chunks_by_rrf = [
-            (chunk_id, score) for chunk_id, score in sorted_chunks_by_rrf if chunk_map[chunk_id].get("doc_id") in doc_id_set
+            (chunk_id, score)
+            for chunk_id, score in sorted_chunks_by_rrf
+            if chunk_map[chunk_id].get("doc_id") in doc_id_set
         ]
 
     final_retrieved_chunks = []

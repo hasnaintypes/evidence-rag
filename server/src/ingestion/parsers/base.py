@@ -7,10 +7,10 @@ import uuid
 
 class NodeType(str, Enum):
     DOCUMENT = "document"
-    SECTION = "section"          # heading node (any level)
+    SECTION = "section"  # heading node (any level)
     PARAGRAPH = "paragraph"
     TABLE = "table"
-    TABLE_ROW = "table_row"        # opsiyonel: satır bazlı granülerlik istersen
+    TABLE_ROW = "table_row"  # opsiyonel: satır bazlı granülerlik istersen
     FIGURE = "figure"
     WARNING = "warning"
     NOTE = "note"
@@ -23,16 +23,17 @@ class KnowledgeNode:
     Chunk yerine kullanılan temel bilgi birimi.
     Her parser bu tipte bir liste (flat, parent_id ile bağlı) döndürür.
     """
+
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
     parent_id: Optional[str] = None
     doc_id: str = ""
     type: NodeType = NodeType.PARAGRAPH
-    level: int = 0                          # heading derinliği (0 = root/document)
-    heading_path: str = ""                  # "5 Safety > 5.1 Emergency Stop"
-    content: str = ""                       # text veya markdown table
+    level: int = 0  # heading derinliği (0 = root/document)
+    heading_path: str = ""  # "5 Safety > 5.1 Emergency Stop"
+    content: str = ""  # text veya markdown table
     page: Optional[int] = None
     bbox: Optional[Dict[str, float]] = None  # {"x0":.., "y0":.., "x1":.., "y1":..}
-    order: int = 0                          # aynı parent altında sıralama
+    order: int = 0  # aynı parent altında sıralama
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:

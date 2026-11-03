@@ -1,12 +1,12 @@
-"use client"
+"use client";
 
-import { useState, useEffect } from "react"
+import { useState, useEffect } from "react";
 
 // Not currently rendered on the landing page (see app/page.tsx) - kept
 // here, ready to re-enable once there are real customer quotes to show.
 export default function TestimonialsSection() {
-  const [activeTestimonial, setActiveTestimonial] = useState(0)
-  const [isTransitioning, setIsTransitioning] = useState(false)
+  const [activeTestimonial, setActiveTestimonial] = useState(0);
+  const [isTransitioning, setIsTransitioning] = useState(false);
 
   const testimonials = [
     {
@@ -27,29 +27,29 @@ export default function TestimonialsSection() {
       name: "Ines Okafor",
       company: "Reliability Engineer, Heavy Industrial",
     },
-  ]
+  ];
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setIsTransitioning(true)
+      setIsTransitioning(true);
       setTimeout(() => {
-        setActiveTestimonial((prev) => (prev + 1) % testimonials.length)
-        setTimeout(() => setIsTransitioning(false), 100)
-      }, 300)
-    }, 12000)
+        setActiveTestimonial((prev) => (prev + 1) % testimonials.length);
+        setTimeout(() => setIsTransitioning(false), 100);
+      }, 300);
+    }, 12000);
 
-    return () => clearInterval(interval)
-  }, [testimonials.length])
+    return () => clearInterval(interval);
+  }, [testimonials.length]);
 
   const handleNavigationClick = (index: number) => {
-    setIsTransitioning(true)
+    setIsTransitioning(true);
     setTimeout(() => {
-      setActiveTestimonial(index)
-      setTimeout(() => setIsTransitioning(false), 100)
-    }, 300)
-  }
+      setActiveTestimonial(index);
+      setTimeout(() => setIsTransitioning(false), 100);
+    }, 300);
+  };
 
-  const current = testimonials[activeTestimonial]
+  const current = testimonials[activeTestimonial];
 
   return (
     <div className="w-full border-b border-border flex flex-col justify-center items-center">
@@ -89,24 +89,54 @@ export default function TestimonialsSection() {
           {/* Navigation Arrows */}
           <div className="pr-6 justify-start items-start gap-[14px] flex">
             <button
-              onClick={() => handleNavigationClick((activeTestimonial - 1 + testimonials.length) % testimonials.length)}
+              onClick={() =>
+                handleNavigationClick(
+                  (activeTestimonial - 1 + testimonials.length) % testimonials.length,
+                )
+              }
               className="w-9 h-9 overflow-hidden rounded-full border border-border justify-center items-center gap-2 flex hover:bg-muted transition-colors"
             >
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M15 18L9 12L15 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-foreground" />
+              <svg
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M15 18L9 12L15 6"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="text-foreground"
+                />
               </svg>
             </button>
             <button
               onClick={() => handleNavigationClick((activeTestimonial + 1) % testimonials.length)}
               className="w-9 h-9 overflow-hidden rounded-full border border-border justify-center items-center gap-2 flex hover:bg-muted transition-colors"
             >
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M9 18L15 12L9 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-foreground" />
+              <svg
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M9 18L15 12L9 6"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="text-foreground"
+                />
               </svg>
             </button>
           </div>
         </div>
       </div>
     </div>
-  )
+  );
 }

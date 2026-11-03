@@ -74,9 +74,7 @@ def extract_entities_from_text(text: str) -> List[str]:
 
 def build_graph_for_section(doc_id: str, section_node_id: str, section_children: List[Dict[str, Any]]) -> None:
     combined_text = "\n".join(
-        (child.get("content") or "").strip()
-        for child in section_children
-        if child.get("content")
+        (child.get("content") or "").strip() for child in section_children if child.get("content")
     )
     if not combined_text:
         return
@@ -85,10 +83,7 @@ def build_graph_for_section(doc_id: str, section_node_id: str, section_children:
     if len(entity_names) < 2:
         return
 
-    entity_ids = [
-        upsert_entity(doc_id=doc_id, name=name, node_id=section_node_id)
-        for name in entity_names
-    ]
+    entity_ids = [upsert_entity(doc_id=doc_id, name=name, node_id=section_node_id) for name in entity_names]
     entity_ids = sorted(set(entity_ids))
 
     for i in range(len(entity_ids)):

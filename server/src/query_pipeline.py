@@ -144,7 +144,9 @@ def process_chat_query(
             followup_candidates = []
             for sub_q in subqueries:
                 sub_embedding = get_embedding(sub_q)
-                retrieved = _retrieve(query_text=sub_q, query_embedding=sub_embedding, top_k=search_width, doc_ids=doc_ids)
+                retrieved = _retrieve(
+                    query_text=sub_q, query_embedding=sub_embedding, top_k=search_width, doc_ids=doc_ids
+                )
                 for chunk in retrieved:
                     if chunk["id"] not in seen_chunk_ids:
                         seen_chunk_ids.add(chunk["id"])
@@ -184,15 +186,17 @@ def process_chat_query(
         context_text += f"--- END CHUNK {idx + 1} ---\n\n"
 
         source_files.add(chunk.get("source_file", "unknown"))
-        chunks_matrix_payload.append({
-            "id": chunk["id"],
-            "source": chunk["source_file"],
-            "page": chunk["page_number"],
-            "section": heading,
-            "node_type": node_type,
-            "rerank_score": round(chunk.get("rerank_score", 0.0), 3),
-            "rrf_score": round(chunk.get("rrf_score", 0.0), 4),
-        })
+        chunks_matrix_payload.append(
+            {
+                "id": chunk["id"],
+                "source": chunk["source_file"],
+                "page": chunk["page_number"],
+                "section": heading,
+                "node_type": node_type,
+                "rerank_score": round(chunk.get("rerank_score", 0.0), 3),
+                "rrf_score": round(chunk.get("rrf_score", 0.0), 4),
+            }
+        )
 
     sources = _build_sources(final_context_chunks, user_id)
 
@@ -373,14 +377,16 @@ def _build_sources(context_chunks: list, user_id: str = None) -> list:
     sources = []
     for idx, chunk in enumerate(context_chunks):
         document = chunk.get("source_file", "unknown")
-        sources.append({
-            "index": idx + 1,
-            "document": document,
-            "page": chunk.get("page_number"),
-            "section": chunk.get("expanded_heading") or chunk.get("heading_path") or "Unknown Section",
-            "snippet": _snippet(chunk.get("chunk_text", "")),
-            "source_token": generate_source_token(document, user_id) if user_id else None,
-        })
+        sources.append(
+            {
+                "index": idx + 1,
+                "document": document,
+                "page": chunk.get("page_number"),
+                "section": chunk.get("expanded_heading") or chunk.get("heading_path") or "Unknown Section",
+                "snippet": _snippet(chunk.get("chunk_text", "")),
+                "source_token": generate_source_token(document, user_id) if user_id else None,
+            }
+        )
     return sources
 
 

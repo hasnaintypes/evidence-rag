@@ -1,10 +1,10 @@
-import type React from "react"
+import type React from "react";
 
 interface SmartSimpleBrilliantProps {
-  width?: number | string
-  height?: number | string
-  className?: string
-  theme?: "light" | "dark"
+  width?: number | string;
+  height?: number | string;
+  className?: string;
+  theme?: "light" | "dark";
 }
 
 /**
@@ -37,13 +37,31 @@ const SmartSimpleBrilliant: React.FC<SmartSimpleBrilliantProps> = ({
           "--ssb-shadow": "rgba(0,0,0,0.28)",
           "--ssb-purple-text": "#E9D5FF",
           "--ssb-emerald-text": "#A7F3D0",
-        } as React.CSSProperties)
+        } as React.CSSProperties);
 
   const rows = [
-    { kind: "SECTION", label: "5.1 Emergency Stop", accent: "#0EA5E9", tint: "rgba(14,165,233,0.14)", height: "51px" },
-    { kind: "TABLE", label: "Torque spec table", accent: "#F59E0B", tint: "rgba(245,158,11,0.14)", height: "79.5px" },
-    { kind: "WARNING", label: "Allow 30min cooldown", accent: "#F43F5E", tint: "rgba(244,63,94,0.14)", height: "51px" },
-  ]
+    {
+      kind: "SECTION",
+      label: "5.1 Emergency Stop",
+      accent: "#0EA5E9",
+      tint: "rgba(14,165,233,0.14)",
+      height: "51px",
+    },
+    {
+      kind: "TABLE",
+      label: "Torque spec table",
+      accent: "#F59E0B",
+      tint: "rgba(245,158,11,0.14)",
+      height: "79.5px",
+    },
+    {
+      kind: "WARNING",
+      label: "Allow 30min cooldown",
+      accent: "#F43F5E",
+      tint: "rgba(244,63,94,0.14)",
+      height: "51px",
+    },
+  ];
 
   return (
     <div
@@ -109,7 +127,9 @@ const SmartSimpleBrilliant: React.FC<SmartSimpleBrilliantProps> = ({
                     >
                       {row.kind}
                     </span>
-                    <div style={{ fontWeight: 600, fontSize: "9px", color: "var(--ssb-text)" }}>{row.label}</div>
+                    <div style={{ fontWeight: 600, fontSize: "9px", color: "var(--ssb-text)" }}>
+                      {row.label}
+                    </div>
                   </div>
                 </div>
               ))}
@@ -142,10 +162,19 @@ const SmartSimpleBrilliant: React.FC<SmartSimpleBrilliantProps> = ({
               >
                 <div style={{ width: "2.25px", background: "#8B5CF6" }} />
                 <div style={{ padding: "4.5px", width: "100%" }}>
-                  <span style={{ fontWeight: 600, fontSize: "8px", letterSpacing: "0.4px", color: "#8B5CF6" }}>
+                  <span
+                    style={{
+                      fontWeight: 600,
+                      fontSize: "8px",
+                      letterSpacing: "0.4px",
+                      color: "#8B5CF6",
+                    }}
+                  >
                     PARAGRAPH
                   </span>
-                  <div style={{ fontWeight: 600, fontSize: "9px", color: "var(--ssb-purple-text)" }}>
+                  <div
+                    style={{ fontWeight: 600, fontSize: "9px", color: "var(--ssb-purple-text)" }}
+                  >
                     Grease spindle every 600h
                   </div>
                 </div>
@@ -165,9 +194,15 @@ const SmartSimpleBrilliant: React.FC<SmartSimpleBrilliantProps> = ({
                 <div style={{ width: "2.25px", background: "#10B981" }} />
                 <div style={{ padding: "4.5px", width: "100%" }}>
                   <div style={{ display: "flex", gap: "3px", alignItems: "center" }}>
-                    <span style={{ fontWeight: 500, fontSize: "9px", color: "var(--ssb-emerald-text)" }}>p.42</span>
+                    <span
+                      style={{ fontWeight: 500, fontSize: "9px", color: "var(--ssb-emerald-text)" }}
+                    >
+                      p.42
+                    </span>
                   </div>
-                  <div style={{ fontWeight: 600, fontSize: "9px", color: "var(--ssb-emerald-text)" }}>
+                  <div
+                    style={{ fontWeight: 600, fontSize: "9px", color: "var(--ssb-emerald-text)" }}
+                  >
                     ASDAVS-SP002A.pdf
                   </div>
                 </div>
@@ -186,10 +221,14 @@ const SmartSimpleBrilliant: React.FC<SmartSimpleBrilliantProps> = ({
               >
                 <div style={{ width: "2.25px", background: "#8B5CF6" }} />
                 <div style={{ padding: "4.5px", width: "100%" }}>
-                  <span style={{ fontWeight: 500, fontSize: "9px", color: "var(--ssb-purple-text)" }}>
+                  <span
+                    style={{ fontWeight: 500, fontSize: "9px", color: "var(--ssb-purple-text)" }}
+                  >
                     rerank: 0.91
                   </span>
-                  <div style={{ fontWeight: 600, fontSize: "9px", color: "var(--ssb-purple-text)" }}>
+                  <div
+                    style={{ fontWeight: 600, fontSize: "9px", color: "var(--ssb-purple-text)" }}
+                  >
                     Parent section reconstructed
                   </div>
                 </div>
@@ -199,7 +238,7 @@ const SmartSimpleBrilliant: React.FC<SmartSimpleBrilliantProps> = ({
         </div>
       </div>
     </div>
-  )
-}
+  );
+};
 
-export default SmartSimpleBrilliant
+export default SmartSimpleBrilliant;

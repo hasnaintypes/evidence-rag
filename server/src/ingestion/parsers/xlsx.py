@@ -73,7 +73,8 @@ class ExcelCSVDocumentParser(BaseParser):
                             "columns": len(row_chunk_df.columns),
                             "row_range": (
                                 f"{row_chunk_df.index[0] + 1}-{row_chunk_df.index[-1] + 1}"
-                                if len(row_chunk_df) > 0 else ""
+                                if len(row_chunk_df) > 0
+                                else ""
                             ),
                         },
                     )
@@ -87,7 +88,7 @@ class ExcelCSVDocumentParser(BaseParser):
         max_rows each. Returns [df] unchanged if it already fits."""
         if len(df) <= max_rows:
             return [df]
-        return [df.iloc[i:i + max_rows] for i in range(0, len(df), max_rows)]
+        return [df.iloc[i : i + max_rows] for i in range(0, len(df), max_rows)]
 
     @staticmethod
     def _df_to_markdown(df: pd.DataFrame) -> str:

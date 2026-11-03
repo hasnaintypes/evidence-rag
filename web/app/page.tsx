@@ -1,33 +1,35 @@
-"use client"
+"use client";
 
-import type React from "react"
+import type React from "react";
 
-import { useEffect, useState } from "react"
-import Link from "next/link"
-import SmartSimpleBrilliant from "@/components/landing/smart-simple-brilliant"
-import YourWorkInSync from "@/components/landing/your-work-in-sync"
-import EffortlessIntegration from "@/components/landing/effortless-integration"
-import NumbersThatSpeak from "@/components/landing/numbers-that-speak"
-import DocumentationSection from "@/components/landing/documentation-section"
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import SmartSimpleBrilliant from "@/components/landing/smart-simple-brilliant";
+import YourWorkInSync from "@/components/landing/your-work-in-sync";
+import EffortlessIntegration from "@/components/landing/effortless-integration";
+import NumbersThatSpeak from "@/components/landing/numbers-that-speak";
+import DocumentationSection from "@/components/landing/documentation-section";
 // Testimonials and pricing aren't shown yet - re-enable once there are
 // real customer quotes and a real paid tier. Components are kept in
 // components/landing/, just not imported/rendered below.
 // import TestimonialsSection from "@/components/landing/testimonials-section"
 // import PricingSection from "@/components/landing/pricing-section"
-import FAQSection from "@/components/landing/faq-section"
-import CTASection from "@/components/landing/cta-section"
-import FooterSection from "@/components/landing/footer-section"
-import { useAuth } from "@/hooks/use-auth"
+import FAQSection from "@/components/landing/faq-section";
+import CTASection from "@/components/landing/cta-section";
+import FooterSection from "@/components/landing/footer-section";
+import { useAuth } from "@/hooks/use-auth";
 
 function Badge({ icon, text }: { icon: React.ReactNode; text: string }) {
   return (
     <div className="px-[14px] py-[6px] bg-card overflow-hidden rounded-[90px] flex justify-start items-center gap-[8px] border border-border">
-      <div className="w-[14px] h-[14px] relative overflow-hidden flex items-center justify-center">{icon}</div>
+      <div className="w-[14px] h-[14px] relative overflow-hidden flex items-center justify-center">
+        {icon}
+      </div>
       <div className="text-center flex justify-center flex-col text-foreground text-xs font-medium leading-3 font-sans">
         {text}
       </div>
     </div>
-  )
+  );
 }
 
 function FeatureCard({
@@ -37,22 +39,27 @@ function FeatureCard({
   progress,
   onClick,
 }: {
-  title: string
-  description: string
-  isActive: boolean
-  progress: number
-  onClick: () => void
+  title: string;
+  description: string;
+  isActive: boolean;
+  progress: number;
+  onClick: () => void;
 }) {
   return (
     <div
       className={`w-full md:flex-1 self-stretch px-6 py-5 overflow-hidden flex flex-col justify-start items-start gap-2 cursor-pointer relative border-b md:border-b-0 last:border-b-0 ${
-        isActive ? "bg-card shadow-[0px_0px_0px_0.75px_var(--border)_inset]" : "border-l-0 border-r-0 md:border border-border/60"
+        isActive
+          ? "bg-card shadow-[0px_0px_0px_0.75px_var(--border)_inset]"
+          : "border-l-0 border-r-0 md:border border-border/60"
       }`}
       onClick={onClick}
     >
       {isActive && (
         <div className="absolute top-0 left-0 w-full h-0.5 bg-muted">
-          <div className="h-full bg-foreground transition-all duration-100 ease-linear" style={{ width: `${progress}%` }} />
+          <div
+            className="h-full bg-foreground transition-all duration-100 ease-linear"
+            style={{ width: `${progress}%` }}
+          />
         </div>
       )}
       <div className="self-stretch flex justify-center flex-col text-foreground text-sm font-semibold leading-6 font-sans">
@@ -62,32 +69,32 @@ function FeatureCard({
         {description}
       </div>
     </div>
-  )
+  );
 }
 
 export default function LandingPage() {
-  const [activeCard, setActiveCard] = useState(0)
-  const [progress, setProgress] = useState(0)
-  const { session } = useAuth()
+  const [activeCard, setActiveCard] = useState(0);
+  const [progress, setProgress] = useState(0);
+  const { session } = useAuth();
 
   useEffect(() => {
     const progressInterval = setInterval(() => {
       setProgress((prev) => {
         if (prev >= 100) {
-          setActiveCard((current) => (current + 1) % 3)
-          return 0
+          setActiveCard((current) => (current + 1) % 3);
+          return 0;
         }
-        return prev + 2
-      })
-    }, 100)
+        return prev + 2;
+      });
+    }, 100);
 
-    return () => clearInterval(progressInterval)
-  }, [])
+    return () => clearInterval(progressInterval);
+  }, []);
 
   const handleCardClick = (index: number) => {
-    setActiveCard(index)
-    setProgress(0)
-  }
+    setActiveCard(index);
+    setProgress(0);
+  };
 
   return (
     <div className="w-full min-h-screen relative bg-background overflow-x-hidden flex flex-col justify-start items-center">
@@ -160,8 +167,7 @@ export default function LandingPage() {
                 <div className="self-stretch rounded-[3px] flex flex-col justify-center items-center gap-4 sm:gap-5 md:gap-6 lg:gap-8">
                   <div className="w-full max-w-[748.71px] lg:w-[748.71px] text-center flex justify-center flex-col text-foreground text-[24px] xs:text-[28px] sm:text-[36px] md:text-[52px] lg:text-[72px] font-medium leading-[1.1] sm:leading-[1.15] md:leading-[1.2] lg:leading-[1.05] font-display tracking-tight px-2 sm:px-4 md:px-0">
                     Ask your technical documents
-                    <br />
-                    a question. Get an honest answer.
+                    <br />a question. Get an honest answer.
                   </div>
                   <div className="w-full max-w-[560px] text-center flex justify-center flex-col text-muted-foreground sm:text-lg md:text-xl leading-[1.4] sm:leading-[1.45] md:leading-[1.5] lg:leading-7 font-sans px-2 sm:px-4 md:px-0 lg:text-lg font-medium text-sm">
                     Hybrid retrieval, cross-encoder reranking, and source citations
@@ -198,7 +204,10 @@ export default function LandingPage() {
                 <div className="w-4 sm:w-6 md:w-8 lg:w-12 self-stretch relative overflow-hidden">
                   <div className="w-[120px] sm:w-[140px] md:w-[162px] left-[-40px] sm:left-[-50px] md:left-[-58px] top-[-120px] absolute flex flex-col justify-start items-start">
                     {Array.from({ length: 50 }).map((_, i) => (
-                      <div key={i} className="self-stretch h-3 sm:h-4 rotate-[-45deg] origin-top-left outline outline-[0.5px] outline-border outline-offset-[-0.25px]"></div>
+                      <div
+                        key={i}
+                        className="self-stretch h-3 sm:h-4 rotate-[-45deg] origin-top-left outline outline-[0.5px] outline-border outline-offset-[-0.25px]"
+                      ></div>
                     ))}
                   </div>
                 </div>
@@ -230,7 +239,10 @@ export default function LandingPage() {
                 <div className="w-4 sm:w-6 md:w-8 lg:w-12 self-stretch relative overflow-hidden">
                   <div className="w-[120px] sm:w-[140px] md:w-[162px] left-[-40px] sm:left-[-50px] md:left-[-58px] top-[-120px] absolute flex flex-col justify-start items-start">
                     {Array.from({ length: 50 }).map((_, i) => (
-                      <div key={i} className="self-stretch h-3 sm:h-4 rotate-[-45deg] origin-top-left outline outline-[0.5px] outline-border outline-offset-[-0.25px]"></div>
+                      <div
+                        key={i}
+                        className="self-stretch h-3 sm:h-4 rotate-[-45deg] origin-top-left outline outline-[0.5px] outline-border outline-offset-[-0.25px]"
+                      ></div>
                     ))}
                   </div>
                 </div>
@@ -242,11 +254,53 @@ export default function LandingPage() {
                   <div className="w-full max-w-[616px] lg:w-[616px] px-4 sm:px-6 py-4 sm:py-5 overflow-hidden rounded-lg flex flex-col justify-start items-center gap-3 sm:gap-4">
                     <Badge
                       icon={
-                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
-                          <rect x="1" y="1" width="4" height="4" stroke="currentColor" strokeWidth="1" fill="none" className="text-foreground" />
-                          <rect x="7" y="1" width="4" height="4" stroke="currentColor" strokeWidth="1" fill="none" className="text-foreground" />
-                          <rect x="1" y="7" width="4" height="4" stroke="currentColor" strokeWidth="1" fill="none" className="text-foreground" />
-                          <rect x="7" y="7" width="4" height="4" stroke="currentColor" strokeWidth="1" fill="none" className="text-foreground" />
+                        <svg
+                          width="12"
+                          height="12"
+                          viewBox="0 0 12 12"
+                          fill="none"
+                          xmlns="http://www.w3.org/2000/svg"
+                        >
+                          <rect
+                            x="1"
+                            y="1"
+                            width="4"
+                            height="4"
+                            stroke="currentColor"
+                            strokeWidth="1"
+                            fill="none"
+                            className="text-foreground"
+                          />
+                          <rect
+                            x="7"
+                            y="1"
+                            width="4"
+                            height="4"
+                            stroke="currentColor"
+                            strokeWidth="1"
+                            fill="none"
+                            className="text-foreground"
+                          />
+                          <rect
+                            x="1"
+                            y="7"
+                            width="4"
+                            height="4"
+                            stroke="currentColor"
+                            strokeWidth="1"
+                            fill="none"
+                            className="text-foreground"
+                          />
+                          <rect
+                            x="7"
+                            y="7"
+                            width="4"
+                            height="4"
+                            stroke="currentColor"
+                            strokeWidth="1"
+                            fill="none"
+                            className="text-foreground"
+                          />
                         </svg>
                       }
                       text="Under the hood"
@@ -266,7 +320,10 @@ export default function LandingPage() {
                   <div className="w-4 sm:w-6 md:w-8 lg:w-12 self-stretch relative overflow-hidden">
                     <div className="w-[120px] sm:w-[140px] md:w-[162px] left-[-40px] sm:left-[-50px] md:left-[-58px] top-[-120px] absolute flex flex-col justify-start items-start">
                       {Array.from({ length: 200 }).map((_, i) => (
-                        <div key={i} className="self-stretch h-3 sm:h-4 rotate-[-45deg] origin-top-left outline outline-[0.5px] outline-border outline-offset-[-0.25px]" />
+                        <div
+                          key={i}
+                          className="self-stretch h-3 sm:h-4 rotate-[-45deg] origin-top-left outline outline-[0.5px] outline-border outline-offset-[-0.25px]"
+                        />
                       ))}
                     </div>
                   </div>
@@ -278,11 +335,17 @@ export default function LandingPage() {
                           Structure-aware, not chunk-first
                         </h3>
                         <p className="text-muted-foreground text-sm md:text-base font-normal leading-relaxed font-sans">
-                          Every document becomes a KnowledgeNode tree - headings, tables, warnings kept intact, not flattened.
+                          Every document becomes a KnowledgeNode tree - headings, tables, warnings
+                          kept intact, not flattened.
                         </p>
                       </div>
                       <div className="w-full h-[200px] sm:h-[250px] md:h-[300px] rounded-lg flex items-center justify-center overflow-hidden">
-                        <SmartSimpleBrilliant width="100%" height="100%" theme="dark" className="scale-50 sm:scale-65 md:scale-75 lg:scale-90" />
+                        <SmartSimpleBrilliant
+                          width="100%"
+                          height="100%"
+                          theme="dark"
+                          className="scale-50 sm:scale-65 md:scale-75 lg:scale-90"
+                        />
                       </div>
                     </div>
 
@@ -292,11 +355,17 @@ export default function LandingPage() {
                           Grounded Q&amp;A
                         </h3>
                         <p className="text-muted-foreground text-sm md:text-base font-normal leading-relaxed font-sans">
-                          Every reply is traceable to a source file and page - ask a follow-up, get the same rigor.
+                          Every reply is traceable to a source file and page - ask a follow-up, get
+                          the same rigor.
                         </p>
                       </div>
                       <div className="w-full h-[200px] sm:h-[250px] md:h-[300px] rounded-lg flex overflow-hidden text-right items-center justify-center">
-                        <YourWorkInSync width="400" height="250" theme="dark" className="scale-60 sm:scale-75 md:scale-90" />
+                        <YourWorkInSync
+                          width="400"
+                          height="250"
+                          theme="dark"
+                          className="scale-60 sm:scale-75 md:scale-90"
+                        />
                       </div>
                     </div>
 
@@ -306,12 +375,18 @@ export default function LandingPage() {
                           Every format, one pipeline
                         </h3>
                         <p className="text-muted-foreground text-sm md:text-base font-normal leading-relaxed font-sans">
-                          Markdown, PDF, DOCX, XLSX, and CSV all normalize into the same tree - no format-specific retrieval logic.
+                          Markdown, PDF, DOCX, XLSX, and CSV all normalize into the same tree - no
+                          format-specific retrieval logic.
                         </p>
                       </div>
                       <div className="w-full h-[200px] sm:h-[250px] md:h-[300px] rounded-lg flex overflow-hidden justify-center items-center relative">
                         <div className="w-full h-full flex items-center justify-center">
-                          <EffortlessIntegration width={400} height={250} theme="dark" className="max-w-full max-h-full" />
+                          <EffortlessIntegration
+                            width={400}
+                            height={250}
+                            theme="dark"
+                            className="max-w-full max-h-full"
+                          />
                         </div>
                         <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-background to-transparent pointer-events-none"></div>
                       </div>
@@ -323,12 +398,17 @@ export default function LandingPage() {
                           Retrieval quality, measured
                         </h3>
                         <p className="text-muted-foreground text-sm md:text-base font-normal leading-relaxed font-sans">
-                          Evaluated against a naive baseline on a labeled set - Precision@5, Recall@5, and MRR, not vibes.
+                          Evaluated against a naive baseline on a labeled set - Precision@5,
+                          Recall@5, and MRR, not vibes.
                         </p>
                       </div>
                       <div className="w-full h-[200px] sm:h-[250px] md:h-[300px] rounded-lg flex overflow-hidden items-center justify-center relative">
                         <div className="absolute inset-0 flex items-center justify-center">
-                          <NumbersThatSpeak width="100%" height="100%" className="w-full h-full object-contain" />
+                          <NumbersThatSpeak
+                            width="100%"
+                            height="100%"
+                            className="w-full h-full object-contain"
+                          />
                         </div>
                         <div className="absolute bottom-0 left-0 right-0 h-8 bg-gradient-to-t from-background to-transparent pointer-events-none"></div>
                       </div>
@@ -338,7 +418,10 @@ export default function LandingPage() {
                   <div className="w-4 sm:w-6 md:w-8 lg:w-12 self-stretch relative overflow-hidden">
                     <div className="w-[120px] sm:w-[140px] md:w-[162px] left-[-40px] sm:left-[-50px] md:left-[-58px] top-[-120px] absolute flex flex-col justify-start items-start">
                       {Array.from({ length: 200 }).map((_, i) => (
-                        <div key={i} className="self-stretch h-3 sm:h-4 rotate-[-45deg] origin-top-left outline outline-[0.5px] outline-border outline-offset-[-0.25px]" />
+                        <div
+                          key={i}
+                          className="self-stretch h-3 sm:h-4 rotate-[-45deg] origin-top-left outline outline-[0.5px] outline-border outline-offset-[-0.25px]"
+                        />
                       ))}
                     </div>
                   </div>
@@ -356,5 +439,5 @@ export default function LandingPage() {
         </div>
       </div>
     </div>
-  )
+  );
 }
