@@ -92,7 +92,7 @@ def main():
         lines.append(f"| {metric} | {cur} | {base} | {delta} | {mark} |")
 
     lines.append("")
-    lines.append(f"Full per-question detail: `docs/eval_report.md` (uploaded as a workflow artifact).")
+    lines.append("Full per-question detail: `docs/eval_report.md` (uploaded as a workflow artifact).")
 
     with open(COMMENT_PATH, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
