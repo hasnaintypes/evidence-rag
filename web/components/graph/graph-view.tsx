@@ -22,16 +22,14 @@ export function GraphView({ data, onNodeClick }: GraphViewProps) {
   useEffect(() => {
     if (!containerRef.current) return;
 
-    const nodes = new DataSet(
-      data.nodes.map((node) => ({ id: node.id, label: node.label }))
-    );
+    const nodes = new DataSet(data.nodes.map((node) => ({ id: node.id, label: node.label })));
     const edges = new DataSet(
       data.edges.map((edge, index) => ({
         id: index,
         from: edge.from,
         to: edge.to,
         value: edge.weight,
-      }))
+      })),
     );
 
     const network = new Network(
@@ -59,7 +57,7 @@ export function GraphView({ data, onNodeClick }: GraphViewProps) {
           stabilization: { iterations: 150 },
         },
         interaction: { hover: true },
-      }
+      },
     );
 
     network.on("click", (params) => {

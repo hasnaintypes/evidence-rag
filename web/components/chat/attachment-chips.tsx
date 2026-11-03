@@ -1,7 +1,12 @@
 "use client";
 
 import { Loader2, AlertCircle } from "lucide-react";
-import { Attachments, Attachment, AttachmentPreview, AttachmentInfo } from "@/components/ai-elements/attachments";
+import {
+  Attachments,
+  Attachment,
+  AttachmentPreview,
+  AttachmentInfo,
+} from "@/components/ai-elements/attachments";
 import type { DocumentStatus } from "@/lib/api";
 
 export function AttachmentChips({
@@ -38,8 +43,12 @@ export function AttachmentChips({
               }
             />
             <AttachmentInfo />
-            {status === "processing" && <span className="text-xs text-muted-foreground">Indexing…</span>}
-            {status === "failed" && <span className="text-xs text-destructive">Couldn&apos;t index</span>}
+            {status === "processing" && (
+              <span className="text-xs text-muted-foreground">Indexing…</span>
+            )}
+            {status === "failed" && (
+              <span className="text-xs text-destructive">Couldn&apos;t index</span>
+            )}
           </Attachment>
         );
       })}

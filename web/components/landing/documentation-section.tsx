@@ -1,6 +1,6 @@
-"use client"
+"use client";
 
-import { Asterisk } from "lucide-react"
+import { Asterisk } from "lucide-react";
 
 const steps = [
   {
@@ -23,7 +23,7 @@ const steps = [
     description:
       "The answer is generated only from what survived grading, traced back to a source file and page. If the evidence is too weak, the pipeline says so instead of guessing.",
   },
-]
+];
 
 export default function DocumentationSection() {
   return (
@@ -32,11 +32,14 @@ export default function DocumentationSection() {
         <div className="grid grid-cols-1 gap-10 lg:grid-cols-6 lg:gap-16">
           <div className="col-span-2 h-fit space-y-6 pl-4 md:pl-6 lg:sticky lg:top-10">
             <div className="relative w-fit">
-              <h2 className="text-3xl md:text-5xl font-semibold tracking-tight text-foreground">Our pipeline</h2>
+              <h2 className="text-3xl md:text-5xl font-semibold tracking-tight text-foreground">
+                Our pipeline
+              </h2>
               <Asterisk className="absolute -top-1 -right-6 size-5 text-muted-foreground md:size-8 md:-right-9" />
             </div>
             <p className="text-sm md:text-base text-muted-foreground leading-relaxed">
-              Four stages, each explainable end to end - no black box between your documents and the answer.
+              Four stages, each explainable end to end - no black box between your documents and the
+              answer.
             </p>
           </div>
 
@@ -53,7 +56,9 @@ export default function DocumentationSection() {
                   <h3 className="mb-3 text-xl md:text-2xl font-semibold tracking-tight text-foreground">
                     {step.title}
                   </h3>
-                  <p className="text-sm md:text-base text-muted-foreground leading-relaxed">{step.description}</p>
+                  <p className="text-sm md:text-base text-muted-foreground leading-relaxed">
+                    {step.description}
+                  </p>
                 </div>
               </li>
             ))}
@@ -61,5 +66,5 @@ export default function DocumentationSection() {
         </div>
       </div>
     </section>
-  )
+  );
 }

@@ -18,7 +18,11 @@ export const useAuthStore = create<AuthState>(() => ({
 // sync everywhere it's read - components just read state, they never need
 // to call getSession() themselves.
 supabase.auth.getSession().then(({ data }) => {
-  useAuthStore.setState({ session: data.session, user: data.session?.user ?? null, isLoading: false });
+  useAuthStore.setState({
+    session: data.session,
+    user: data.session?.user ?? null,
+    isLoading: false,
+  });
 });
 
 supabase.auth.onAuthStateChange((_event, session) => {

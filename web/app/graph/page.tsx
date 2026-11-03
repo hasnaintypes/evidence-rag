@@ -10,8 +10,7 @@ import { getDocuments, getGraphData, getGraphSection } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import type { DocumentRecord, GraphData, GraphSection } from "@/lib/types";
 
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
 export default function GraphPage() {
   const router = useRouter();
@@ -110,10 +109,7 @@ export default function GraphPage() {
               </option>
             ))}
           </select>
-          <Link
-            href="/"
-            className="text-xs text-muted-foreground hover:text-foreground"
-          >
+          <Link href="/" className="text-xs text-muted-foreground hover:text-foreground">
             Back to chat
           </Link>
         </div>
@@ -130,10 +126,8 @@ export default function GraphPage() {
           ) : !graphData || graphData.nodes.length === 0 ? (
             <p className="p-6 text-sm text-muted-foreground">
               No entities indexed yet. Enable{" "}
-              <code className="rounded bg-muted px-1 py-0.5">
-                ENABLE_ENTITY_GRAPH
-              </code>{" "}
-              in the server and re-ingest documents to populate this graph.
+              <code className="rounded bg-muted px-1 py-0.5">ENABLE_ENTITY_GRAPH</code> in the
+              server and re-ingest documents to populate this graph.
             </p>
           ) : (
             <GraphView data={graphData} onNodeClick={handleNodeClick} />
@@ -178,7 +172,7 @@ export default function GraphPage() {
                 {selectedDoc && (
                   <a
                     href={`${API_BASE_URL}/source/${encodeURIComponent(selectedDoc.filename)}?token=${encodeURIComponent(
-                      selectedSection.source_token
+                      selectedSection.source_token,
                     )}${selectedSection.page ? `#page=${selectedSection.page}` : ""}`}
                     target="_blank"
                     rel="noreferrer"

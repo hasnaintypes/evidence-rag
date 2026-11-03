@@ -1,10 +1,10 @@
-import type React from "react"
+import type React from "react";
 
 interface NumbersThatSpeakProps {
-  width?: number | string
-  height?: number | string
-  className?: string
-  theme?: "light" | "dark"
+  width?: number | string;
+  height?: number | string;
+  className?: string;
+  theme?: "light" | "dark";
 }
 
 /**
@@ -12,7 +12,11 @@ interface NumbersThatSpeakProps {
  * pulled from the real eval numbers in docs/eval_report.md (advanced
  * pipeline vs. naive dense-retrieval baseline).
  */
-const NumbersThatSpeak: React.FC<NumbersThatSpeakProps> = ({ width = 482, height = 300, className = "" }) => {
+const NumbersThatSpeak: React.FC<NumbersThatSpeakProps> = ({
+  width = 482,
+  height = 300,
+  className = "",
+}) => {
   const bars = [
     { label: "q1", height: "62px" },
     { label: "q2", height: "70px" },
@@ -23,7 +27,7 @@ const NumbersThatSpeak: React.FC<NumbersThatSpeakProps> = ({ width = 482, height
     { label: "q7", height: "108px" },
     { label: "q8", height: "120px" },
     { label: "q9", height: "132px" },
-  ]
+  ];
 
   return (
     <div
@@ -166,7 +170,10 @@ const NumbersThatSpeak: React.FC<NumbersThatSpeakProps> = ({ width = 482, height
                 }}
               >
                 {[0, 1, 2, 3, 4, 5].map((i) => (
-                  <div key={i} style={{ width: "100%", height: "1px", backgroundColor: "rgba(0,0,0,0.05)" }} />
+                  <div
+                    key={i}
+                    style={{ width: "100%", height: "1px", backgroundColor: "rgba(0,0,0,0.05)" }}
+                  />
                 ))}
               </div>
 
@@ -219,7 +226,7 @@ const NumbersThatSpeak: React.FC<NumbersThatSpeakProps> = ({ width = 482, height
         </div>
       </div>
     </div>
-  )
-}
+  );
+};
 
-export default NumbersThatSpeak
+export default NumbersThatSpeak;

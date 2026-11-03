@@ -1,10 +1,10 @@
-import type React from "react"
+import type React from "react";
 
 interface YourWorkInSyncProps {
-  width?: number | string
-  height?: number | string
-  className?: string
-  theme?: "light" | "dark"
+  width?: number | string;
+  height?: number | string;
+  className?: string;
+  theme?: "light" | "dark";
 }
 
 /**
@@ -38,10 +38,10 @@ const YourWorkInSync: React.FC<YourWorkInSyncProps> = ({
           "--yws-bubble-white": "#ffffff",
           "--yws-border": "rgba(255,255,255,0.12)",
           "--yws-shadow": "rgba(0,0,0,0.24)",
-        } as React.CSSProperties)
+        } as React.CSSProperties);
 
   const imgArrowUp =
-    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='3' strokeLinecap='round' strokeLinejoin='round'%3E%3Cpath d='m5 12 7-7 7 7'/%3E%3Cpath d='M12 19V5'/%3E%3C/svg%3E"
+    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='3' strokeLinecap='round' strokeLinejoin='round'%3E%3Cpath d='m5 12 7-7 7 7'/%3E%3Cpath d='M12 19V5'/%3E%3C/svg%3E";
 
   const avatar = (bg: string, initial: string) => (
     <div
@@ -63,7 +63,7 @@ const YourWorkInSync: React.FC<YourWorkInSyncProps> = ({
     >
       {initial}
     </div>
-  )
+  );
 
   return (
     <div
@@ -90,7 +90,9 @@ const YourWorkInSync: React.FC<YourWorkInSyncProps> = ({
           height: "216px",
         }}
       >
-        <div style={{ width: "356px", height: "216px", position: "relative", transform: "scale(1.1)" }}>
+        <div
+          style={{ width: "356px", height: "216px", position: "relative", transform: "scale(1.1)" }}
+        >
           {/* Message 1: question */}
           <div
             style={{
@@ -234,7 +236,8 @@ const YourWorkInSync: React.FC<YourWorkInSyncProps> = ({
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                boxShadow: "0px 0px 0px 1px var(--yws-border), 0px 1px 2px -0.4px var(--yws-shadow)",
+                boxShadow:
+                  "0px 0px 0px 1px var(--yws-border), 0px 1px 2px -0.4px var(--yws-shadow)",
                 overflow: "hidden",
               }}
             >
@@ -279,7 +282,7 @@ const YourWorkInSync: React.FC<YourWorkInSyncProps> = ({
         </div>
       </div>
     </div>
-  )
-}
+  );
+};
 
-export default YourWorkInSync
+export default YourWorkInSync;

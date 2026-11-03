@@ -1,10 +1,10 @@
-import type React from "react"
+import type React from "react";
 
 interface EffortlessIntegrationProps {
-  width?: number | string
-  height?: number | string
-  className?: string
-  theme?: "light" | "dark"
+  width?: number | string;
+  height?: number | string;
+  className?: string;
+  theme?: "light" | "dark";
 }
 
 /**
@@ -17,31 +17,59 @@ const EffortlessIntegration: React.FC<EffortlessIntegrationProps> = ({
   className = "",
   theme = "dark",
 }) => {
-  const ringColor = theme === "light" ? "rgba(55, 50, 47, 0.2)" : "rgba(255, 255, 255, 0.18)"
-  const ringColorMid = theme === "light" ? "rgba(55, 50, 47, 0.25)" : "rgba(255, 255, 255, 0.22)"
-  const ringColorInner = theme === "light" ? "rgba(55, 50, 47, 0.3)" : "rgba(255, 255, 255, 0.26)"
-  const lineColor = theme === "light" ? "rgba(55, 50, 47, 0.1)" : "rgba(255, 255, 255, 0.16)"
-  const hubBg = theme === "light" ? "#37322f" : "#f7f5f3"
-  const hubText = theme === "light" ? "#ffffff" : "#111827"
+  const ringColor = theme === "light" ? "rgba(55, 50, 47, 0.2)" : "rgba(255, 255, 255, 0.18)";
+  const ringColorMid = theme === "light" ? "rgba(55, 50, 47, 0.25)" : "rgba(255, 255, 255, 0.22)";
+  const ringColorInner = theme === "light" ? "rgba(55, 50, 47, 0.3)" : "rgba(255, 255, 255, 0.26)";
+  const lineColor = theme === "light" ? "rgba(55, 50, 47, 0.1)" : "rgba(255, 255, 255, 0.16)";
+  const hubBg = theme === "light" ? "#37322f" : "#f7f5f3";
+  const hubText = theme === "light" ? "#ffffff" : "#111827";
 
-  const centerX = 250
-  const centerY = 179
+  const centerX = 250;
+  const centerY = 179;
 
   const getPositionOnRing = (ringRadius: number, angle: number) => ({
     x: centerX + ringRadius * Math.cos(angle),
     y: centerY + ringRadius * Math.sin(angle),
-  })
+  });
 
   // Document formats EvidenceRAG ingests + the stack pieces they flow through.
   const nodes = [
-    { name: "PDF", icon: "adobeacrobatreader", bg: "#EE3F24", invert: true, radius: 80, angle: Math.PI },
+    {
+      name: "PDF",
+      icon: "adobeacrobatreader",
+      bg: "#EE3F24",
+      invert: true,
+      radius: 80,
+      angle: Math.PI,
+    },
     { name: "Markdown", icon: "markdown", bg: "#ffffff", invert: false, radius: 80, angle: 0 },
-    { name: "Word", icon: "microsoftword", bg: "#2B579A", invert: true, radius: 120, angle: -Math.PI / 4 },
-    { name: "Gemini", icon: "googlegemini", bg: "#ffffff", invert: false, radius: 120, angle: (3 * Math.PI) / 4 },
-    { name: "Excel/CSV", icon: "microsoftexcel", bg: "#217346", invert: true, radius: 120, angle: (5 * Math.PI) / 4 },
+    {
+      name: "Word",
+      icon: "microsoftword",
+      bg: "#2B579A",
+      invert: true,
+      radius: 120,
+      angle: -Math.PI / 4,
+    },
+    {
+      name: "Gemini",
+      icon: "googlegemini",
+      bg: "#ffffff",
+      invert: false,
+      radius: 120,
+      angle: (3 * Math.PI) / 4,
+    },
+    {
+      name: "Excel/CSV",
+      icon: "microsoftexcel",
+      bg: "#217346",
+      invert: true,
+      radius: 120,
+      angle: (5 * Math.PI) / 4,
+    },
     { name: "SQLite", icon: "sqlite", bg: "#003B57", invert: true, radius: 160, angle: Math.PI },
     { name: "FastAPI", icon: "fastapi", bg: "#009688", invert: true, radius: 160, angle: 0 },
-  ]
+  ];
 
   return (
     <div
@@ -51,8 +79,10 @@ const EffortlessIntegration: React.FC<EffortlessIntegrationProps> = ({
         height,
         position: "relative",
         overflow: "hidden",
-        maskImage: "linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)",
-        WebkitMaskImage: "linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)",
+        maskImage:
+          "linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)",
+        WebkitMaskImage:
+          "linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%)",
       }}
       role="img"
       aria-label="Document formats and stack pieces orbiting a central hub"
@@ -144,7 +174,7 @@ const EffortlessIntegration: React.FC<EffortlessIntegrationProps> = ({
         </div>
 
         {nodes.map((node) => {
-          const pos = getPositionOnRing(node.radius, node.angle)
+          const pos = getPositionOnRing(node.radius, node.angle);
           return (
             <div
               key={node.name}
@@ -172,7 +202,7 @@ const EffortlessIntegration: React.FC<EffortlessIntegrationProps> = ({
                 }}
               />
             </div>
-          )
+          );
         })}
 
         <svg
@@ -192,7 +222,7 @@ const EffortlessIntegration: React.FC<EffortlessIntegrationProps> = ({
             </linearGradient>
           </defs>
           {nodes.map((node) => {
-            const pos = getPositionOnRing(node.radius, node.angle)
+            const pos = getPositionOnRing(node.radius, node.angle);
             return (
               <line
                 key={node.name}
@@ -204,12 +234,12 @@ const EffortlessIntegration: React.FC<EffortlessIntegrationProps> = ({
                 strokeWidth="1"
                 opacity="0.3"
               />
-            )
+            );
           })}
         </svg>
       </div>
     </div>
-  )
-}
+  );
+};
 
-export default EffortlessIntegration
+export default EffortlessIntegration;

@@ -1,6 +1,6 @@
-"use client"
+"use client";
 
-import Link from "next/link"
+import Link from "next/link";
 
 export default function CTASection() {
   return (
@@ -49,5 +49,5 @@ export default function CTASection() {
         </div>
       </div>
     </div>
-  )
+  );
 }

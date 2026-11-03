@@ -1,37 +1,37 @@
-"use client"
+"use client";
 
-import { useState } from "react"
-import type { FormEvent } from "react"
-import Link from "next/link"
-import { toast } from "sonner"
-import { cn } from "cn"
+import { useState } from "react";
+import type { FormEvent } from "react";
+import Link from "next/link";
+import { toast } from "sonner";
+import { cn } from "cn";
 
-import { Button } from "@/components/ui/button"
-import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field"
-import { Input } from "@/components/ui/input"
-import { signUp } from "@/lib/auth"
+import { Button } from "@/components/ui/button";
+import { Field, FieldDescription, FieldGroup, FieldLabel } from "@/components/ui/field";
+import { Input } from "@/components/ui/input";
+import { signUp } from "@/lib/auth";
 
 export function SignupForm({ className, ...props }: React.ComponentProps<"div">) {
-  const [name, setName] = useState("")
-  const [email, setEmail] = useState("")
-  const [password, setPassword] = useState("")
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    setError(null)
-    setNotice(null)
-    setIsSubmitting(true)
+    event.preventDefault();
+    setError(null);
+    setNotice(null);
+    setIsSubmitting(true);
     try {
-      await signUp(email, password, name.trim())
-      setNotice("Account created - check your email to confirm, then sign in.")
-      toast.success("Account created.")
+      await signUp(email, password, name.trim());
+      setNotice("Account created - check your email to confirm, then sign in.");
+      toast.success("Account created.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.")
+      setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
-      setIsSubmitting(false)
+      setIsSubmitting(false);
     }
   }
 
@@ -99,5 +99,5 @@ export function SignupForm({ className, ...props }: React.ComponentProps<"div">)
         </FieldGroup>
       </form>
     </div>
-  )
+  );
 }

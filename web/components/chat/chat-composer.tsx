@@ -14,8 +14,19 @@ import {
   PromptInputButton,
   PromptInputSubmit,
 } from "@/components/ai-elements/prompt-input";
-import { Attachments, Attachment, AttachmentPreview, AttachmentInfo, AttachmentRemove } from "@/components/ai-elements/attachments";
-import { createConversation, sendMessage, subscribeToDocumentStatus, uploadDocument } from "@/lib/api";
+import {
+  Attachments,
+  Attachment,
+  AttachmentPreview,
+  AttachmentInfo,
+  AttachmentRemove,
+} from "@/components/ai-elements/attachments";
+import {
+  createConversation,
+  sendMessage,
+  subscribeToDocumentStatus,
+  uploadDocument,
+} from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { MAX_CONVERSATION_DOCS } from "@/lib/types";
 import { Loader2, Paperclip } from "lucide-react";
@@ -36,7 +47,9 @@ function timeOfDayGreeting(): string {
   return "Evening";
 }
 
-function displayName(user: { email?: string; user_metadata?: { full_name?: string } } | null | undefined): string {
+function displayName(
+  user: { email?: string; user_metadata?: { full_name?: string } } | null | undefined,
+): string {
   const fullName = user?.user_metadata?.full_name?.trim();
   if (fullName) return fullName.split(" ")[0];
   if (!user?.email) return "there";
@@ -81,7 +94,9 @@ export function ChatComposer() {
       if (removedIds.current.has(localId)) return;
 
       if (status === "ready") {
-        setAttachments((prev) => prev.map((a) => (a.localId === localId ? { ...a, docId, isUploading: false } : a)));
+        setAttachments((prev) =>
+          prev.map((a) => (a.localId === localId ? { ...a, docId, isUploading: false } : a)),
+        );
         return;
       }
 
@@ -92,7 +107,9 @@ export function ChatComposer() {
           return;
         }
         if (docStatus.status === "ready") {
-          setAttachments((prev) => prev.map((a) => (a.localId === localId ? { ...a, docId, isUploading: false } : a)));
+          setAttachments((prev) =>
+            prev.map((a) => (a.localId === localId ? { ...a, docId, isUploading: false } : a)),
+          );
           delete statusUnsubscribes.current[docId];
         } else if (docStatus.status === "failed") {
           toast.error(`Couldn't index "${file.name}".`);
@@ -164,11 +181,21 @@ export function ChatComposer() {
                 {attachments.map((a) => (
                   <Attachment
                     key={a.localId}
-                    data={{ type: "file", id: a.docId ?? a.localId, filename: a.file.name, mediaType: a.file.type, url: "" }}
+                    data={{
+                      type: "file",
+                      id: a.docId ?? a.localId,
+                      filename: a.file.name,
+                      mediaType: a.file.type,
+                      url: "",
+                    }}
                     onRemove={() => handleRemoveAttachment(a.localId)}
                   >
                     <AttachmentPreview
-                      fallbackIcon={a.isUploading ? <Loader2 className="size-3 animate-spin text-muted-foreground" /> : undefined}
+                      fallbackIcon={
+                        a.isUploading ? (
+                          <Loader2 className="size-3 animate-spin text-muted-foreground" />
+                        ) : undefined
+                      }
                     />
                     <AttachmentInfo />
                     <AttachmentRemove />
@@ -178,7 +205,10 @@ export function ChatComposer() {
             </PromptInputHeader>
           )}
           <PromptInputBody>
-            <PromptInputTextarea placeholder="Ask a question about your documents…" disabled={isSubmitting} />
+            <PromptInputTextarea
+              placeholder="Ask a question about your documents…"
+              disabled={isSubmitting}
+            />
           </PromptInputBody>
           <PromptInputFooter>
             <PromptInputTools>
@@ -203,7 +233,10 @@ export function ChatComposer() {
                 onChange={handleFileSelected}
               />
             </PromptInputTools>
-            <PromptInputSubmit status={isSubmitting ? "submitted" : undefined} disabled={isSubmitting || isUploading} />
+            <PromptInputSubmit
+              status={isSubmitting ? "submitted" : undefined}
+              disabled={isSubmitting || isUploading}
+            />
           </PromptInputFooter>
         </PromptInput>
       </div>
