@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from api.deps import get_current_user, CurrentUser
 from api.schemas import ChatMessageIn, ConversationCreate, ConversationUpdate, AddConversationDocument
 from src.query_pipeline import process_chat_query
+from src.security import generate_source_token
 from src.storage.database import (
     create_conversation,
     list_conversations,
@@ -52,10 +53,26 @@ def list_conversations_endpoint(user: CurrentUser = Depends(get_current_user)):
     return {"conversations": list_conversations(user.id)}
 
 
+def _refresh_source_tokens(messages: list, user: CurrentUser) -> list:
+    """
+    Each stored message's sources carry a source_token signed with the TTL
+    in effect at send time (see query_pipeline.py's _build_sources()) - by
+    the time a conversation is reopened later, those tokens have likely
+    expired. Reissuing them here (ownership was already confirmed by
+    _get_owned_conversation before this is called) keeps old citation
+    links clickable without storing a long-lived token in the DB.
+    """
+    for message in messages:
+        for source in message.get("sources") or []:
+            source["source_token"] = generate_source_token(source["document"], user.id)
+    return messages
+
+
 @router.get("/conversations/{conversation_id}")
 def get_conversation_endpoint(conversation_id: str, user: CurrentUser = Depends(get_current_user)):
     conversation = _get_owned_conversation(conversation_id, user)
-    return {"conversation": conversation, "messages": get_conversation_messages(conversation_id)}
+    messages = _refresh_source_tokens(get_conversation_messages(conversation_id), user)
+    return {"conversation": conversation, "messages": messages}
 
 
 @router.delete("/conversations/{conversation_id}")
@@ -119,6 +136,7 @@ def send_message_endpoint(
             advanced_mode=body.advanced_mode,
             doc_ids=conversation["doc_ids"],
             history=history,
+            user_id=user.id,
         )
     except Exception as e:
         result = {

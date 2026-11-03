@@ -8,6 +8,7 @@ from src.retrieval.grader import grade_retrieved_chunks, meets_confidence_thresh
 from src.retrieval.compression import compress_context_chunks
 from src.evaluation.judge import score_faithfulness
 from src.telemetry import log_query_event
+from src.security import generate_source_token
 
 MAX_HOPS = 2  # initial retrieval pass + at most 1 follow-up hop, never more
 SNIPPET_MAX_CHARS = 280  # citation snippet length - enough to verify a claim, not the whole chunk
@@ -37,7 +38,9 @@ def _format_history(history: list) -> str:
     return "CONVERSATION SO FAR:\n" + "\n".join(lines) + "\n\n"
 
 
-def process_chat_query(query: str, advanced_mode: bool = True, doc_ids: list = None, history: list = None) -> dict:
+def process_chat_query(
+    query: str, advanced_mode: bool = True, doc_ids: list = None, history: list = None, user_id: str = None
+) -> dict:
     """
     RAG pipeline: query expansion -> hybrid retrieval -> rerank -> grade ->
     compress (+ parent expansion) -> [optional single follow-up hop] -> generate.
@@ -52,9 +55,12 @@ def process_chat_query(query: str, advanced_mode: bool = True, doc_ids: list = N
     5 - see api/routers/conversations.py).
     history: prior turns in the conversation, [{"role", "content"}, ...],
     folded into the generation prompt so follow-ups resolve correctly.
+    user_id: the caller, used to sign each returned source's citation link
+    (see _build_sources() / src/security.py) - required to produce a
+    working source_token, but the pipeline still runs without it (token
+    omitted) so this isn't a breaking change for any other caller.
     """
     telemetry = {}
-    query_lower = query.lower()
 
     # --- PHASE 1: Query expansion ---
     start_time = time.perf_counter()
@@ -188,7 +194,7 @@ def process_chat_query(query: str, advanced_mode: bool = True, doc_ids: list = N
             "rrf_score": round(chunk.get("rrf_score", 0.0), 4),
         })
 
-    sources = _build_sources(final_context_chunks)
+    sources = _build_sources(final_context_chunks, user_id)
 
     # --- PHASE 5.5: Retrieval-confidence abstention gate ---
     # advanced_mode only - naive mode never runs the cross-encoder, so
@@ -350,7 +356,7 @@ def _empty_result(reply: str, thinking: str, telemetry: dict) -> dict:
     }
 
 
-def _build_sources(context_chunks: list) -> list:
+def _build_sources(context_chunks: list, user_id: str = None) -> list:
     """
     Reshapes the chunks actually used to generate an answer (or the
     closest matches found, when the pipeline abstains) into the
@@ -359,15 +365,21 @@ def _build_sources(context_chunks: list) -> list:
     chunk_text, since this is for a user to spot-check a claim, not to
     re-read the whole chunk. 1-based `index` matches the "CHUNK N"
     numbering already used above when building the generation prompt.
+
+    Each source also carries a signed source_token (None if user_id
+    wasn't passed in) - GET /source/{filename} requires one; see
+    src/security.py for why that route can't just require a bearer token.
     """
     sources = []
     for idx, chunk in enumerate(context_chunks):
+        document = chunk.get("source_file", "unknown")
         sources.append({
             "index": idx + 1,
-            "document": chunk.get("source_file", "unknown"),
+            "document": document,
             "page": chunk.get("page_number"),
             "section": chunk.get("expanded_heading") or chunk.get("heading_path") or "Unknown Section",
             "snippet": _snippet(chunk.get("chunk_text", "")),
+            "source_token": generate_source_token(document, user_id) if user_id else None,
         })
     return sources
 
