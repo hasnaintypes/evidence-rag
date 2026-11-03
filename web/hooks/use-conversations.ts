@@ -6,17 +6,25 @@ export function useConversations() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  const refresh = useCallback(() => {
-    setIsLoading(true);
+  // Split from `refresh` below so the mount effect can call this directly:
+  // it has no synchronous setState call of its own (isLoading already
+  // starts true), only ones inside the .then/.catch/.finally callbacks,
+  // which run later as microtasks, not synchronously during the effect.
+  const fetchConversations = useCallback(() => {
     return listConversations()
       .then(setConversations)
       .catch(() => setConversations([]))
       .finally(() => setIsLoading(false));
   }, []);
 
+  const refresh = useCallback(() => {
+    setIsLoading(true);
+    return fetchConversations();
+  }, [fetchConversations]);
+
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    fetchConversations();
+  }, [fetchConversations]);
 
   // Patches the local list in place instead of refetching - pin/rename
   // reflect instantly instead of flashing the whole sidebar back to its

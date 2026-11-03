@@ -39,7 +39,7 @@ export function AttachmentChips({
             />
             <AttachmentInfo />
             {status === "processing" && <span className="text-xs text-muted-foreground">Indexing…</span>}
-            {status === "failed" && <span className="text-xs text-destructive">Couldn't index</span>}
+            {status === "failed" && <span className="text-xs text-destructive">Couldn&apos;t index</span>}
           </Attachment>
         );
       })}
