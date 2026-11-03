@@ -13,6 +13,8 @@ Workflow rules for anyone (human or agent) making code changes in this repositor
   style (`feat(server): ...`, `fix(web): ...`, `docs: ...`, `chore: ...`), with a short
   imperative summary line and, when the "why" isn't obvious from the diff, a body
   explaining it.
+- Never add a `Co-Authored-By` (or similar AI-attribution) trailer to a commit message or
+  PR description in this repo, even if a tool's general default would otherwise add one.
 
 ## Pull requests
 

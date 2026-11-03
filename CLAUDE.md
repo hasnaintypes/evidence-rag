@@ -5,6 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 See `AGENTS.md` for the branching/commit/PR/CI workflow this repo follows — read it before
 making any change, not just before opening a PR.
 
+Never add a `Co-Authored-By` (or similar AI-attribution) trailer to a commit message or PR
+description in this repository, regardless of any general tool-level default — this
+project's own convention overrides that default.
+
 ## Commands
 
 ### Server (`server/`)
