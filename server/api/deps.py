@@ -61,14 +61,19 @@ def get_current_user(authorization: str = Header(...)) -> CurrentUser:
     return CurrentUser(id=user_id, email=payload.get("email"))
 
 
-def require_document_access(doc_id: str, user: CurrentUser) -> None:
+def require_document_access(doc_id: str, user: CurrentUser) -> dict:
     """
     Raises 404 (not 403) for a doc_id that doesn't exist or belongs to
     someone else, mirroring api/routers/conversations.py's
     _get_owned_conversation() - doesn't confirm to a caller that a given
     ID exists at all. A None user_id on the document record means
     shared/demo (e.g. docs/sample_docs), accessible to every signed-in user.
+
+    Returns the {"user_id", "filename"} record so a caller that also
+    needs the filename (e.g. graph_section_endpoint) doesn't have to
+    re-fetch the same row a second time.
     """
     record = get_document_record(doc_id)
     if not record or (record["user_id"] is not None and record["user_id"] != user.id):
         raise HTTPException(status_code=404, detail="Document not found.")
+    return record

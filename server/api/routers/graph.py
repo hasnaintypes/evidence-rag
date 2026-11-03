@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from api.deps import get_current_user, require_document_access, CurrentUser
-from src.storage.database import get_graph_data, get_node, get_document_record, list_documents
+from src.storage.database import get_graph_data, get_node, list_documents
 from src.security import generate_source_token
 
 router = APIRouter()
@@ -30,8 +30,7 @@ def graph_section_endpoint(node_id: str, user: CurrentUser = Depends(get_current
     if not node:
         raise HTTPException(status_code=404, detail=f"Section '{node_id}' not found.")
 
-    require_document_access(node["doc_id"], user)
-    document = get_document_record(node["doc_id"])
+    document = require_document_access(node["doc_id"], user)
 
     return {
         "doc_id": node["doc_id"],
