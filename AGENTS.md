@@ -43,6 +43,13 @@ Workflow rules for anyone (human or agent) making code changes in this repositor
   scope the new rule narrowly and say so in a comment — don't leave CI red for reasons
   unrelated to the PR at hand.
 
+## Running commands
+
+- Run long-running or blocking commands (CI watch/poll loops, dev servers, builds,
+  installs, test suites) in the background rather than foreground, and check back on
+  them instead of blocking the whole session on one command. Only run a command in the
+  foreground when the very next step genuinely depends on its output and it finishes quickly.
+
 ## Documentation
 
 - Project documentation (PRD, architecture, security findings, roadmap, decisions) lives
