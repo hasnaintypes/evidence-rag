@@ -5,10 +5,11 @@ import time
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
 
-from api.deps import get_current_user, CurrentUser
-from src.storage.database import list_documents, get_document_status
+from api.deps import get_current_user, require_document_access, CurrentUser
+from src.storage.database import list_documents, get_document_status, document_filename_accessible
 from src.storage.files import save_upload, get_source_path
 from src.ingestion.pipeline import prepare_ingest, finish_ingest, SUPPORTED_EXTENSIONS
+from src.security import verify_source_token
 
 router = APIRouter()
 
@@ -87,6 +88,7 @@ def upload_file_endpoint(
 def document_status_endpoint(doc_id: str, user: CurrentUser = Depends(get_current_user)):
     """One-shot status read, used by the UI for the initial render before
     the live stream below takes over."""
+    require_document_access(doc_id, user)
     status = get_document_status(doc_id)
     if not status:
         raise HTTPException(status_code=404, detail="Document not found.")
@@ -134,6 +136,7 @@ def document_status_events(doc_id: str, user: CurrentUser = Depends(get_current_
     production-grade replacement for polling GET /documents/{doc_id}/status
     on an interval. Closes itself once the document reaches a terminal
     state (ready/failed)."""
+    require_document_access(doc_id, user)
     return StreamingResponse(
         _document_status_stream(doc_id),
         media_type="text/event-stream",
@@ -150,7 +153,7 @@ def _safe_filename(filename: str) -> str:
 
 
 @router.get("/source/{filename}")
-def serve_source_document(filename: str):
+def serve_source_document(filename: str, token: str):
     """
     Serves an ingested source file for the citation viewer. The UI links
     to this with a #page=N fragment, which browser-native PDF viewers
@@ -159,12 +162,20 @@ def serve_source_document(filename: str):
 
     Intentionally NOT behind get_current_user: the frontend opens this via
     a plain <a href> / new-tab navigation (citation links), which can't
-    attach a custom Authorization header. Filenames are sanitized against
-    path traversal below; ownership isn't enforced here yet.
+    attach a custom Authorization header. Ownership is instead enforced
+    via a short-lived signed `token` (src/security.py), issued alongside
+    every citation/source the API returns - see query_pipeline.py's
+    _build_sources() and api/routers/graph.py's graph_section_endpoint().
     """
     safe_name = _safe_filename(filename)
-    file_path = get_source_path(safe_name)
 
+    user_id = verify_source_token(safe_name, token)
+    if user_id is None:
+        raise HTTPException(status_code=403, detail="Invalid or expired source link.")
+    if not document_filename_accessible(safe_name, user_id):
+        raise HTTPException(status_code=404, detail=f"Source file '{safe_name}' not found.")
+
+    file_path = get_source_path(safe_name)
     if not file_path:
         raise HTTPException(status_code=404, detail=f"Source file '{safe_name}' not found.")
 
