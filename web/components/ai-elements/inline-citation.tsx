@@ -19,8 +19,8 @@ import {
   createContext,
   useCallback,
   useContext,
-  useEffect,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 export type InlineCitationProps = ComponentProps<"span">;
@@ -149,30 +149,29 @@ export const InlineCitationCarouselIndex = ({
   ...props
 }: InlineCitationCarouselIndexProps) => {
   const api = useCarouselApi();
-  const [current, setCurrent] = useState(0);
-  const [count, setCount] = useState(0);
 
-  const syncState = useCallback(() => {
-    if (!api) {
-      return;
-    }
-    setCount(api.scrollSnapList().length);
-    setCurrent(api.selectedScrollSnap() + 1);
-  }, [api]);
-
-  useEffect(() => {
-    if (!api) {
-      return;
-    }
-
-    syncState();
-
-    api.on("select", syncState);
-
-    return () => {
-      api.off("select", syncState);
-    };
-  }, [api, syncState]);
+  // current/count are derived from embla's own imperative API rather than
+  // mirrored into local state via an effect - useSyncExternalStore
+  // re-renders on embla's "select" event and reads the live value at
+  // render time, so there's no setState-in-effect round trip to keep in sync.
+  const subscribeToCarousel = useCallback(
+    (onStoreChange: () => void) => {
+      if (!api) return () => {};
+      api.on("select", onStoreChange);
+      return () => api.off("select", onStoreChange);
+    },
+    [api]
+  );
+  const current = useSyncExternalStore(
+    subscribeToCarousel,
+    useCallback(() => (api ? api.selectedScrollSnap() + 1 : 0), [api]),
+    () => 0
+  );
+  const count = useSyncExternalStore(
+    subscribeToCarousel,
+    useCallback(() => (api ? api.scrollSnapList().length : 0), [api]),
+    () => 0
+  );
 
   return (
     <div
