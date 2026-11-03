@@ -1,0 +1,11 @@
+[tool.ruff]
+line-length = 120
+extend-exclude = [".venv", "data"]
+
+[tool.ruff.lint]
+# Scoped to pyflakes (real bugs: unused imports/variables, undefined
+# names, etc.) rather than full PEP8 style - the codebase doesn't yet
+# follow a single formatting convention, so a style-rule gate would fail
+# on pre-existing code unrelated to whatever a given PR touches. Widen
+# this once a formatter (black/ruff format) has been run across the repo.
+select = ["F"]

@@ -14,8 +14,11 @@ import type { ChatMessage } from "@/lib/types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 
-function sourceHref(document: string, page: number | null) {
-  const url = `${API_BASE_URL}/source/${encodeURIComponent(document)}`;
+function sourceHref(document: string, page: number | null, token: string | null) {
+  // token is required by the backend (see server/src/security.py) - a
+  // null token (shouldn't happen from the real API) just produces a link
+  // the backend will reject with 403 rather than a broken URL.
+  const url = `${API_BASE_URL}/source/${encodeURIComponent(document)}?token=${encodeURIComponent(token ?? "")}`;
   return page ? `${url}#page=${page}` : url;
 }
 
@@ -65,7 +68,7 @@ export function ChatMessageBubble({
                   <HoverCardTrigger
                     render={
                       <a
-                        href={sourceHref(source.document, source.page)}
+                        href={sourceHref(source.document, source.page, source.source_token)}
                         target="_blank"
                         rel="noreferrer"
                         className="flex items-center gap-2 text-xs hover:text-foreground"

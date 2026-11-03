@@ -73,6 +73,16 @@ class Settings(BaseSettings):
     supabase_key: Optional[str] = None
     supabase_storage_bucket: str = "documents"
 
+    # --- Signed source-citation links (see src/security.py) ---
+    # GET /source/{filename} can't require an Authorization header (the
+    # frontend opens it via plain <a href> navigation, which can't attach
+    # one), so ownership is instead enforced via a short-lived signed JWT
+    # embedded in the link. If unset, src/security.py falls back to a
+    # random secret generated once per process start (fine for a single
+    # process; set this explicitly in any multi-worker/multi-process
+    # deployment, or every token-minting worker needs the same value).
+    source_link_secret: Optional[str] = None
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 

@@ -25,7 +25,6 @@ class DocxDocumentParser(BaseParser):
         # docx separates paragraphs and tables into different collections;
         # walk doc.element.body in document order so tables land under the
         # correct heading instead of all being appended at the end
-        table_iter = iter(doc.tables)
         table_by_element = {t._tbl: t for t in doc.tables}
 
         for block in doc.element.body:

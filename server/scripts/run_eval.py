@@ -227,7 +227,7 @@ def run_eval():
         report_lines.append(f"### {naive_r['id']}: {naive_r['question']}")
 
         if naive_r["is_negative_control"]:
-            report_lines.append(f"- Type: negative control (no correct source in corpus)")
+            report_lines.append("- Type: negative control (no correct source in corpus)")
             report_lines.append(f"- Naive honest decline: {naive_r['honest_decline']}")
             report_lines.append(f"- Advanced honest decline: {adv_r['honest_decline']}")
             report_lines.append(f"- Naive reply preview: {naive_r['reply_preview']!r}")

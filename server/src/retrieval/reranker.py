@@ -1,5 +1,4 @@
 from sentence_transformers import CrossEncoder
-import numpy as np
 from typing import List, Dict, Any
 
 # Initializes the local cross-encoder engine (will auto-download on first boot)

@@ -148,7 +148,7 @@ def chunk_document(file_path: str, content: str, chunk_size: int = 500, chunk_ov
         # re.split with capturing groups returns: [pre_text, page_num, page_content, page_num, page_content...]
         # If pre_text is empty, we skip it
         iterator = iter(page_segments)
-        first_item = next(iterator, "")
+        next(iterator, "")  # discards pre_text (empty unless the doc has content before the first page marker)
 
         while True:
             try:

@@ -422,6 +422,59 @@ def get_document_status(doc_id: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
+def get_document_record(doc_id: str) -> Optional[Dict[str, Any]]:
+    """Returns {"user_id", "filename"} for doc_id (user_id None means
+    shared/demo), or None if no document with this doc_id exists. Used to
+    enforce ownership on the document/graph routes - see api/deps.py's
+    require_document_access()."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = _ph(1)
+    cursor.execute(f"SELECT user_id, filename FROM documents WHERE doc_id = {ph}", (doc_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def filename_in_use_by_other(filename: str, user_id: str) -> bool:
+    """
+    True if `filename` already belongs to a shared/demo document or to a
+    document owned by someone else. Checked before an upload is accepted
+    (api/routers/documents.py) - file storage (src/storage/files.py) keys
+    the actual bytes purely by filename with no per-user namespacing, so
+    without this check a same-named upload would silently overwrite
+    another user's (or the shared corpus's) file on disk/in Storage,
+    while still being a distinct, separately-owned row in `documents`
+    (doc_id already includes user_id, so there's no DB-level collision -
+    only a storage-level one).
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT 1 FROM documents WHERE filename = {_ph(1)} AND (user_id IS NULL OR user_id != {_ph(1)}) LIMIT 1",
+        (filename, user_id),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
+
+
+def document_filename_accessible(filename: str, user_id: str) -> bool:
+    """True if `filename` belongs to a shared/demo document (user_id IS
+    NULL) or to one owned by `user_id`. Used by GET /source/{filename},
+    which can't carry an Authorization header - see src/security.py for
+    how the caller's identity is established for this route instead."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT 1 FROM documents WHERE filename = {_ph(1)} AND (user_id IS NULL OR user_id = {_ph(1)}) LIMIT 1",
+        (filename, user_id),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
+
+
 def get_indexed_embedding_models() -> List[str]:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -700,21 +753,34 @@ def upsert_edge(doc_id: str, source_entity_id: int, target_entity_id: int) -> No
     conn.close()
 
 
-def get_graph_data(doc_id: Optional[str] = None) -> Dict[str, Any]:
+def get_graph_data(doc_id: Optional[str] = None, allowed_doc_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    """
+    allowed_doc_ids scopes the "full graph" (doc_id=None) case to one
+    caller's own + shared documents, instead of every user's entities -
+    see api/routers/graph.py's graph_endpoint(). Ignored when doc_id is
+    given; the router checks that doc_id itself is accessible first.
+    """
+    if allowed_doc_ids is not None and not doc_id and not allowed_doc_ids:
+        return {"nodes": [], "edges": []}
+
     conn = get_db_connection()
     cursor = conn.cursor()
-    ph = _ph(1)
 
     if doc_id:
-        cursor.execute(f"SELECT id, name, doc_id, node_id FROM entities WHERE doc_id = {ph}", (doc_id,))
+        ph = _ph(1)
+        entity_where, entity_params = f"WHERE doc_id = {ph}", (doc_id,)
+    elif allowed_doc_ids is not None:
+        ph = _ph(len(allowed_doc_ids))
+        entity_where, entity_params = f"WHERE doc_id IN ({ph})", tuple(allowed_doc_ids)
     else:
-        cursor.execute("SELECT id, name, doc_id, node_id FROM entities")
+        entity_where, entity_params = "", ()
+
+    cursor.execute(f"SELECT id, name, doc_id, node_id FROM entities {entity_where}", entity_params)
     entity_rows = cursor.fetchall()
 
-    if doc_id:
-        cursor.execute(f"SELECT source_entity_id, target_entity_id, weight FROM entity_edges WHERE doc_id = {ph}", (doc_id,))
-    else:
-        cursor.execute("SELECT source_entity_id, target_entity_id, weight FROM entity_edges")
+    cursor.execute(
+        f"SELECT source_entity_id, target_entity_id, weight FROM entity_edges {entity_where}", entity_params
+    )
     edge_rows = cursor.fetchall()
 
     conn.close()
@@ -732,6 +798,29 @@ def get_graph_data(doc_id: Optional[str] = None) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 MAX_CONVERSATION_DOCS = 5
+
+
+def all_documents_accessible(doc_ids: List[str], user_id: str) -> bool:
+    """
+    True only if every doc_id exists and is either shared/demo (user_id IS
+    NULL) or owned by `user_id`. Used before a conversation is created or
+    a document is attached to one (api/routers/conversations.py) - without
+    this, a caller could attach an arbitrary/guessed doc_id belonging to
+    another user and have process_chat_query() retrieve its content, since
+    retrieval only filters by the conversation's doc_ids, never by owner.
+    """
+    if not doc_ids:
+        return True
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = _ph(len(doc_ids))
+    cursor.execute(
+        f"SELECT doc_id FROM documents WHERE doc_id IN ({ph}) AND (user_id IS NULL OR user_id = {_ph(1)})",
+        tuple(doc_ids) + (user_id,),
+    )
+    accessible_ids = {r["doc_id"] for r in cursor.fetchall()}
+    conn.close()
+    return accessible_ids == set(doc_ids)
 
 
 def _filenames_for_doc_ids(cursor, doc_ids: List[str]) -> Dict[str, str]:
@@ -833,7 +922,6 @@ def add_document_to_conversation(conversation_id: str, user_id: str, doc_id: str
     message to the right status code."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    ph = _ph(2)
     cursor.execute(f"SELECT * FROM conversations WHERE id = {_ph(1)} AND user_id = {_ph(1)}", (conversation_id, user_id))
     row = cursor.fetchone()
     if not row:
