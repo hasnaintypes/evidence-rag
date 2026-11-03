@@ -17,6 +17,7 @@ from src.storage.database import get_db_connection
 # tracing" in the roadmap actually means.
 # --------------------------------------------------------------------------- #
 
+
 def init_telemetry_table() -> None:
     """Creates the query_log table if it doesn't exist. Safe to call on
     every startup alongside db.init_db(). No-op for storage_mode=supabase -
@@ -67,6 +68,7 @@ def timed_stage():
             do_work()
         telemetry["stage_time_ms"] = t.elapsed_ms
     """
+
     class _Timer:
         elapsed_ms: float = 0.0
 
@@ -104,25 +106,45 @@ def log_query_event(
         cursor = conn.cursor()
         unsupported_claims_json = json.dumps(unsupported_claims or [])
         if settings.storage_mode == "supabase":
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO query_log
                     (query, advanced_mode, hop_count, chunk_count, top_rerank_score, generation_failed,
                      telemetry_json, faithfulness_score, unsupported_claims_json)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                query, int(advanced_mode), hop_count, chunk_count, top_rerank_score,
-                int(generation_failed), json.dumps(telemetry), faithfulness_score, unsupported_claims_json,
-            ))
+            """,
+                (
+                    query,
+                    int(advanced_mode),
+                    hop_count,
+                    chunk_count,
+                    top_rerank_score,
+                    int(generation_failed),
+                    json.dumps(telemetry),
+                    faithfulness_score,
+                    unsupported_claims_json,
+                ),
+            )
         else:
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO query_log
                     (query, advanced_mode, hop_count, chunk_count, top_rerank_score, generation_failed,
                      telemetry_json, faithfulness_score, unsupported_claims_json)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                query, int(advanced_mode), hop_count, chunk_count, top_rerank_score,
-                int(generation_failed), json.dumps(telemetry), faithfulness_score, unsupported_claims_json,
-            ))
+            """,
+                (
+                    query,
+                    int(advanced_mode),
+                    hop_count,
+                    chunk_count,
+                    top_rerank_score,
+                    int(generation_failed),
+                    json.dumps(telemetry),
+                    faithfulness_score,
+                    unsupported_claims_json,
+                ),
+            )
         conn.commit()
         conn.close()
     except Exception:

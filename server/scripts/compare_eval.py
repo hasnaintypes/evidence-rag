@@ -9,6 +9,7 @@ Writes server/eval_status.txt containing PASS or FAIL - a separate CI
 step reads that and fails the job on regression, kept separate so the
 comment always gets posted even when the run fails the gate.
 """
+
 import json
 import os
 import sys
@@ -78,9 +79,13 @@ def main():
 
     lines = ["## Retrieval Evaluation", ""]
     if baseline is None:
-        lines.append("_No baseline yet (first run, or `docs/eval_baseline.json` not committed) - showing current numbers only._")
+        lines.append(
+            "_No baseline yet (first run, or `docs/eval_baseline.json` not committed) - showing current numbers only._"
+        )
     elif any_fail:
-        lines.append(f"**Regression detected** - one or more metrics dropped by more than {REGRESSION_THRESHOLD} vs. `main`.")
+        lines.append(
+            f"**Regression detected** - one or more metrics dropped by more than {REGRESSION_THRESHOLD} vs. `main`."
+        )
     else:
         lines.append("No regression beyond threshold vs. `main`.")
     lines.append("")

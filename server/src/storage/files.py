@@ -10,6 +10,7 @@ from src.ingestion.pipeline import EXTENSION_MIME_TYPES
 
 def _supabase_client():
     from supabase import create_client
+
     if not settings.supabase_url or not settings.supabase_key:
         raise RuntimeError("STORAGE_MODE=supabase requires SUPABASE_URL and SUPABASE_KEY to be set.")
     return create_client(settings.supabase_url, settings.supabase_key)

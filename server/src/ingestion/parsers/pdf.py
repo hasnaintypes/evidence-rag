@@ -13,9 +13,7 @@ from src.llm import transcribe_page_image
 MIN_TEXT_LENGTH_FOR_TEXT_EXTRACTION = 20
 
 # "5.1.1 External E-STOP", "Section 3.8", "A.2 Notes" gibi başlıkları yakalar
-HEADING_PATTERN = re.compile(
-    r"^(?P<num>\d+(\.\d+){0,4}|[A-Z]\.\d+)\s+(?P<title>[A-ZÇĞİÖŞÜ][^\n]{2,80})$"
-)
+HEADING_PATTERN = re.compile(r"^(?P<num>\d+(\.\d+){0,4}|[A-Z]\.\d+)\s+(?P<title>[A-ZÇĞİÖŞÜ][^\n]{2,80})$")
 
 WARNING_PATTERN = re.compile(r"^\s*(WARNING|UYARI|CAUTION|DİKKAT)\b", re.IGNORECASE)
 NOTE_PATTERN = re.compile(r"^\s*(NOTE|NOT)\b", re.IGNORECASE)
@@ -84,9 +82,7 @@ class PDFDocumentParser(BaseParser):
                             heading_path=self._path_for(parent),
                             content="",  # vision captioning fazında doldurulacak
                             page=page_num,
-                            bbox=self._bbox_dict(
-                                (img["x0"], img["top"], img["x1"], img["bottom"])
-                            ),
+                            bbox=self._bbox_dict((img["x0"], img["top"], img["x1"], img["bottom"])),
                             order=order_counter,
                             metadata={"needs_captioning": True},
                         )
@@ -115,9 +111,7 @@ class PDFDocumentParser(BaseParser):
                     )
 
                     if looks_like_heading:
-                        self._flush_paragraph(
-                            buffer, nodes, heading_stack, doc_id, page_num, order_counter
-                        )
+                        self._flush_paragraph(buffer, nodes, heading_stack, doc_id, page_num, order_counter)
                         order_counter += 1
                         buffer = []
 
@@ -142,9 +136,7 @@ class PDFDocumentParser(BaseParser):
 
                     # warning/note ayrı node tipi olarak işaretlenir ama buffer'a girmez
                     if WARNING_PATTERN.match(line_text) or NOTE_PATTERN.match(line_text):
-                        self._flush_paragraph(
-                            buffer, nodes, heading_stack, doc_id, page_num, order_counter
-                        )
+                        self._flush_paragraph(buffer, nodes, heading_stack, doc_id, page_num, order_counter)
                         buffer = []
                         order_counter += 1
                         parent = heading_stack[-1] if heading_stack else None
@@ -165,9 +157,7 @@ class PDFDocumentParser(BaseParser):
 
                     buffer.append(line_text)
 
-                self._flush_paragraph(
-                    buffer, nodes, heading_stack, doc_id, page_num, order_counter
-                )
+                self._flush_paragraph(buffer, nodes, heading_stack, doc_id, page_num, order_counter)
 
         return nodes
 

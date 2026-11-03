@@ -110,9 +110,7 @@ def add_conversation_document_endpoint(
 
 
 @router.post("/conversations/{conversation_id}/checkpoints/{message_id}/restore")
-def restore_checkpoint_endpoint(
-    conversation_id: str, message_id: int, user: CurrentUser = Depends(get_current_user)
-):
+def restore_checkpoint_endpoint(conversation_id: str, message_id: int, user: CurrentUser = Depends(get_current_user)):
     """Rewinds the conversation to right after message_id, deleting
     everything sent after it, so the user can continue from that point."""
     _get_owned_conversation(conversation_id, user)
@@ -121,9 +119,7 @@ def restore_checkpoint_endpoint(
 
 
 @router.post("/conversations/{conversation_id}/messages")
-def send_message_endpoint(
-    conversation_id: str, body: ChatMessageIn, user: CurrentUser = Depends(get_current_user)
-):
+def send_message_endpoint(conversation_id: str, body: ChatMessageIn, user: CurrentUser = Depends(get_current_user)):
     """
     Replaces the old flat POST /chat: scoped to one conversation's documents
     (doc_ids, up to 5), and folds recent turns into the prompt so follow-ups work.

@@ -49,18 +49,14 @@ def upload_file_endpoint(
 
     if ext not in SUPPORTED_EXTENSIONS:
         raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file format. Supported types: {', '.join(SUPPORTED_EXTENSIONS)}"
+            status_code=400, detail=f"Unsupported file format. Supported types: {', '.join(SUPPORTED_EXTENSIONS)}"
         )
 
     file.file.seek(0, os.SEEK_END)
     size = file.file.tell()
     file.file.seek(0)
     if size > MAX_UPLOAD_SIZE_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File exceeds the 50MB upload limit ({size / 1024 / 1024:.1f}MB)."
-        )
+        raise HTTPException(status_code=413, detail=f"File exceeds the 50MB upload limit ({size / 1024 / 1024:.1f}MB).")
 
     # File storage (src/storage/files.py) keys the actual bytes purely by
     # filename with no per-user namespacing, so without this check a
