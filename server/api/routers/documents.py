@@ -6,7 +6,12 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFi
 from fastapi.responses import FileResponse, StreamingResponse
 
 from api.deps import get_current_user, require_document_access, CurrentUser
-from src.storage.database import list_documents, get_document_status, document_filename_accessible
+from src.storage.database import (
+    list_documents,
+    get_document_status,
+    document_filename_accessible,
+    filename_in_use_by_other,
+)
 from src.storage.files import save_upload, get_source_path
 from src.ingestion.pipeline import prepare_ingest, finish_ingest, SUPPORTED_EXTENSIONS
 from src.security import verify_source_token
@@ -55,6 +60,17 @@ def upload_file_endpoint(
         raise HTTPException(
             status_code=413,
             detail=f"File exceeds the 50MB upload limit ({size / 1024 / 1024:.1f}MB)."
+        )
+
+    # File storage (src/storage/files.py) keys the actual bytes purely by
+    # filename with no per-user namespacing, so without this check a
+    # same-named upload would silently overwrite a shared/demo document's
+    # or another user's file content on disk/in Storage - see
+    # filename_in_use_by_other()'s docstring.
+    if filename_in_use_by_other(filename, user.id):
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{filename}' matches an existing document you don't own - rename the file and try again.",
         )
 
     try:

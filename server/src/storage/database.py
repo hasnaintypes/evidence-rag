@@ -436,6 +436,29 @@ def get_document_record(doc_id: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
+def filename_in_use_by_other(filename: str, user_id: str) -> bool:
+    """
+    True if `filename` already belongs to a shared/demo document or to a
+    document owned by someone else. Checked before an upload is accepted
+    (api/routers/documents.py) - file storage (src/storage/files.py) keys
+    the actual bytes purely by filename with no per-user namespacing, so
+    without this check a same-named upload would silently overwrite
+    another user's (or the shared corpus's) file on disk/in Storage,
+    while still being a distinct, separately-owned row in `documents`
+    (doc_id already includes user_id, so there's no DB-level collision -
+    only a storage-level one).
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT 1 FROM documents WHERE filename = {_ph(1)} AND (user_id IS NULL OR user_id != {_ph(1)}) LIMIT 1",
+        (filename, user_id),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
+
+
 def document_filename_accessible(filename: str, user_id: str) -> bool:
     """True if `filename` belongs to a shared/demo document (user_id IS
     NULL) or to one owned by `user_id`. Used by GET /source/{filename},
