@@ -44,6 +44,12 @@ export default function GraphPage() {
 
   useEffect(() => {
     if (!session) return;
+    // Resetting loading/error/selection state when selectedDocId changes,
+    // before kicking off the new fetch below, is the standard
+    // fetch-on-param-change pattern - there's no external store to
+    // subscribe to here instead (unlike the carousel-style effects
+    // elsewhere in this codebase, which use useSyncExternalStore).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsLoading(true);
     setError(null);
     setSelectedSection(null);
