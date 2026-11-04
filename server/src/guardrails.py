@@ -34,10 +34,21 @@ INJECTION_PATTERNS = [
     re.compile(r"disregard (all |any |the )?(previous|above|prior)", re.IGNORECASE),
     re.compile(r"\byou are now\b", re.IGNORECASE),
     re.compile(r"new\s+(system\s+)?instructions?\s*:", re.IGNORECASE),
-    re.compile(r"^\s*(system|assistant)\s*:", re.IGNORECASE | re.MULTILINE),
-    re.compile(r"\bact as (an?|the)\b", re.IGNORECASE),
+    # Requires directive language after the fake role line, not just
+    # "system:"/"assistant:" alone - a bare colon-prefixed line is
+    # ordinary in technical documentation (status tables, log excerpts
+    # like "System: Ready") and produced false positives on exactly the
+    # kind of corpus this module's own docstring cites as legitimate.
+    re.compile(
+        r"^\s*(system|assistant)\s*:\s*(you (must|should|are)|ignore|disregard|from now on)",
+        re.IGNORECASE | re.MULTILINE,
+    ),
     re.compile(r"reveal (your|the)\s+(system\s+prompt|instructions|api\s+key)", re.IGNORECASE),
     re.compile(r"\bthis is (your|the) (new|real) (system\s+prompt|task)\b", re.IGNORECASE),
+    # "act as" alone is too generic for a technical corpus ("the
+    # thermistor can act as a current limiter") - only flag it paired
+    # with an AI/assistant-roleplay target, the actual jailbreak framing.
+    re.compile(r"\bact as (an?|the)\s+\w*\s*(ai|assistant|chatbot|bot|llm|model)\b", re.IGNORECASE),
 ]
 
 

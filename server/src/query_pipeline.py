@@ -182,7 +182,12 @@ def process_chat_query(
         # only, never used to strip/block the chunk. See guardrails.py's
         # module docstring for why a heuristic match isn't treated as
         # proof of an actual attack.
-        matched_patterns = scan_for_injection_patterns(chunk_text) or scan_for_injection_patterns(section_context)
+        # Scan both independently and merge (not `or`, which would
+        # short-circuit and drop a pattern that only appears in
+        # section_context once chunk_text already matched something else).
+        matched_patterns = list(
+            dict.fromkeys(scan_for_injection_patterns(chunk_text) + scan_for_injection_patterns(section_context))
+        )
         if matched_patterns:
             injection_flags.append(
                 {"chunk_index": idx + 1, "source": chunk.get("source_file", "unknown"), "patterns": matched_patterns}
