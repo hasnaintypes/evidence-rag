@@ -76,6 +76,11 @@ def evaluate_negative_control(reply: str) -> bool:
         "does not",
         "doesn't contain",
         "not available in",
+        # query_pipeline.py's faithfulness hard gate - a withheld,
+        # correctly-flagged-as-unsupported answer is honest behavior too,
+        # not a hallucination, even though it isn't phrased as a classic
+        # "insufficient context" decline.
+        "did not pass the faithfulness check",
     ]
     return any(signal in reply_lower for signal in honest_decline_signals)
 

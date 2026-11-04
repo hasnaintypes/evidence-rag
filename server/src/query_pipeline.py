@@ -293,13 +293,39 @@ ANSWER:"""
     faithfulness_score = faithfulness_result["faithfulness_score"] if faithfulness_result else None
     unsupported_claims = faithfulness_result["unsupported_claims"] if faithfulness_result else []
 
+    # --- PHASE 6.6: Faithfulness hard gate ---
+    # A low score here means the judge itself flagged the generated answer
+    # as making claims the retrieved chunks don't support - the retrieval
+    # side did its job (chunks were found and passed the confidence gate
+    # above), but generation drifted from them. Only fires when the judge
+    # actually returned a score (None means "unknown", e.g. judge call
+    # failed - treated as "can't confirm faithful", not "unfaithful", same
+    # as every other best-effort enrichment in this pipeline).
+    faithfulness_gated = faithfulness_score is not None and faithfulness_score < settings.faithfulness_gate_threshold
+    if faithfulness_gated:
+        claims_list = "\n".join(f"- {c}" for c in unsupported_claims) if unsupported_claims else "(none listed)"
+        final_summary = (
+            "The generated answer did not pass the faithfulness check - it made claims the "
+            "retrieved document chunks do not support, so it is being withheld rather than "
+            "shown as if it were reliable. Unsupported claims flagged by the judge:\n"
+            f"{claims_list}\n\n"
+            "The sources below are the chunks that were available for this question - please "
+            "review them directly, or retry the question."
+        )
+
     references_string = ", ".join(source_files) if source_files else "Local Knowledge Base"
     structured_reply = f"{final_summary}\n\nReference:\n- {references_string}"
 
     thinking_content = (
         f"Retrieval hops used: {hop_count}/{MAX_HOPS}\n"
         f"Chunks injected into context: {len(final_context_chunks)} (top rerank score: {top_score})\n"
-        f"Expanded query tracks:\n" + "\n".join(f" -> {q}" for q in expanded_queries)
+        + (
+            f"Faithfulness gate: FIRED (score {faithfulness_score} < threshold {settings.faithfulness_gate_threshold})\n"
+            if faithfulness_gated
+            else ""
+        )
+        + "Expanded query tracks:\n"
+        + "\n".join(f" -> {q}" for q in expanded_queries)
     )
 
     log_query_event(
