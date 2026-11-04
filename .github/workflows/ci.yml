@@ -33,6 +33,35 @@ jobs:
       - name: Ruff format check
         run: ruff format --check .
 
+  server-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: server/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run pytest
+        # Runs on every PR/push regardless of which files changed, unlike
+        # eval.yml's path-filtered retrieval-quality harness - these are
+        # correctness tests (auth, ownership/authz, chat-pipeline failure
+        # paths), not a quality metric, and must gate every merge. No real
+        # Gemini/Supabase credentials are used or needed - every test
+        # mocks the Gemini/JWKS call sites and runs against an isolated
+        # temp SQLite DB (see tests/conftest.py).
+        run: pytest tests/ -v
+        env:
+          GEMINI_API_KEY: ci-placeholder-not-a-real-credential
+
   web-lint-typecheck:
     runs-on: ubuntu-latest
     defaults:
