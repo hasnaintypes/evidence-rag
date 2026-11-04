@@ -117,14 +117,16 @@ corpus, indexed via `scripts/ingest.py`); non-null means a private upload via `P
 that uploader. `make_doc_id(filename, user_id)` in `ingestion/pipeline.py` exists specifically so two
 different users' same-named upload don't collide on one `doc_id`.
 
-### Known gap: authorization is not fully route-scoped
+### Authorization is route-scoped via `require_document_access()`
 
-Conversations are correctly scoped per-user, but `GET /documents/{id}/status`,
-`GET /documents/{id}/events` (SSE), `GET /graph`, and `GET /graph/section/{id}` do not currently check
-that the requesting user owns the referenced document — any authenticated caller can access another
-user's document metadata by guessing an id. `GET /source/{filename}` has no auth check at all (by
-design, for citation links, but currently with no mitigating control). Treat this as a known, tracked
-issue rather than a precedent to follow in new routes — new routes should enforce per-user ownership.
+Conversations are scoped per-user, and so are `GET /documents/{id}/status`,
+`GET /documents/{id}/events` (SSE), `GET /graph`, and `GET /graph/section/{id}` — all call
+`api/deps.py`'s `require_document_access()`, which 404s (not 403s) for a document that doesn't exist
+or belongs to someone else (fixed in #22; see `server/tests/test_ownership.py` for the regression
+tests). `GET /source/{filename}` has no bearer-auth check (by design, for citation links — see its
+docstring), but is instead gated by a short-lived signed token (`src/security.py`). New routes should
+follow the same pattern: call `require_document_access()` (or the conversation-ownership equivalent
+in `api/routers/conversations.py`) rather than trusting a caller-supplied id directly.
 
 ### Entity graph is exploration-only
 
