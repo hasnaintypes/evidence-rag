@@ -11,37 +11,71 @@ EMBEDDING_MODEL_NAME = settings.gemini_embedding_model
 
 client = genai.Client(api_key=settings.gemini_api_key)
 
+# --------------------------------------------------------------------------- #
+# Model routing / fallback
+#
+# generate_chat_response()/generate_structured_response() call the primary
+# model first, then settings.gemini_fallback_chat_model once on any
+# failure (API error, rate-limit, malformed response) - a single same-
+# provider fallback, not a retry loop or a multi-vendor abstraction (out
+# of scope - see GitHub issue #12's non-goals). Whichever model succeeds
+# returns through the exact same code path, so a fallback-model answer is
+# indistinguishable to query_pipeline.py from a primary-model one and
+# still goes through the faithfulness/abstention gates there - it isn't a
+# bypass, just a different source for the same "generated text" value.
+# --------------------------------------------------------------------------- #
+
+_CHAT_MODEL_CANDIDATES = (settings.gemini_chat_model, settings.gemini_fallback_chat_model)
+
 
 def get_embedding(text: str) -> List[float]:
     """
     Generates a vector embedding for the provided text via the Gemini API.
+
+    Retries once on the same model (no model-swap fallback - a different
+    embedding model would produce a vector of a different dimension than
+    what's already indexed, see settings.gemini_fallback_chat_model's
+    comment). Still raises on a second failure, same as before this
+    retry was added - callers (e.g. query_pipeline.py, via
+    api/routers/conversations.py's blanket exception handler) already
+    treat an uncaught embedding failure as a pipeline failure to report
+    honestly, not something to swallow here.
     """
     clean_text = text.replace("\n", " ")
-    result = client.models.embed_content(model=settings.gemini_embedding_model, contents=clean_text)
+    try:
+        result = client.models.embed_content(model=settings.gemini_embedding_model, contents=clean_text)
+    except Exception:
+        result = client.models.embed_content(model=settings.gemini_embedding_model, contents=clean_text)
     return result.embeddings[0].values
 
 
 def generate_chat_response(prompt: str, max_tokens: Optional[int] = None) -> str:
     """
-    Sends the augmented prompt to Gemini and returns the response.
+    Sends the augmented prompt to Gemini and returns the response, trying
+    settings.gemini_fallback_chat_model once if the primary model's call
+    fails for any reason (API error, rate-limit, etc).
 
     max_tokens: overrides settings.generation_max_tokens for this call.
     Useful for short, structured outputs (e.g. entity extraction JSON
     arrays, sub-query decomposition) where the default long-answer
     budget wastes tokens for no benefit.
     """
-    try:
-        response = client.models.generate_content(
-            model=settings.gemini_chat_model,
-            contents=f"You are an intelligent AI assistant.\n\n{prompt}",
-            config=types.GenerateContentConfig(
-                temperature=settings.generation_temperature,
-                max_output_tokens=max_tokens if max_tokens is not None else settings.generation_max_tokens,
-            ),
-        )
-        return response.text
-    except Exception as e:
-        return f"Error during generation: {str(e)}"
+    config = types.GenerateContentConfig(
+        temperature=settings.generation_temperature,
+        max_output_tokens=max_tokens if max_tokens is not None else settings.generation_max_tokens,
+    )
+    last_error: Optional[Exception] = None
+    for model in _CHAT_MODEL_CANDIDATES:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=f"You are an intelligent AI assistant.\n\n{prompt}",
+                config=config,
+            )
+            return response.text
+        except Exception as e:
+            last_error = e
+    return f"Error during generation: {str(last_error)}"
 
 
 VISION_TRANSCRIPTION_PROMPT = """This is a scanned page from a technical/industrial document with no extractable text layer. Transcribe its content as plain text, preserving structure:
@@ -93,22 +127,22 @@ def generate_structured_response(
     Returns None on any failure (API error, non-JSON output, schema
     mismatch) so callers can fall back gracefully rather than crash -
     same "best-effort enrichment, never breaks the main response" pattern
-    as the rest of this module.
+    as the rest of this module. Tries settings.gemini_fallback_chat_model
+    once if the primary model's call fails, same as generate_chat_response().
     """
-    try:
-        response = client.models.generate_content(
-            model=settings.gemini_chat_model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=temperature,
-                max_output_tokens=max_tokens if max_tokens is not None else settings.generation_max_tokens,
-                response_mime_type="application/json",
-                response_schema=response_schema,
-            ),
-        )
-        raw_text = response.text
-        if not raw_text:
-            return None
-        return json.loads(raw_text)
-    except Exception:
-        return None
+    config = types.GenerateContentConfig(
+        temperature=temperature,
+        max_output_tokens=max_tokens if max_tokens is not None else settings.generation_max_tokens,
+        response_mime_type="application/json",
+        response_schema=response_schema,
+    )
+    for model in _CHAT_MODEL_CANDIDATES:
+        try:
+            response = client.models.generate_content(model=model, contents=prompt, config=config)
+            raw_text = response.text
+            if not raw_text:
+                continue
+            return json.loads(raw_text)
+        except Exception:
+            continue
+    return None
