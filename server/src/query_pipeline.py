@@ -10,6 +10,7 @@ from src.evaluation.judge import score_faithfulness
 from src.telemetry import log_query_event
 from src.security import generate_source_token
 from src.guardrails import scan_for_injection_patterns
+from src.response_cache import get_cached_response, store_cached_response
 
 MAX_HOPS = 2  # initial retrieval pass + at most 1 follow-up hop, never more
 SNIPPET_MAX_CHARS = 280  # citation snippet length - enough to verify a claim, not the whole chunk
@@ -63,15 +64,39 @@ def process_chat_query(
     """
     telemetry = {}
 
-    # --- PHASE 1: Query expansion ---
-    start_time = time.perf_counter()
-    expanded_queries = rewrite_query(query) if advanced_mode else [query]
-    telemetry["query_expansion_time_ms"] = round((time.perf_counter() - start_time) * 1000, 1)
-
-    # --- PHASE 2: Embedding ---
+    # --- PHASE 1: Embedding ---
+    # Computed before query expansion (reversed from the two phases'
+    # natural numbering) specifically so the semantic cache lookup below
+    # can run before paying for query rewriting's LLM call too, not just
+    # generation/judging - the whole point of checking early.
     start_time = time.perf_counter()
     query_embedding = get_embedding(query)
     telemetry["embedding_time_ms"] = round((time.perf_counter() - start_time) * 1000, 1)
+
+    # --- PHASE 1.5: Semantic response cache ---
+    # Only consulted on a conversation's first turn (no prior history) -
+    # see response_cache.py's module docstring for why a follow-up turn
+    # is never served from cache.
+    if not history:
+        start_time = time.perf_counter()
+        cached = get_cached_response(doc_ids, advanced_mode, query_embedding)
+        telemetry["cache_lookup_time_ms"] = round((time.perf_counter() - start_time) * 1000, 1)
+        if cached is not None:
+            # No log_query_event() call here, deliberately - query_log
+            # records outcomes of actual pipeline runs (retrieval/
+            # generation/faithfulness stats); a cache hit has none of
+            # those to report, and telemetry["cache_hit"] below is the
+            # signal for "this result didn't cost a fresh Gemini call."
+            cached_result = dict(cached)
+            cached_result["telemetry"] = {**telemetry, "cache_hit": True}
+            cached_result["sources"] = _refresh_source_tokens_for_cache_hit(cached_result.get("sources", []), user_id)
+            return cached_result
+        telemetry["cache_hit"] = False
+
+    # --- PHASE 2: Query expansion ---
+    start_time = time.perf_counter()
+    expanded_queries = rewrite_query(query) if advanced_mode else [query]
+    telemetry["query_expansion_time_ms"] = round((time.perf_counter() - start_time) * 1000, 1)
 
     # --- PHASE 3: Multi-track hybrid retrieval ---
     start_time = time.perf_counter()
@@ -362,7 +387,7 @@ ANSWER:"""
         user_id=user_id,
     )
 
-    return {
+    result = {
         "reply": structured_reply,
         "thinking": thinking_content,
         "telemetry": telemetry,
@@ -373,6 +398,28 @@ ANSWER:"""
             "unsupported_claims": unsupported_claims,
         },
     }
+
+    # Only cache a fully-successful, non-gated result (see
+    # response_cache.py's module docstring for why a transient generation
+    # failure or a faithfulness-gated withheld answer isn't cached), and
+    # only on a conversation's first turn (not a history-dependent reply).
+    if not history and not generation_failed and not faithfulness_gated:
+        store_cached_response(doc_ids, advanced_mode, query_embedding, result)
+
+    return result
+
+
+def _refresh_source_tokens_for_cache_hit(sources: list, user_id: str = None) -> list:
+    """
+    A cache hit must never reuse whichever user's request first populated
+    the entry - each source carries a short-lived signed source_token
+    scoped to one user (src/security.py), so it's re-signed for the
+    current requesting user on every serve, cached or not.
+    """
+    return [
+        {**source, "source_token": generate_source_token(source["document"], user_id) if user_id else None}
+        for source in sources
+    ]
 
 
 def _detect_repetition_loop(text: str, max_line_repeat_ratio: float = 0.3) -> bool:
