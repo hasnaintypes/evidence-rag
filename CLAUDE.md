@@ -29,6 +29,9 @@ python scripts/run_eval.py       # Precision@5 / Recall@5 / MRR / faithfulness o
 python scripts/compare_eval.py   # diffs the fresh run against docs/eval_baseline.json, writes server/eval_status.txt
 python scripts/test_connection.py  # quick Gemini API connectivity check
 python scripts/reset_data.py       # wipe local SQLite/file storage
+python scripts/purge_query_log.py  # delete query_log rows older than QUERY_LOG_RETENTION_DAYS
+                                    # (default 30) - NOT currently scheduled anywhere; this is a
+                                    # manual step until a deployment target is chosen (see #20)
 ruff check .                        # lint (pyflakes rules only - see pyproject.toml)
 ruff format .                       # format (format .--check to verify without writing)
 ```

@@ -121,7 +121,8 @@ create table if not exists query_log (
     generation_failed integer default 0,
     telemetry_json jsonb,
     faithfulness_score real,
-    unsupported_claims_json jsonb
+    unsupported_claims_json jsonb,
+    user_id text
 );
 
 -- Migration for query_log tables created before faithfulness scoring was
@@ -129,6 +130,11 @@ create table if not exists query_log (
 -- supported by its retrieved chunks) - no-ops on a fresh table.
 alter table query_log add column if not exists faithfulness_score real;
 alter table query_log add column if not exists unsupported_claims_json jsonb;
+-- user_id ties a row to the caller, so retention/export tooling
+-- (scripts/purge_query_log.py) and a future "export/delete my data"
+-- flow have something to key off - see QUERY_LOG_RETENTION_DAYS in
+-- src/config.py for the retention policy itself.
+alter table query_log add column if not exists user_id text;
 
 create index if not exists idx_nodes_parent on knowledge_nodes(parent_id);
 create index if not exists idx_nodes_doc on knowledge_nodes(doc_id);
@@ -138,6 +144,10 @@ create index if not exists idx_entities_doc on entities(doc_id);
 create index if not exists idx_edges_doc on entity_edges(doc_id);
 create index if not exists idx_conversations_user on conversations(user_id);
 create index if not exists idx_messages_conversation on messages(conversation_id);
+-- timestamp: scripts/purge_query_log.py's DELETE filters on this column
+-- every run. user_id: for a future per-user export/delete query.
+create index if not exists idx_query_log_timestamp on query_log(timestamp);
+create index if not exists idx_query_log_user on query_log(user_id);
 
 -- Optional but recommended once you have more than a few thousand chunks:
 -- speeds up cosine-similarity search via pgvector's approximate index.

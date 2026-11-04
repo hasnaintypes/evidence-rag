@@ -39,18 +39,26 @@ def init_telemetry_table() -> None:
             generation_failed INTEGER DEFAULT 0,
             telemetry_json TEXT,
             faithfulness_score REAL,
-            unsupported_claims_json TEXT
+            unsupported_claims_json TEXT,
+            user_id TEXT
         )
     """)
 
-    # Migration for query_log tables created before faithfulness scoring
-    # was added - CREATE TABLE IF NOT EXISTS above is a no-op on an
-    # existing table, so older DBs need these columns added explicitly.
+    # Migration for query_log tables created before faithfulness scoring /
+    # user_id were added - CREATE TABLE IF NOT EXISTS above is a no-op on
+    # an existing table, so older DBs need these columns added explicitly.
     existing_columns = {row[1] for row in cursor.execute("PRAGMA table_info(query_log)").fetchall()}
     if "faithfulness_score" not in existing_columns:
         cursor.execute("ALTER TABLE query_log ADD COLUMN faithfulness_score REAL")
     if "unsupported_claims_json" not in existing_columns:
         cursor.execute("ALTER TABLE query_log ADD COLUMN unsupported_claims_json TEXT")
+    if "user_id" not in existing_columns:
+        cursor.execute("ALTER TABLE query_log ADD COLUMN user_id TEXT")
+
+    # timestamp: scripts/purge_query_log.py's DELETE filters on this column
+    # every run. user_id: for a future per-user export/delete query.
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_query_log_timestamp ON query_log(timestamp)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_query_log_user ON query_log(user_id)")
 
     conn.commit()
     conn.close()
@@ -90,6 +98,7 @@ def log_query_event(
     generation_failed: bool = False,
     faithfulness_score: Optional[float] = None,
     unsupported_claims: Optional[list] = None,
+    user_id: Optional[str] = None,
 ) -> None:
     """
     Persists one query's outcome to query_log. Called at the end of
@@ -97,6 +106,11 @@ def log_query_event(
     (e.g. to spot queries that repeatedly fail generation, stages that
     are consistently slow, or answers that keep coming back unfaithful
     to their retrieved context) without needing external log aggregation.
+
+    user_id ties a row to the caller (None for pipeline calls that don't
+    have one, e.g. scripts/run_eval.py) - this is what retention/export
+    tooling keys off (see scripts/purge_query_log.py and
+    QUERY_LOG_RETENTION_DAYS in src/config.py).
 
     Failures here are swallowed rather than raised - telemetry logging
     must never break the actual chat response.
@@ -110,8 +124,8 @@ def log_query_event(
                 """
                 INSERT INTO query_log
                     (query, advanced_mode, hop_count, chunk_count, top_rerank_score, generation_failed,
-                     telemetry_json, faithfulness_score, unsupported_claims_json)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     telemetry_json, faithfulness_score, unsupported_claims_json, user_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
                 (
                     query,
@@ -123,6 +137,7 @@ def log_query_event(
                     json.dumps(telemetry),
                     faithfulness_score,
                     unsupported_claims_json,
+                    user_id,
                 ),
             )
         else:
@@ -130,8 +145,8 @@ def log_query_event(
                 """
                 INSERT INTO query_log
                     (query, advanced_mode, hop_count, chunk_count, top_rerank_score, generation_failed,
-                     telemetry_json, faithfulness_score, unsupported_claims_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     telemetry_json, faithfulness_score, unsupported_claims_json, user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     query,
@@ -143,6 +158,7 @@ def log_query_event(
                     json.dumps(telemetry),
                     faithfulness_score,
                     unsupported_claims_json,
+                    user_id,
                 ),
             )
         conn.commit()
@@ -161,3 +177,61 @@ def get_recent_queries(limit: int = 50) -> list:
     rows = cursor.fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def purge_query_log(retention_days: int, batch_size: int = 1000) -> int:
+    """
+    Deletes query_log rows older than retention_days (see
+    QUERY_LOG_RETENTION_DAYS in src/config.py), in batches, and returns the
+    total number deleted. Used by scripts/purge_query_log.py.
+
+    retention_days must be positive: a non-positive value would otherwise
+    produce opposite, both-wrong outcomes per backend - on Postgres,
+    `now() - (0 || ' days')::interval` matches every row (wipes the whole
+    table); on SQLite, `datetime('now', '-0 days')` or a malformed negative
+    modifier either matches everything or silently matches nothing,
+    depending on the exact string. Validating here means every caller gets
+    the same protection, not just the one script that currently exists.
+
+    Deletes in batches (DELETE ... WHERE id IN (SELECT ... LIMIT N), valid
+    standard SQL on both backends - no DELETE...LIMIT extension needed)
+    rather than one unbounded statement, since a first run after this
+    shipped could be clearing months of backlog in one call; a single huge
+    transaction would hold the row lock (and, on supabase, a connection
+    from the bounded ThreadedConnectionPool) for an unpredictable amount
+    of time against a table the live app is concurrently writing to.
+    """
+    if retention_days <= 0:
+        raise ValueError(f"retention_days must be positive, got {retention_days}.")
+
+    total_deleted = 0
+    while True:
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            if settings.storage_mode == "supabase":
+                cursor.execute(
+                    """
+                    DELETE FROM query_log WHERE id IN (
+                        SELECT id FROM query_log WHERE timestamp < now() - (%s || ' days')::interval LIMIT %s
+                    )
+                    """,
+                    (retention_days, batch_size),
+                )
+            else:
+                cursor.execute(
+                    """
+                    DELETE FROM query_log WHERE id IN (
+                        SELECT id FROM query_log WHERE timestamp < datetime('now', ?) LIMIT ?
+                    )
+                    """,
+                    (f"-{retention_days} days", batch_size),
+                )
+            deleted = cursor.rowcount
+            conn.commit()
+        finally:
+            conn.close()
+
+        total_deleted += deleted
+        if deleted < batch_size:
+            return total_deleted
