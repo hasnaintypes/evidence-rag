@@ -45,6 +45,19 @@ class Settings(BaseSettings):
     gemini_api_key: str
     gemini_chat_model: str = "gemini-2.5-flash"
     gemini_embedding_model: str = "gemini-embedding-001"
+    # Same-provider fallback used by generate_chat_response()/
+    # generate_structured_response() (src/llm.py) when the primary chat
+    # model's call fails or rate-limits - a different model is often on a
+    # separate quota bucket, so this is a real mitigation for exactly the
+    # failure this session hit while tuning #10's faithfulness threshold
+    # (20-requests/day free-tier exhaustion), not just a theoretical one.
+    # Not applied to embeddings - document_chunks.embedding is a fixed-
+    # width pgvector column (vector(3072), matching gemini-embedding-001's
+    # output dimension - see supabase_schema.sql's comment), so swapping
+    # embedding models mid-request would produce a vector of the wrong
+    # width for the already-indexed corpus. get_embedding() retries the
+    # same model instead.
+    gemini_fallback_chat_model: str = "gemini-2.5-flash-lite"
 
     # --- Entity graph (opt-in, adds one LLM call per document section) ---
     enable_entity_graph: bool = False

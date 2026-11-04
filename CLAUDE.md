@@ -107,6 +107,13 @@ faithfulness gate runs in both modes, since the judge call doesn't depend on the
 `docs/eval_set.json` content rather than a full `run_eval.py` pass, due to free-tier Gemini API quota
 limits — revisit once issue #24 is resolved.
 
+Chat/structured generation calls (`src/llm.py`) try a configured fallback model
+(`GEMINI_FALLBACK_CHAT_MODEL`) once if the primary model's call fails or rate-limits — a real
+mitigation, not just theoretical: this project hit the free tier's daily quota mid-session while
+tuning the faithfulness threshold above. Embedding calls retry the same model instead, since
+`document_chunks.embedding` is a fixed-width pgvector column tied to one embedding model's output
+dimension.
+
 Document chunks are untrusted content (any signed-in user can upload a document) that gets embedded
 verbatim into the generation prompt — `src/guardrails.py`'s `scan_for_injection_patterns()` flags
 (never blocks/strips) chunks matching common prompt-injection heuristics into
