@@ -21,10 +21,10 @@ python scripts/ingest.py        # index docs/sample_docs/ as shared (user_id NUL
 uvicorn api.app:app --reload    # http://127.0.0.1:8000/docs for interactive API docs
 ```
 
-There is no test suite (`pytest`/`httpx` are listed in `requirements.txt` but unused). The only
-verification tooling is the retrieval eval harness:
-
 ```bash
+pytest tests/ -v                    # auth, ownership/authz, and chat-pipeline failure-path tests -
+                                     # everything mocked (no real Gemini/Supabase calls), isolated
+                                     # temp SQLite DB per test (see tests/conftest.py)
 python scripts/run_eval.py       # Precision@5 / Recall@5 / MRR / faithfulness over docs/eval_set.json
 python scripts/compare_eval.py   # diffs the fresh run against docs/eval_baseline.json, writes server/eval_status.txt
 python scripts/test_connection.py  # quick Gemini API connectivity check
@@ -36,10 +36,14 @@ ruff check .                        # lint (pyflakes rules only - see pyproject.
 ruff format .                       # format (format .--check to verify without writing)
 ```
 
-CI (`.github/workflows/ci.yml`) runs `ruff check`/`ruff format --check`, gating every PR/push.
-`.github/workflows/eval.yml` runs the eval harness above, but only on PRs/pushes touching
-`server/src/retrieval/**`, `server/src/ingestion/**`, `server/src/query_pipeline.py`, or
-`docs/eval_set.json`. It auto-commits `docs/eval_baseline.json` on merges to `main`.
+CI (`.github/workflows/ci.yml`) runs `ruff check`/`ruff format --check` and the pytest suite above
+on every PR/push, gating every merge - unlike the eval harness below, this isn't path-filtered,
+since auth/authz/pipeline-failure-path correctness tests must gate regardless of which files
+changed. `.github/workflows/eval.yml` runs the retrieval-quality eval harness, but only on
+PRs/pushes touching `server/src/retrieval/**`, `server/src/ingestion/**`,
+`server/src/query_pipeline.py`, or `docs/eval_set.json`. It auto-commits `docs/eval_baseline.json`
+on merges to `main`. Test coverage is still partial - upload→background-ingestion→status
+transitions and the entity graph have no test coverage yet (see `tests/` for what's covered).
 
 ### Web (`web/`)
 
