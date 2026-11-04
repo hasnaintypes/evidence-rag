@@ -93,10 +93,15 @@ Jaccard dedup (`retrieval/grader.py`) → context compression + parent-section r
 generating, returning the closest chunks as `sources` with no synthesized claim → if confident but a
 follow-up looks warranted, **one bounded additional retrieval hop** (never an open-ended loop) → grounded
 generation → faithfulness scoring (`evaluation/judge.py`, a second cheap LLM call checking the answer
-against its own cited chunks) → telemetry (`telemetry.py`) logs every stage's latency. This gate only
-runs in "advanced mode" — naive mode skips the cross-encoder entirely and always attempts an answer.
-**Faithfulness score is currently advisory only** (logged/returned, not enforced as a gate) — do not
-assume a low score blocks a response unless you've checked `query_pipeline.py` has changed.
+against its own cited chunks) → **faithfulness hard gate**: below `FAITHFULNESS_GATE_THRESHOLD` the
+generated answer is withheld and replaced with an explicit "did not pass the faithfulness check"
+message (still listing sources/unsupported claims) rather than returned as-is → telemetry
+(`telemetry.py`) logs every stage's latency. The retrieval-confidence gate only runs in "advanced
+mode" — naive mode skips the cross-encoder entirely and always attempts an answer — but the
+faithfulness gate runs in both modes, since the judge call doesn't depend on the cross-encoder.
+`FAITHFULNESS_GATE_THRESHOLD` (default 0.7, see `config.py`) was set from a small probe against real
+`docs/eval_set.json` content rather than a full `run_eval.py` pass, due to free-tier Gemini API quota
+limits — revisit once issue #24 is resolved.
 
 ### Storage is swappable, pipeline logic is not
 
