@@ -144,6 +144,10 @@ create index if not exists idx_entities_doc on entities(doc_id);
 create index if not exists idx_edges_doc on entity_edges(doc_id);
 create index if not exists idx_conversations_user on conversations(user_id);
 create index if not exists idx_messages_conversation on messages(conversation_id);
+-- timestamp: scripts/purge_query_log.py's DELETE filters on this column
+-- every run. user_id: for a future per-user export/delete query.
+create index if not exists idx_query_log_timestamp on query_log(timestamp);
+create index if not exists idx_query_log_user on query_log(user_id);
 
 -- Optional but recommended once you have more than a few thousand chunks:
 -- speeds up cosine-similarity search via pgvector's approximate index.
