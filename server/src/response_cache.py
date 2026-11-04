@@ -1,3 +1,4 @@
+import threading
 import time
 from typing import Any, Dict, List, Optional
 
@@ -52,6 +53,15 @@ _ENTRY_TIMESTAMP = "_cached_at"
 # {scope_key: [{"embedding": np.ndarray, "result": dict, "_cached_at": float}, ...]}
 _cache: Dict[str, List[Dict[str, Any]]] = {}
 
+# FastAPI dispatches every route here to a thread pool (conversations.py's
+# routes are plain `def`, not `async def`), so concurrent requests can read
+# and write _cache from different threads at once. Without this, two
+# near-simultaneous first-turn requests in the same scope can race on the
+# read-modify-write in store_cached_response() and silently drop one
+# entry (last writer wins) - doesn't corrupt anything, just quietly
+# degrades the hit rate under load.
+_lock = threading.Lock()
+
 
 def _scope_key(doc_ids: Optional[List[str]], advanced_mode: bool) -> str:
     # Sorted so the same document set hits the same scope regardless of
@@ -86,25 +96,26 @@ def get_cached_response(
         return None
 
     key = _scope_key(doc_ids, advanced_mode)
-    entries = _cache.get(key)
-    if not entries:
+    with _lock:
+        entries = _cache.get(key)
+        if not entries:
+            return None
+
+        entries = _prune_expired(entries)
+        _cache[key] = entries
+        if not entries:
+            return None
+
+        query_vec = np.array(query_embedding)
+        best_entry, best_score = None, -1.0
+        for entry in entries:
+            score = _cosine_similarity(query_vec, entry["embedding"])
+            if score > best_score:
+                best_entry, best_score = entry, score
+
+        if best_entry is not None and best_score >= settings.response_cache_similarity_threshold:
+            return best_entry["result"]
         return None
-
-    entries = _prune_expired(entries)
-    _cache[key] = entries
-    if not entries:
-        return None
-
-    query_vec = np.array(query_embedding)
-    best_entry, best_score = None, -1.0
-    for entry in entries:
-        score = _cosine_similarity(query_vec, entry["embedding"])
-        if score > best_score:
-            best_entry, best_score = entry, score
-
-    if best_entry is not None and best_score >= settings.response_cache_similarity_threshold:
-        return best_entry["result"]
-    return None
 
 
 def store_cached_response(
@@ -117,14 +128,33 @@ def store_cached_response(
         return
 
     key = _scope_key(doc_ids, advanced_mode)
-    entries = _prune_expired(_cache.get(key, []))
+    with _lock:
+        entries = _prune_expired(_cache.get(key, []))
 
-    if len(entries) >= settings.response_cache_max_entries_per_scope:
-        entries.sort(key=lambda e: e[_ENTRY_TIMESTAMP])
-        entries = entries[1:]
+        if len(entries) >= settings.response_cache_max_entries_per_scope:
+            entries.sort(key=lambda e: e[_ENTRY_TIMESTAMP])
+            entries = entries[1:]
 
-    entries.append({"embedding": np.array(query_embedding), "result": result, _ENTRY_TIMESTAMP: time.time()})
-    _cache[key] = entries
+        entries.append({"embedding": np.array(query_embedding), "result": result, _ENTRY_TIMESTAMP: time.time()})
+        _cache[key] = entries
+
+
+def invalidate_doc_id(doc_id: str) -> None:
+    """
+    Drops every cached entry for any scope whose doc_ids set includes
+    `doc_id` - called when a document's indexed content changes (see
+    ingestion/pipeline.py's prepare_ingest(), right before
+    delete_document_data() clears the old nodes/chunks for a re-ingested
+    file) so a stale, pre-edit cached answer can't outlive the content it
+    was generated from. Scope keys are "doc_id,doc_id,...|advanced_mode"
+    (see _scope_key()), so a plain comma-split membership check is enough
+    without needing a parallel doc_id -> scope-keys index.
+    """
+    with _lock:
+        for key in list(_cache.keys()):
+            scope_doc_ids = key.split("|", 1)[0].split(",")
+            if doc_id in scope_doc_ids:
+                del _cache[key]
 
 
 def clear_cache() -> None:
