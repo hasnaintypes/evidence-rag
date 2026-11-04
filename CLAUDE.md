@@ -107,6 +107,13 @@ faithfulness gate runs in both modes, since the judge call doesn't depend on the
 `docs/eval_set.json` content rather than a full `run_eval.py` pass, due to free-tier Gemini API quota
 limits — revisit once issue #24 is resolved.
 
+Document chunks are untrusted content (any signed-in user can upload a document) that gets embedded
+verbatim into the generation prompt — `src/guardrails.py`'s `scan_for_injection_patterns()` flags
+(never blocks/strips) chunks matching common prompt-injection heuristics into
+`telemetry["injection_flags"]`, and the generation prompt itself carries explicit
+instruction-hierarchy framing telling the model to treat chunk content as data, never as
+instructions. Treat both as partial, iterative defenses, not a one-shot fix — see issue #13.
+
 ### Storage is swappable, pipeline logic is not
 
 `STORAGE_MODE` (`local` vs `supabase`) only changes `server/src/storage/{database,files}.py` — SQLite
