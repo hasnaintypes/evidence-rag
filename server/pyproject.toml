@@ -9,3 +9,6 @@ extend-exclude = [".venv", "data"]
 # on pre-existing code unrelated to whatever a given PR touches. Widen
 # this once a formatter (black/ruff format) has been run across the repo.
 select = ["F"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

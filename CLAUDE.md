@@ -21,10 +21,10 @@ python scripts/ingest.py        # index docs/sample_docs/ as shared (user_id NUL
 uvicorn api.app:app --reload    # http://127.0.0.1:8000/docs for interactive API docs
 ```
 
-There is no test suite (`pytest`/`httpx` are listed in `requirements.txt` but unused). The only
-verification tooling is the retrieval eval harness:
-
 ```bash
+pytest tests/ -v                    # auth, ownership/authz, and chat-pipeline failure-path tests -
+                                     # everything mocked (no real Gemini/Supabase calls), isolated
+                                     # temp SQLite DB per test (see tests/conftest.py)
 python scripts/run_eval.py       # Precision@5 / Recall@5 / MRR / faithfulness over docs/eval_set.json
 python scripts/compare_eval.py   # diffs the fresh run against docs/eval_baseline.json, writes server/eval_status.txt
 python scripts/test_connection.py  # quick Gemini API connectivity check
@@ -36,10 +36,14 @@ ruff check .                        # lint (pyflakes rules only - see pyproject.
 ruff format .                       # format (format .--check to verify without writing)
 ```
 
-CI (`.github/workflows/ci.yml`) runs `ruff check`/`ruff format --check`, gating every PR/push.
-`.github/workflows/eval.yml` runs the eval harness above, but only on PRs/pushes touching
-`server/src/retrieval/**`, `server/src/ingestion/**`, `server/src/query_pipeline.py`, or
-`docs/eval_set.json`. It auto-commits `docs/eval_baseline.json` on merges to `main`.
+CI (`.github/workflows/ci.yml`) runs `ruff check`/`ruff format --check` and the pytest suite above
+on every PR/push, gating every merge - unlike the eval harness below, this isn't path-filtered,
+since auth/authz/pipeline-failure-path correctness tests must gate regardless of which files
+changed. `.github/workflows/eval.yml` runs the retrieval-quality eval harness, but only on
+PRs/pushes touching `server/src/retrieval/**`, `server/src/ingestion/**`,
+`server/src/query_pipeline.py`, or `docs/eval_set.json`. It auto-commits `docs/eval_baseline.json`
+on merges to `main`. Test coverage is still partial - upload→background-ingestion→status
+transitions and the entity graph have no test coverage yet (see `tests/` for what's covered).
 
 ### Web (`web/`)
 
@@ -113,14 +117,16 @@ corpus, indexed via `scripts/ingest.py`); non-null means a private upload via `P
 that uploader. `make_doc_id(filename, user_id)` in `ingestion/pipeline.py` exists specifically so two
 different users' same-named upload don't collide on one `doc_id`.
 
-### Known gap: authorization is not fully route-scoped
+### Authorization is route-scoped via `require_document_access()`
 
-Conversations are correctly scoped per-user, but `GET /documents/{id}/status`,
-`GET /documents/{id}/events` (SSE), `GET /graph`, and `GET /graph/section/{id}` do not currently check
-that the requesting user owns the referenced document — any authenticated caller can access another
-user's document metadata by guessing an id. `GET /source/{filename}` has no auth check at all (by
-design, for citation links, but currently with no mitigating control). Treat this as a known, tracked
-issue rather than a precedent to follow in new routes — new routes should enforce per-user ownership.
+Conversations are scoped per-user, and so are `GET /documents/{id}/status`,
+`GET /documents/{id}/events` (SSE), `GET /graph`, and `GET /graph/section/{id}` — all call
+`api/deps.py`'s `require_document_access()`, which 404s (not 403s) for a document that doesn't exist
+or belongs to someone else (fixed in #22; see `server/tests/test_ownership.py` for the regression
+tests). `GET /source/{filename}` has no bearer-auth check (by design, for citation links — see its
+docstring), but is instead gated by a short-lived signed token (`src/security.py`). New routes should
+follow the same pattern: call `require_document_access()` (or the conversation-ownership equivalent
+in `api/routers/conversations.py`) rather than trusting a caller-supplied id directly.
 
 ### Entity graph is exploration-only
 

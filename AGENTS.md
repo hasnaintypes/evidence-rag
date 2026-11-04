@@ -49,13 +49,17 @@ Workflow rules for anyone (human or agent) making code changes in this repositor
 
 ## Tests & CI scope
 
-- CI currently gates on lint (`ruff check`, pyflakes rules only — see `server/pyproject.toml`
-  for why the rule set is intentionally narrow for now) and typecheck/build for the web
+- CI gates on lint (`ruff check`, pyflakes rules only — see `server/pyproject.toml`
+  for why the rule set is intentionally narrow for now), typecheck/build for the web
   app (`pnpm lint` + `pnpm build`, since Next.js App Router's generated types mean
-  `next build` is the correct typecheck step, not a bare `tsc --noEmit`).
-- There is currently no automated test suite (tracked as its own roadmap item/issue —
-  see the repo's GitHub milestones). As tests get added for a given area, wire them into
-  `ci.yml` as a blocking step for that area rather than leaving them to run manually.
+  `next build` is the correct typecheck step, not a bare `tsc --noEmit`), and the
+  `server/tests/` pytest suite (auth, ownership/authz, chat-pipeline failure paths —
+  all mocked, no real Gemini/Supabase calls). The pytest job runs on every PR/push,
+  not path-filtered, since correctness tests must gate regardless of which files changed.
+- Test coverage is still partial (see `CLAUDE.md`'s note on what's not covered yet —
+  upload→ingestion→status flow, the entity graph). As tests get added for a given
+  area, add them to `server/tests/` and they'll run automatically; only touch `ci.yml`
+  itself if a genuinely new category of check (not just more test files) is needed.
 - When tightening a lint/type rule that would fail on pre-existing code outside your
   change's scope, either fix the pre-existing issues in their own small commit first, or
   scope the new rule narrowly and say so in a comment — don't leave CI red for reasons
