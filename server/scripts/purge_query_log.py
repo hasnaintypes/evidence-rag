@@ -36,9 +36,7 @@ def _positive_int(value: str) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
-    parser.add_argument(
-        "--days", type=_positive_int, default=None, help="override QUERY_LOG_RETENTION_DAYS"
-    )
+    parser.add_argument("--days", type=_positive_int, default=None, help="override QUERY_LOG_RETENTION_DAYS")
     args = parser.parse_args()
 
     days = args.days if args.days is not None else settings.query_log_retention_days

@@ -67,8 +67,9 @@ class Settings(BaseSettings):
     # expiry today. Defaulted to 30 days as a reasonable starting policy -
     # this is a product decision, not just a code one, so revisit the
     # number itself; what matters structurally is that *some* bound
-    # exists and is actually enforced (via a scheduled run of the purge
-    # script), not that 30 is the right number forever.
+    # exists, not that 30 is the right number forever. Note this is only
+    # enforced when scripts/purge_query_log.py is actually run - it is not
+    # currently wired to any scheduler, so today it requires a manual run.
     query_log_retention_days: int = 30
 
     # --- Supabase (storage_mode="supabase") -----------------------------
