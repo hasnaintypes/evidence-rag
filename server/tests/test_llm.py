@@ -42,6 +42,43 @@ def test_generate_chat_response_reports_honest_failure_when_both_models_fail():
     assert "error during generation" in result.lower()
 
 
+def test_generate_chat_response_falls_back_on_an_empty_primary_response():
+    """response.text is Optional[str] - None/empty isn't a raised
+    exception (e.g. the model stopped on SAFETY/MAX_TOKENS with no text
+    parts), so the primary model "succeeding" with nothing useful must
+    still trigger the fallback, not be returned as-is."""
+    calls = []
+
+    def fake_generate_content(model, contents, config):
+        calls.append(model)
+        if model == settings.gemini_chat_model:
+            return _FakeResponse(None)
+        return _FakeResponse("fallback answer")
+
+    with patch.object(llm.client.models, "generate_content", side_effect=fake_generate_content):
+        result = llm.generate_chat_response("some prompt")
+
+    assert result == "fallback answer"
+    assert calls == [settings.gemini_chat_model, settings.gemini_fallback_chat_model]
+
+
+def test_generate_chat_response_failure_message_preserves_both_models_errors():
+    """Overwriting a single last_error variable across the loop would
+    discard the primary model's often-more-diagnosable error (e.g. a
+    quota message) once the fallback fails for an unrelated reason."""
+
+    def fake_generate_content(model, contents, config):
+        if model == settings.gemini_chat_model:
+            raise RuntimeError("quota exceeded for primary")
+        raise RuntimeError("fallback misconfigured")
+
+    with patch.object(llm.client.models, "generate_content", side_effect=fake_generate_content):
+        result = llm.generate_chat_response("some prompt")
+
+    assert "quota exceeded for primary" in result
+    assert "fallback misconfigured" in result
+
+
 def test_generate_chat_response_does_not_call_the_fallback_when_the_primary_succeeds():
     calls = []
 

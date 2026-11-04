@@ -64,7 +64,7 @@ def generate_chat_response(prompt: str, max_tokens: Optional[int] = None) -> str
         temperature=settings.generation_temperature,
         max_output_tokens=max_tokens if max_tokens is not None else settings.generation_max_tokens,
     )
-    last_error: Optional[Exception] = None
+    errors: List[str] = []
     for model in _CHAT_MODEL_CANDIDATES:
         try:
             response = client.models.generate_content(
@@ -72,10 +72,17 @@ def generate_chat_response(prompt: str, max_tokens: Optional[int] = None) -> str
                 contents=f"You are an intelligent AI assistant.\n\n{prompt}",
                 config=config,
             )
-            return response.text
+            # response.text is Optional[str] - None (not a raised
+            # exception) when a candidate has no text parts, e.g. the
+            # model stopped on SAFETY/MAX_TOKENS. Treated as a failure
+            # worth trying the fallback on too, same as
+            # generate_structured_response()'s empty-response check below.
+            if response.text:
+                return response.text
+            errors.append(f"{model}: empty response")
         except Exception as e:
-            last_error = e
-    return f"Error during generation: {str(last_error)}"
+            errors.append(f"{model}: {e}")
+    return f"Error during generation: {'; '.join(errors)}"
 
 
 VISION_TRANSCRIPTION_PROMPT = """This is a scanned page from a technical/industrial document with no extractable text layer. Transcribe its content as plain text, preserving structure:
