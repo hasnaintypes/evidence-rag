@@ -62,6 +62,29 @@ class Settings(BaseSettings):
     # than hardcoding a different number in code.
     retrieval_confidence_threshold: float = 0.0
 
+    # --- Faithfulness hard gate (both modes - the judge call in
+    # evaluation/judge.py doesn't depend on the cross-encoder, unlike the
+    # retrieval-confidence gate above) ---
+    # Below this score, process_chat_query() replaces the generated answer
+    # with an explicit "did not pass the faithfulness check" flag instead
+    # of returning it as-is - consistent with the retrieval-confidence
+    # gate's "honest failure beats a plausible-but-wrong answer" policy.
+    # score_faithfulness() scores by fraction of the answer's distinct
+    # claims that are supported (see judge.py's prompt) - a probe against
+    # real eval_set.json content (synthetic faithful/partially-hallucinated/
+    # fully-hallucinated answers checked by the actual judge call, not
+    # guessed) showed one unsupported claim out of two drops the score to
+    # exactly 0.5, while a fully supported or honest-decline answer scores
+    # 1.0. 0.7 sits below any observed good-answer score and above a
+    # single-wrong-claim answer, erring toward flagging rather than
+    # missing a hallucination. Full run_eval.py-based tuning across all of
+    # docs/eval_set.json (comparing gate firing against the known
+    # negative-control/narrow-detail cases) is still open - it needs more
+    # Gemini API quota than this probe could use without exhausting the
+    # free tier's 20 requests/day, see GitHub issue #24. Revisit this
+    # constant once that's run.
+    faithfulness_gate_threshold: float = 0.7
+
     # --- query_log retention (see scripts/purge_query_log.py) -----------
     # query_log stores raw query text indefinitely with no automatic
     # expiry today. Defaulted to 30 days as a reasonable starting policy -
