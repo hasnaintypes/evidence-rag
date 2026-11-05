@@ -2,7 +2,13 @@ import numpy as np
 from typing import List, Dict, Any, Optional
 from rank_bm25 import BM25Okapi
 
-from src.storage.database import get_all_chunks_for_sparse, get_db_connection, get_indexed_embedding_models
+from src.config import settings
+from src.storage.database import (
+    dense_ann_search,
+    get_all_chunks_for_sparse,
+    get_db_connection,
+    get_indexed_embedding_models,
+)
 from src.llm import EMBEDDING_MODEL_NAME
 
 # --------------------------------------------------------------------------- #
@@ -65,14 +71,24 @@ def _build_index() -> None:
     corpus_tokenized = [chunk["chunk_text"].lower().split() for chunk in all_chunks]
     bm25 = BM25Okapi(corpus_tokenized)
 
-    # Build a single (n_chunks, dim) matrix and normalize each row once here,
-    # instead of computing norms per-chunk on every query. With normalized
-    # rows, cosine similarity against a normalized query vector reduces to
-    # a single matrix-vector dot product (matrix @ query_vec).
-    embedding_matrix = np.array([chunk["embedding"] for chunk in all_chunks], dtype=np.float32)
-    norms = np.linalg.norm(embedding_matrix, axis=1, keepdims=True)
-    norms[norms == 0] = 1e-10  # guard against zero-vector edge case
-    embedding_matrix = embedding_matrix / norms
+    # Dense retrieval in supabase mode queries pgvector directly via
+    # dense_ann_search() (a real ANN query against the HNSW index - see
+    # hybrid_retrieve() below), so building an in-memory matrix here
+    # would be pure waste: a (n_chunks, 3072) float32 copy of the entire
+    # corpus's embeddings, rebuilt on every cache rebuild, that nothing
+    # would ever read. Local/SQLite mode has no pgvector extension, so it
+    # keeps the original in-memory cosine-similarity path and needs the
+    # matrix built here as before.
+    embedding_matrix = None
+    if settings.storage_mode != "supabase":
+        # Build a single (n_chunks, dim) matrix and normalize each row once
+        # here, instead of computing norms per-chunk on every query. With
+        # normalized rows, cosine similarity against a normalized query
+        # vector reduces to a single matrix-vector dot product.
+        embedding_matrix = np.array([chunk["embedding"] for chunk in all_chunks], dtype=np.float32)
+        norms = np.linalg.norm(embedding_matrix, axis=1, keepdims=True)
+        norms[norms == 0] = 1e-10  # guard against zero-vector edge case
+        embedding_matrix = embedding_matrix / norms
 
     _cache.update(
         chunk_count=len(all_chunks),
@@ -114,21 +130,27 @@ def hybrid_retrieve(
     similarity, fused via Reciprocal Rank Fusion (RRF).
 
     Performance notes vs. the previous implementation:
-      - BM25 index and the embedding matrix are built once and cached,
-        not rebuilt from scratch on every call.
-      - Dense similarity is computed as a single vectorized matrix
-        multiplication instead of a per-chunk Python loop.
+      - BM25 index (and, in local/SQLite mode, the embedding matrix) are
+        built once and cached, not rebuilt from scratch on every call.
+      - In supabase mode, dense similarity is a real ANN query against
+        pgvector's HNSW index (dense_ann_search()) instead of an
+        in-memory matrix multiply; in local/SQLite mode (no pgvector),
+        it's still a single vectorized matrix multiplication.
 
     Args:
         query_text: Raw string question for sparse keyword matching.
         query_embedding: Query vector for dense semantic similarity.
         top_k: Number of top fused results to return.
         rrf_k: RRF penalty constant controlling rank-position weighting.
-        doc_ids: If set, scores are still computed against the full cached
-            corpus (ranks stay meaningful/cheap), but results are filtered
-            to this list before the top_k slice - conversations are scoped
-            to up to 5 documents, so there's no need for a separate
-            per-document index.
+        doc_ids: Scopes dense retrieval directly in SQL in supabase mode
+            (dense_ann_search()'s WHERE doc_id = ANY(...), pushed down to
+            the DB instead of post-filtering a full-corpus ranking).
+            Sparse (BM25) scores are still computed against the full
+            cached corpus - conversations are scoped to up to 5
+            documents, so there's no separate per-document BM25 index -
+            and the final fused list is filtered to doc_ids before the
+            top_k slice either way, so a chunk sparse-only matched
+            outside doc_ids is still correctly excluded.
     """
     index = _get_index()
     all_chunks: Optional[List[Dict[str, Any]]] = index["chunks"]
@@ -137,7 +159,6 @@ def hybrid_retrieve(
         return []
 
     bm25: BM25Okapi = index["bm25"]
-    embedding_matrix: np.ndarray = index["embedding_matrix"]
 
     # --- LAYER 1: SPARSE RETRIEVAL (BM25) ---
     query_tokens = query_text.lower().split()
@@ -150,21 +171,33 @@ def hybrid_retrieve(
             chunk_id = all_chunks[chunk_arr_idx]["id"]
             sparse_ranks[chunk_id] = rank_idx + 1
 
-    # --- LAYER 2: DENSE RETRIEVAL (vectorized cosine similarity) ---
-    query_vec = np.array(query_embedding, dtype=np.float32)
-    query_norm = np.linalg.norm(query_vec)
-    if query_norm == 0:
-        query_norm = 1e-10
-    query_vec = query_vec / query_norm
+    # --- LAYER 2: DENSE RETRIEVAL ---
+    if settings.storage_mode == "supabase":
+        # Real ANN search against pgvector's HNSW-indexed column - see
+        # dense_ann_search()'s docstring. Asks for a wider candidate set
+        # than top_k so RRF still has a meaningful rank spread to fuse
+        # against the sparse side, the same reason the sparse layer above
+        # tracks every chunk with a positive BM25 score rather than just
+        # the eventual top_k.
+        dense_candidate_k = max(top_k * 4, 50)
+        ann_hits = dense_ann_search(query_embedding, top_k=dense_candidate_k, doc_ids=doc_ids)
+        dense_ranks: Dict[Any, int] = {hit["id"]: rank_idx + 1 for rank_idx, hit in enumerate(ann_hits)}
+    else:
+        embedding_matrix: np.ndarray = index["embedding_matrix"]
+        query_vec = np.array(query_embedding, dtype=np.float32)
+        query_norm = np.linalg.norm(query_vec)
+        if query_norm == 0:
+            query_norm = 1e-10
+        query_vec = query_vec / query_norm
 
-    # embedding_matrix rows are already normalized -> this dot product IS
-    # the cosine similarity for every chunk at once, no Python loop needed
-    dense_scores = embedding_matrix @ query_vec
-    dense_ranked_indices = np.argsort(dense_scores)[::-1]
+        # embedding_matrix rows are already normalized -> this dot product
+        # IS the cosine similarity for every chunk at once, no Python loop.
+        dense_scores = embedding_matrix @ query_vec
+        dense_ranked_indices = np.argsort(dense_scores)[::-1]
 
-    dense_ranks: Dict[Any, int] = {
-        all_chunks[chunk_arr_idx]["id"]: rank_idx + 1 for rank_idx, chunk_arr_idx in enumerate(dense_ranked_indices)
-    }
+        dense_ranks = {
+            all_chunks[chunk_arr_idx]["id"]: rank_idx + 1 for rank_idx, chunk_arr_idx in enumerate(dense_ranked_indices)
+        }
 
     # --- LAYER 3: RECIPROCAL RANK FUSION ---
     rrf_scores: Dict[Any, float] = {}
