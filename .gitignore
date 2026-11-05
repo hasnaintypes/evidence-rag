@@ -17,9 +17,9 @@ models/
 *.onnx
 *.gguf
 
-# Eval run scratch output (docs/eval_baseline.json IS committed - it's
+# Eval run scratch output (docs/eval/eval_baseline.json IS committed - it's
 # the CI-maintained snapshot compare_eval.py diffs against)
-docs/eval_metrics.json
+docs/eval/eval_metrics.json
 server/eval_comment.md
 server/eval_status.txt
 

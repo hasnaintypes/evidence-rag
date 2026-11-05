@@ -26,7 +26,7 @@ create table if not exists documents (
 );
 
 -- Migration for documents tables created before per-user ownership was
--- added - NULL means a shared/demo document (e.g. docs/sample_docs).
+-- added - NULL means a shared/demo document (e.g. docs/fixtures/sample_docs).
 alter table documents add column if not exists user_id text;
 
 -- Migration for documents tables created before background-job ingestion -

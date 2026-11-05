@@ -531,7 +531,7 @@ def delete_document_data(doc_id: str) -> None:
 def list_documents(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Returns a user's own uploaded documents plus shared/demo documents
-    (user_id IS NULL, e.g. docs/sample_docs ingested via scripts/ingest.py).
+    (user_id IS NULL, e.g. docs/fixtures/sample_docs ingested via scripts/ingest.py).
     user_id=None returns every document regardless of owner - used by
     internal/non-request-scoped callers only, never by the /documents route.
     """

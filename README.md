@@ -126,7 +126,7 @@ Every document belongs to the user who uploaded it, and every chat happens insid
 
 Sign-in/sign-up talk directly from the browser to Supabase Auth (`web/lib/auth.ts`), never proxied through the backend. The backend's only auth responsibility is verifying a caller's JWT against Supabase's public **JWKS** endpoint (`server/api/deps.py`) — no shared secret stored server-side. Every route requires a valid `Authorization: Bearer <jwt>` except `/health` and `/source/{filename}` (opened via plain browser navigation for citation links).
 
-`documents.user_id` is nullable: `NULL` means a shared/demo document (the `docs/sample_docs/` corpus, indexed via `scripts/ingest.py`), visible to every signed-in user; uploads via `POST /upload` are private to the uploader.
+`documents.user_id` is nullable: `NULL` means a shared/demo document (the `docs/fixtures/sample_docs/` corpus, indexed via `scripts/ingest.py`), visible to every signed-in user; uploads via `POST /upload` are private to the uploader.
 
 > Per-user ownership is enforced on conversations, but not yet on every document/graph route — tracked in the [Roadmap](#roadmap--production-hardening) below.
 
@@ -148,7 +148,7 @@ Each document section can be run through local entity extraction to build a co-o
 
 ## Evaluation Results
 
-The retrieval pipeline is evaluated against a naive dense-retrieval baseline on a labeled dataset (`docs/eval_set.json`), Top-5 setting, source-file-level ground truth:
+The retrieval pipeline is evaluated against a naive dense-retrieval baseline on a labeled dataset (`docs/eval/eval_set.json`), Top-5 setting, source-file-level ground truth:
 
 | Pipeline | Precision@5 | Recall@5 | MRR |
 |:--|--:|--:|--:|
@@ -157,7 +157,7 @@ The retrieval pipeline is evaluated against a naive dense-retrieval baseline on 
 
 Every query is also scored for **answer faithfulness**: a second, cheap Gemini call acts as an LLM-as-judge given the generated answer and its cited chunks, returning a 0–1 support score plus any unsupported claims (`src/evaluation/judge.py`) — this catches the case retrieval metrics can't: the right document was found, but the answer still misstated what it says.
 
-Full detail: [`docs/eval_report.md`](./docs/eval_report.md).
+Full detail: [`docs/eval/eval_report.md`](./docs/eval/eval_report.md).
 
 ---
 
@@ -190,10 +190,12 @@ Full detail: [`docs/eval_report.md`](./docs/eval_report.md).
 │   │   └── evaluation/  judge.py (faithfulness scoring)
 │   └── scripts/        ingest.py, run_eval.py, compare_eval.py, supabase_schema.sql
 ├── web/                 Next.js frontend (app/, components/, hooks/, stores/, lib/)
-└── docs/                sample_docs/ (demo corpus) + eval_set.json / eval_report.md / eval_baseline.json
+└── docs/
+    ├── fixtures/         sample_docs/ (demo corpus)
+    └── eval/             eval_set.json / eval_report.md / eval_baseline.json / eval_metrics.json
 ```
 
-A production-grade restructuring (a `services/` layer, split schemas, a real `tests/` tree, `docs/` split into `fixtures/` + `eval/`) is approved and tracked in the [Roadmap](#roadmap--production-hardening) below, but not yet applied to this layout.
+A production-grade restructuring (a `services/` layer, split schemas, a real `tests/` tree) is approved and tracked in the [Roadmap](#roadmap--production-hardening) below; the `docs/` split into `fixtures/` + `eval/` shown above has landed (#19).
 
 ---
 
@@ -221,7 +223,7 @@ CORS_ALLOWED_ORIGINS=http://localhost:3000
 If `STORAGE_MODE=supabase`, also set `SUPABASE_DB_URL` (use the **connection pooler** string, port 6543 — the direct host is IPv6-only on many projects) and `SUPABASE_KEY`, and run `scripts/supabase_schema.sql` once in the Supabase SQL editor.
 
 ```bash
-python scripts/ingest.py        # indexes docs/sample_docs/ as shared documents
+python scripts/ingest.py        # indexes docs/fixtures/sample_docs/ as shared documents
 uvicorn api.app:app --reload    # http://127.0.0.1:8000/docs for interactive API docs
 ```
 

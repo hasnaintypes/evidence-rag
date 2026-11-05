@@ -32,7 +32,7 @@ class DocumentService:
     @staticmethod
     def list_for_user(user: CurrentUser) -> Dict[str, Any]:
         """The caller's own uploaded documents plus shared/demo documents
-        (docs/sample_docs), used by the UI sidebar."""
+        (docs/fixtures/sample_docs), used by the UI sidebar."""
         return {"documents": list_documents(user_id=user.id)}
 
     @staticmethod
@@ -47,7 +47,7 @@ class DocumentService:
         Runs the exact same pipeline as scripts/ingest.py's per-file logic
         (tree-aware parsing for PDFs, hash-based dedup, doc_id tracking) so a
         file uploaded through the UI is indexed identically to one placed in
-        docs/sample_docs and ingested via the CLI script.
+        docs/fixtures/sample_docs and ingested via the CLI script.
         """
         filename = file.filename
         ext = os.path.splitext(filename)[1].lower()
