@@ -170,7 +170,7 @@ Full detail: [`docs/eval_report.md`](./docs/eval_report.md).
 | Auth | Supabase Auth, JWT verified backend-side via JWKS |
 | Chat / Embeddings | Gemini (`gemini-2.5-flash` / `gemini-embedding-001`) |
 | Retrieval | `rank-bm25` + dense similarity, Reciprocal Rank Fusion |
-| Reranking | `bge-reranker-base` (local cross-encoder) |
+| Reranking | Gemini (LLM-based relevance scoring, one batched call per rerank) |
 | Parsing | pdfplumber (PDF), python-docx (DOCX), pandas (XLSX/CSV) |
 | Graph visualization | Vis Network |
 | Evaluation | Precision@K, Recall@K, MRR, LLM-as-judge faithfulness |

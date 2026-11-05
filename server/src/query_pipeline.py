@@ -135,10 +135,13 @@ def process_chat_query(
             top_score = compressed[0].get("rerank_score", 0.0) if compressed else 0.0
 
             # Adaptive chunk budget: fewer, higher-confidence chunks when the
-            # top hit is very strong; more chunks when the signal is weak/spread
-            if top_score > 1.2:
+            # top hit is very strong; more chunks when the signal is weak/spread.
+            # Thresholds recalibrated for retrieval/reranker.py's 0.0-1.0
+            # Gemini-scored rerank_score (previously a cross-encoder's raw
+            # logit, roughly -10..+10) - see that module's docstring.
+            if top_score > 0.85:
                 chunk_limit = 2
-            elif top_score > 0.65:
+            elif top_score > 0.5:
                 chunk_limit = 4
             else:
                 chunk_limit = 5
@@ -160,7 +163,7 @@ def process_chat_query(
     # Only sub-query generation itself calls the LLM, and only when triggered.
     hop_count = 1
     with traced_stage(request_id, "followup_hop", telemetry, user_id):
-        if advanced_mode and top_score <= 0.65 and len(final_context_chunks) > 0:
+        if advanced_mode and top_score <= 0.5 and len(final_context_chunks) > 0:
             subqueries = decompose_into_subqueries(query)
             if subqueries:
                 hop_count = 2
@@ -242,7 +245,7 @@ def process_chat_query(
     sources = _build_sources(final_context_chunks, user_id)
 
     # --- PHASE 5.5: Retrieval-confidence abstention gate ---
-    # advanced_mode only - naive mode never runs the cross-encoder, so
+    # advanced_mode only - naive mode never runs reranking, so
     # every chunk defaults to rerank_score 0.0 there and this check would
     # either never fire or always fire depending on the threshold sign,
     # neither of which reflects actual retrieval confidence.

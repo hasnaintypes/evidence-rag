@@ -12,7 +12,10 @@ google-genai==2.25.0
 # Retrieval
 numpy==1.26.4
 rank-bm25==0.2.2
-sentence-transformers==3.1.1
+# Reranking is a Gemini call (src/retrieval/reranker.py), not a locally
+# hosted model - sentence-transformers/torch were removed from here for
+# exactly that reason (see #20: the model's memory footprint was OOM-
+# killing the Render deploy).
 
 # Document parsing
 pdfplumber==0.11.4  # already pulls in Pillow + pypdfium2, used here for page.to_image() in the scanned-page vision fallback

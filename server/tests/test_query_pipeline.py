@@ -1,9 +1,9 @@
 """Tests for process_chat_query()'s honest-failure branches - empty
 retrieval, generation failure, the repetition-loop detector, the
 retrieval-confidence abstention gate, and the faithfulness hard gate.
-Retrieval/generation/judge calls are mocked throughout; these tests
-exercise query_pipeline.py's own branching logic, not Gemini or the
-cross-encoder."""
+Retrieval/generation/judge/reranking calls are mocked throughout; these
+tests exercise query_pipeline.py's own branching logic, not any real
+Gemini call."""
 
 import logging
 from unittest.mock import patch
