@@ -8,14 +8,18 @@ from typing import Optional
 # server/, so a plain relative path would look in the wrong place).
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DOCS_DIR = os.path.join(_REPO_ROOT, "docs")
-SAMPLE_DOCS_DIR = os.path.join(DOCS_DIR, "sample_docs")
-EVAL_SET_PATH = os.path.join(DOCS_DIR, "eval_set.json")
-EVAL_REPORT_PATH = os.path.join(DOCS_DIR, "eval_report.md")
+# docs/ is split into fixtures/ (the sample corpus) and eval/ (eval harness
+# I/O) - see #19.
+FIXTURES_DIR = os.path.join(DOCS_DIR, "fixtures")
+EVAL_DIR = os.path.join(DOCS_DIR, "eval")
+SAMPLE_DOCS_DIR = os.path.join(FIXTURES_DIR, "sample_docs")
+EVAL_SET_PATH = os.path.join(EVAL_DIR, "eval_set.json")
+EVAL_REPORT_PATH = os.path.join(EVAL_DIR, "eval_report.md")
 # Machine-readable sibling of eval_report.md - CI diffs this against
 # eval_baseline.json to catch retrieval/prompt regressions (see
 # scripts/compare_eval.py and .github/workflows/eval.yml).
-EVAL_METRICS_PATH = os.path.join(DOCS_DIR, "eval_metrics.json")
-EVAL_BASELINE_PATH = os.path.join(DOCS_DIR, "eval_baseline.json")
+EVAL_METRICS_PATH = os.path.join(EVAL_DIR, "eval_metrics.json")
+EVAL_BASELINE_PATH = os.path.join(EVAL_DIR, "eval_baseline.json")
 
 
 class Settings(BaseSettings):
@@ -72,7 +76,7 @@ class Settings(BaseSettings):
     # answer. rerank_score is a 0.0-1.0 Gemini-scored relevance value (see
     # retrieval/reranker.py's docstring) - matches retrieval/grader.py's
     # RERANK_SCORE_THRESHOLD (the same "more relevant than not" midpoint)
-    # by default - tune against docs/eval_set.json rather than hardcoding
+    # by default - tune against docs/eval/eval_set.json rather than hardcoding
     # a different number in code.
     retrieval_confidence_threshold: float = 0.5
 
@@ -92,7 +96,7 @@ class Settings(BaseSettings):
     # 1.0. 0.7 sits below any observed good-answer score and above a
     # single-wrong-claim answer, erring toward flagging rather than
     # missing a hallucination. Full run_eval.py-based tuning across all of
-    # docs/eval_set.json (comparing gate firing against the known
+    # docs/eval/eval_set.json (comparing gate firing against the known
     # negative-control/narrow-detail cases) is still open - it needs more
     # Gemini API quota than this probe could use without exhausting the
     # free tier's 20 requests/day, see GitHub issue #24. Revisit this

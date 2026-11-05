@@ -25,7 +25,7 @@ def get_owned_document(doc_id: str, user: CurrentUser) -> Dict[str, Any]:
     Raises 404 (not 403) for a doc_id that doesn't exist or belongs to
     someone else - doesn't confirm to a caller that a given ID exists at
     all. A None user_id on the document record means shared/demo (e.g.
-    docs/sample_docs), accessible to every signed-in user.
+    docs/fixtures/sample_docs), accessible to every signed-in user.
 
     Returns the {"user_id", "filename"} record so a caller that also
     needs the filename (e.g. GraphService.get_section()) doesn't have to

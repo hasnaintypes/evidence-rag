@@ -239,7 +239,7 @@ def ingest_file(file_path: str, filename: str, user_id: str = None) -> dict:
     """
     Parses, chunks, embeds, and indexes one document with hash-based dedup -
     the synchronous all-in-one entry point used by scripts/ingest.py (bulk
-    CLI ingestion over docs/sample_docs, user_id=None -> shared/demo doc).
+    CLI ingestion over docs/fixtures/sample_docs, user_id=None -> shared/demo doc).
     The /upload API route calls prepare_ingest()/finish_ingest() directly
     instead, so the slow phase can run as a background task.
 

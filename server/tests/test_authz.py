@@ -35,7 +35,7 @@ def test_get_owned_document_allows_the_owner():
 
 def test_get_owned_document_allows_any_user_on_a_shared_document():
     """user_id=None on the document record means shared/demo (e.g.
-    docs/sample_docs) - every signed-in user can access it."""
+    docs/fixtures/sample_docs) - every signed-in user can access it."""
     record = {"user_id": None, "filename": "shared.pdf"}
     with patch("api.authz.get_document_record", return_value=record):
         result = get_owned_document("doc-1", CurrentUser(id="anyone", email=None))

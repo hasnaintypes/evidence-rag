@@ -183,7 +183,7 @@ def run_eval():
     Runs the labeled eval set against both naive (advanced_mode=False,
     single-pass retrieval, no rerank/grade/compress/follow-up-hop) and
     advanced (full pipeline) configurations, and writes a comparison
-    report to docs/eval_report.md.
+    report to docs/eval/eval_report.md.
 
     Includes multi-part, lexical-overlap, and negative-control questions
     specifically to differentiate naive from advanced - a purely simple,
@@ -210,7 +210,7 @@ def run_eval():
     report_lines = [
         "# Evaluation Report",
         "",
-        f"Eval set: `docs/eval_set.json` ({len(questions)} questions)",
+        f"Eval set: `docs/eval/eval_set.json` ({len(questions)} questions)",
         "",
         "**Ground truth is source-file-level** (did the correct document surface in the",
         "top-K retrieved chunks), not chunk-level - a coarser but honest signal given",
@@ -264,7 +264,7 @@ def run_eval():
 
     # Machine-readable sibling for CI (see scripts/compare_eval.py) - the
     # markdown report above is for humans, this is for diffing against
-    # docs/eval_baseline.json to catch regressions automatically.
+    # docs/eval/eval_baseline.json to catch regressions automatically.
     with open(EVAL_METRICS_PATH, "w", encoding="utf-8") as f:
         json.dump({"naive": naive_summary, "advanced": advanced_summary}, f, indent=2)
 

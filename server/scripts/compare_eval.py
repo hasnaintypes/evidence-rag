@@ -1,7 +1,7 @@
 """
 CI helper: diffs the metrics just produced by run_eval.py
-(docs/eval_metrics.json) against the checked-in baseline
-(docs/eval_baseline.json, last updated by a push to main - see
+(docs/eval/eval_metrics.json) against the checked-in baseline
+(docs/eval/eval_baseline.json, last updated by a push to main - see
 .github/workflows/eval.yml), and writes a PR-comment-ready markdown
 table to server/eval_comment.md.
 
@@ -80,7 +80,7 @@ def main():
     lines = ["## Retrieval Evaluation", ""]
     if baseline is None:
         lines.append(
-            "_No baseline yet (first run, or `docs/eval_baseline.json` not committed) - showing current numbers only._"
+            "_No baseline yet (first run, or `docs/eval/eval_baseline.json` not committed) - showing current numbers only._"
         )
     elif any_fail:
         lines.append(
@@ -97,7 +97,7 @@ def main():
         lines.append(f"| {metric} | {cur} | {base} | {delta} | {mark} |")
 
     lines.append("")
-    lines.append("Full per-question detail: `docs/eval_report.md` (uploaded as a workflow artifact).")
+    lines.append("Full per-question detail: `docs/eval/eval_report.md` (uploaded as a workflow artifact).")
 
     with open(COMMENT_PATH, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
