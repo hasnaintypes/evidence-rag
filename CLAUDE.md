@@ -107,6 +107,17 @@ faithfulness gate runs in both modes, since the judge call doesn't depend on the
 `docs/eval_set.json` content rather than a full `run_eval.py` pass, due to free-tier Gemini API quota
 limits — revisit once issue #24 is resolved.
 
+Every stage above runs inside `src/observability.py`'s `traced_stage()`, which logs that stage's
+start/completion (with elapsed ms)/failure through the standard `logging` module under a per-request
+correlation id (`request_id`, generated once per `process_chat_query()` call and folded into
+`telemetry`) — this is what makes "which stage failed/was slow for request X" answerable from
+container logs, not just from the single row `query_log` gets at the end of a run (see #16).
+`POST /conversations/{id}/messages` and `POST /upload` additionally sit behind
+`src/rate_limiter.py`'s per-user sliding-window limiter (`api/deps.py`'s
+`get_rate_limited_chat_user`/`get_rate_limited_upload_user`), so a single client can't exhaust the
+app's Gemini quota through repeated requests (#15). Both are in-memory/per-process, same limitation
+as `response_cache.py`/`hybrid.py`'s index cache below.
+
 Chat/structured generation calls (`src/llm.py`) try a configured fallback model
 (`GEMINI_FALLBACK_CHAT_MODEL`) once if the primary model's call fails or rate-limits — a real
 mitigation, not just theoretical: this project hit the free tier's daily quota mid-session while
@@ -133,11 +144,25 @@ shared across workers or persisted across a restart.
 
 `STORAGE_MODE` (`local` vs `supabase`) only changes `server/src/storage/{database,files}.py` — SQLite
 vs. Postgres+pgvector for the DB, local disk vs. Supabase Storage for raw files. Parsing, chunking,
-retrieval, reranking, and the entity graph run identically regardless of backend. `documents.user_id`
+reranking, and the entity graph run identically regardless of backend. `documents.user_id`
 is nullable: `NULL` means a shared/demo document visible to all signed-in users (the `docs/sample_docs/`
 corpus, indexed via `scripts/ingest.py`); non-null means a private upload via `POST /upload`, scoped to
 that uploader. `make_doc_id(filename, user_id)` in `ingestion/pipeline.py` exists specifically so two
 different users' same-named upload don't collide on one `doc_id`.
+
+One exception to "pipeline logic is identical regardless of backend": `retrieval/hybrid.py`'s dense
+(semantic) retrieval layer differs by `STORAGE_MODE`. In `local` mode it still computes cosine
+similarity against an in-memory, L2-normalized embedding matrix built from the full corpus. In
+`supabase` mode it instead calls `src/storage/database.py`'s `dense_ann_search()`, a real
+approximate-nearest-neighbor SQL query against `document_chunks.embedding` that uses
+`scripts/supabase_schema.sql`'s `idx_chunks_embedding` HNSW index (#17) — built on
+`(embedding::halfvec(3072))` with `halfvec_cosine_ops`, not on `embedding` directly, since pgvector's
+HNSW index caps at 2000 dimensions and `gemini-embedding-001` produces 3072-dim vectors; every query
+against the index (including `dense_ann_search()`) must apply the identical `::halfvec(3072)` cast on
+both sides of `<=>`, or the planner silently falls back to a full sequential scan instead of using the
+index. `dense_ann_search()` also filters by `doc_ids` directly in SQL (`WHERE doc_id = ANY(...)`)
+rather than post-filtering a full-corpus ranking — partial progress on #27 for the dense layer only;
+the sparse/BM25 layer still scores the full cached corpus regardless of backend.
 
 ### Authorization is route-scoped via `require_document_access()`
 
