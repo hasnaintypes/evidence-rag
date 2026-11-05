@@ -149,7 +149,24 @@ create index if not exists idx_messages_conversation on messages(conversation_id
 create index if not exists idx_query_log_timestamp on query_log(timestamp);
 create index if not exists idx_query_log_user on query_log(user_id);
 
--- Optional but recommended once you have more than a few thousand chunks:
--- speeds up cosine-similarity search via pgvector's approximate index.
--- create index if not exists idx_chunks_embedding on document_chunks
---     using hnsw (embedding vector_cosine_ops);
+-- Speeds up cosine-similarity search via pgvector's approximate index -
+-- used by src/storage/database.py's dense_ann_search(), the query
+-- retrieval/hybrid.py's dense-retrieval layer issues in supabase mode
+-- (see #17).
+--
+-- Built on (embedding::halfvec(3072)), not embedding directly: pgvector's
+-- HNSW index has a hard 2000-dimension cap for the plain `vector` type,
+-- and embedding is vector(3072) (gemini-embedding-001's output width, see
+-- this file's comment above) - `create index ... using hnsw (embedding
+-- vector_cosine_ops)` fails outright ("column cannot have more than 2000
+-- dimensions for hnsw index"), confirmed against a real pgvector 0.8
+-- instance while building this. halfvec (half-precision) raises that cap
+-- to 4000, so the index is built on an expression cast to halfvec(3072)
+-- instead - every query against this index, including dense_ann_search(),
+-- must apply the identical cast on both sides of `<=>` (not plain
+-- `embedding <=> ...`) or the planner has no matching expression to use
+-- the index for, and silently falls back to a full sequential scan.
+-- halfvec_cosine_ops specifically, since `<=>` is cosine distance, not
+-- `<->` (L2) or `<#>` (inner product).
+create index if not exists idx_chunks_embedding on document_chunks
+    using hnsw ((embedding::halfvec(3072)) halfvec_cosine_ops);
