@@ -63,17 +63,18 @@ class Settings(BaseSettings):
     enable_entity_graph: bool = False
 
     # --- Retrieval-confidence abstention (advanced_mode only - naive mode
-    # never computes a cross-encoder rerank_score, so it has no confidence
-    # signal to gate on) ---
+    # never computes a rerank_score, so it has no confidence signal to
+    # gate on) ---
     # Minimum rerank_score the best retrieved chunk must clear, after
     # grading/compression/the follow-up hop, for the pipeline to attempt an
     # answer at all. Below this, process_chat_query() reports insufficient
     # evidence instead of generating a plausible-but-weakly-grounded
-    # answer. Matches retrieval/grader.py's RERANK_SCORE_THRESHOLD (the
-    # same "positive score = relevant cluster" cutoff for this
-    # cross-encoder) by default - tune against docs/eval_set.json rather
-    # than hardcoding a different number in code.
-    retrieval_confidence_threshold: float = 0.0
+    # answer. rerank_score is a 0.0-1.0 Gemini-scored relevance value (see
+    # retrieval/reranker.py's docstring) - matches retrieval/grader.py's
+    # RERANK_SCORE_THRESHOLD (the same "more relevant than not" midpoint)
+    # by default - tune against docs/eval_set.json rather than hardcoding
+    # a different number in code.
+    retrieval_confidence_threshold: float = 0.5
 
     # --- Faithfulness hard gate (both modes - the judge call in
     # evaluation/judge.py doesn't depend on the cross-encoder, unlike the

@@ -1,12 +1,12 @@
 from typing import List, Dict, Any
 
-# Cross-encoder relevance threshold. bge-reranker-base outputs raw logits
-# (typically -10..+10 range) rather than a 0-1 probability. Relevant
-# query/chunk pairs cluster positive, irrelevant pairs cluster negative —
-# so 0.0 is the meaningful cutoff. The previous -3.0 threshold was below
-# the model's practical output floor, meaning this filter never rejected
-# anything and only the Jaccard dedup step was actually pruning chunks.
-RERANK_SCORE_THRESHOLD = 0.0
+# Relevance threshold against retrieval/reranker.py's rerank_score, a
+# 0.0-1.0 Gemini-scored relevance value (see that module's docstring for
+# why this is no longer a cross-encoder's raw logit output). 0.5 is the
+# natural "more relevant than not" midpoint of that scale - a first-pass
+# recalibration (reasoned from the new scale's semantics, not yet tuned
+# against a full run_eval.py pass - see reranker.py's docstring and #24).
+RERANK_SCORE_THRESHOLD = 0.5
 
 # Node types treated as atomic, authoritative sources (a full table, a full
 # warning box). Two different small tables can share boilerplate header
