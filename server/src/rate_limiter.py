@@ -45,6 +45,33 @@ from src.config import settings
 _requests: Dict[str, deque] = {}
 _lock = threading.Lock()
 
+# Trimming a key's own deque on every call to it (below) only cleans up a
+# user who keeps calling - it does nothing for a user_id that makes one
+# request and is never seen again, since nothing revisits that key to
+# trim it. Left alone, _requests would grow by one entry per distinct
+# user_id ever seen for the life of the process, not just per
+# concurrently-active user. A full-dict sweep on every single call would
+# fix that but cost O(n) per request; instead, sweep only every
+# _SWEEP_EVERY calls, amortizing that cost across many requests while
+# still bounding memory to roughly "users seen in the last _SWEEP_EVERY
+# calls' worth of wall-clock time" rather than "users ever seen."
+_SWEEP_EVERY = 500
+_calls_since_sweep = 0
+
+
+def _sweep_expired(window_seconds: int) -> None:
+    """Drops every key whose entire deque has aged out of the window.
+    Must be called with _lock already held. A single global cutoff is
+    correct even though chat/upload have different max_requests, because
+    both scopes share the same rate_limit_window_seconds setting."""
+    cutoff = time.time() - window_seconds
+    for key in list(_requests.keys()):
+        timestamps = _requests[key]
+        while timestamps and timestamps[0] < cutoff:
+            timestamps.popleft()
+        if not timestamps:
+            del _requests[key]
+
 
 def _check(scope: str, user_id: str, max_requests: int, window_seconds: int) -> None:
     """
@@ -55,11 +82,18 @@ def _check(scope: str, user_id: str, max_requests: int, window_seconds: int) -> 
     if not settings.rate_limit_enabled:
         return
 
+    global _calls_since_sweep
+
     key = f"{scope}:{user_id}"
     now = time.time()
     cutoff = now - window_seconds
 
     with _lock:
+        _calls_since_sweep += 1
+        if _calls_since_sweep >= _SWEEP_EVERY:
+            _calls_since_sweep = 0
+            _sweep_expired(window_seconds)
+
         timestamps = _requests.setdefault(key, deque())
         while timestamps and timestamps[0] < cutoff:
             timestamps.popleft()
@@ -89,6 +123,9 @@ def enforce_upload_rate_limit(user_id: str) -> None:
 
 
 def clear_rate_limits() -> None:
-    """Test/debug helper - drops every tracked request timestamp."""
+    """Test/debug helper - drops every tracked request timestamp and
+    resets the sweep counter."""
+    global _calls_since_sweep
     with _lock:
         _requests.clear()
+        _calls_since_sweep = 0

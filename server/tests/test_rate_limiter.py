@@ -5,6 +5,7 @@ import time
 import pytest
 from fastapi import HTTPException
 
+import src.rate_limiter as rate_limiter
 from src.config import settings
 from src.rate_limiter import enforce_chat_rate_limit, enforce_upload_rate_limit
 
@@ -57,6 +58,29 @@ def test_an_expired_entry_falls_out_of_the_window(monkeypatch):
 
     time.sleep(0.1)
     enforce_chat_rate_limit("user-1")  # window has rolled past the first request
+
+
+def test_a_periodic_sweep_evicts_users_who_never_call_again(monkeypatch):
+    """Regression test: a user_id that makes one request and is never
+    seen again must not leave a permanent entry in _requests - nothing
+    ever revisits that specific key to trim it, so only a periodic sweep
+    across the whole dict (triggered by *any* caller's traffic, not
+    necessarily that user's own) can reclaim it."""
+    monkeypatch.setattr(settings, "rate_limit_chat_max_requests", 5)
+    monkeypatch.setattr(settings, "rate_limit_window_seconds", 0.05)
+    monkeypatch.setattr(rate_limiter, "_SWEEP_EVERY", 3)
+
+    enforce_chat_rate_limit("one-and-done-user")
+    assert "chat:one-and-done-user" in rate_limiter._requests
+
+    time.sleep(0.1)  # that user's entry is now fully expired
+
+    # Three unrelated calls from a different user - never touches
+    # one-and-done-user's key directly, but should trip the sweep.
+    for _ in range(3):
+        enforce_chat_rate_limit("someone-else")
+
+    assert "chat:one-and-done-user" not in rate_limiter._requests
 
 
 def test_disabled_rate_limiting_never_raises(monkeypatch):
