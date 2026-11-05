@@ -37,20 +37,13 @@ _purge_lock = threading.Lock()
 _last_purge_attempt = 0.0
 
 
-def _maybe_run_retention_sweep() -> None:
-    """Called at the end of every log_query_event() - a no-op unless at
-    least PURGE_CHECK_INTERVAL_SECONDS have passed since the last attempt
-    (successful or not). Never raises: a purge failure must not break the
-    chat response that triggered it, but it is logged (not silently
-    swallowed, per #29's acceptance criteria), unlike log_query_event()'s
-    own insert failures above."""
-    global _last_purge_attempt
-    now = time.time()
-    with _purge_lock:
-        if now - _last_purge_attempt < PURGE_CHECK_INTERVAL_SECONDS:
-            return
-        _last_purge_attempt = now
-
+def _run_sweep() -> None:
+    """The actual purge work, run off the request thread - see
+    _maybe_run_retention_sweep()'s docstring for why. Never raises: a
+    purge failure must not break the chat response whose request
+    triggered it, but it is logged (not silently swallowed, per #29's
+    acceptance criteria), unlike log_query_event()'s own insert failures
+    above."""
     try:
         deleted = purge_query_log(settings.query_log_retention_days)
         if deleted:
@@ -61,6 +54,32 @@ def _maybe_run_retention_sweep() -> None:
             )
     except Exception:
         logger.exception("query_log retention sweep failed")
+
+
+def _maybe_run_retention_sweep() -> None:
+    """Called at the end of every log_query_event() - a no-op unless at
+    least PURGE_CHECK_INTERVAL_SECONDS have passed since the last attempt
+    (successful or not).
+
+    Dispatches the actual purge onto a background thread rather than
+    running it inline: purge_query_log() deletes in batches of 1000,
+    each its own get_db_connection()/DELETE/commit round trip, precisely
+    because a first run (or any day with a large backlog) can mean
+    clearing a lot of rows - see its own docstring. Running that
+    synchronously inside log_query_event() would mean whichever real
+    user's chat request happens to log the query that trips the daily
+    gate pays that latency in their response time. A plain daemon
+    thread, not FastAPI's BackgroundTasks, since log_query_event() is
+    called from query_pipeline.py as a plain function, not from a route
+    handler with a BackgroundTasks instance in scope."""
+    global _last_purge_attempt
+    now = time.time()
+    with _purge_lock:
+        if now - _last_purge_attempt < PURGE_CHECK_INTERVAL_SECONDS:
+            return
+        _last_purge_attempt = now
+
+    threading.Thread(target=_run_sweep, daemon=True).start()
 
 
 def reset_retention_sweep_state() -> None:
