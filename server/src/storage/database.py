@@ -856,7 +856,7 @@ def dense_ann_search(
         )
     else:
         cursor.execute(
-            base_select + " ORDER BY embedding <=> %s::vector LIMIT %s",
+            base_select + " ORDER BY embedding::halfvec(3072) <=> %s::halfvec(3072) LIMIT %s",
             (embedding_literal, embedding_literal, top_k),
         )
     rows = cursor.fetchall()
