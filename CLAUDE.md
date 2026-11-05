@@ -90,19 +90,20 @@ rather than working against raw chunk text.
 `process_chat_query()` is the single entry point conversations call into, and it is doc-scoped (every
 retrieval call is filtered to one `doc_id`, not a global search). Flow: LLM query rewriting
 (`retrieval/query_rewriter.py`) → hybrid retrieval — BM25 + dense + Reciprocal Rank Fusion
-(`retrieval/hybrid.py`) → cross-encoder reranking (`retrieval/reranker.py`) → relevance grading +
-Jaccard dedup (`retrieval/grader.py`) → context compression + parent-section reconstruction
-(`retrieval/compression.py`) → an adaptive context budget (2/4/5 blocks based on top score) → a
-**confidence gate**: below `RETRIEVAL_CONFIDENCE_THRESHOLD` the pipeline abstains instead of
-generating, returning the closest chunks as `sources` with no synthesized claim → if confident but a
-follow-up looks warranted, **one bounded additional retrieval hop** (never an open-ended loop) → grounded
-generation → faithfulness scoring (`evaluation/judge.py`, a second cheap LLM call checking the answer
-against its own cited chunks) → **faithfulness hard gate**: below `FAITHFULNESS_GATE_THRESHOLD` the
-generated answer is withheld and replaced with an explicit "did not pass the faithfulness check"
-message (still listing sources/unsupported claims) rather than returned as-is → telemetry
-(`telemetry.py`) logs every stage's latency. The retrieval-confidence gate only runs in "advanced
-mode" — naive mode skips the cross-encoder entirely and always attempts an answer — but the
-faithfulness gate runs in both modes, since the judge call doesn't depend on the cross-encoder.
+(`retrieval/hybrid.py`) → LLM-based reranking (`retrieval/reranker.py`, one batched Gemini call
+scoring every candidate chunk's relevance 0.0-1.0 — not a locally-hosted cross-encoder; see that
+module's docstring and #20) → relevance grading + Jaccard dedup (`retrieval/grader.py`) → context
+compression + parent-section reconstruction (`retrieval/compression.py`) → an adaptive context budget
+(2/4/5 blocks based on top score) → a **confidence gate**: below `RETRIEVAL_CONFIDENCE_THRESHOLD` the
+pipeline abstains instead of generating, returning the closest chunks as `sources` with no synthesized
+claim → if confident but a follow-up looks warranted, **one bounded additional retrieval hop** (never
+an open-ended loop) → grounded generation → faithfulness scoring (`evaluation/judge.py`, a second
+cheap LLM call checking the answer against its own cited chunks) → **faithfulness hard gate**: below
+`FAITHFULNESS_GATE_THRESHOLD` the generated answer is withheld and replaced with an explicit "did not
+pass the faithfulness check" message (still listing sources/unsupported claims) rather than returned
+as-is → telemetry (`telemetry.py`) logs every stage's latency. The retrieval-confidence gate only runs
+in "advanced mode" — naive mode skips reranking entirely and always attempts an answer — but the
+faithfulness gate runs in both modes, since the judge call doesn't depend on reranking.
 `FAITHFULNESS_GATE_THRESHOLD` (default 0.7, see `config.py`) was set from a small probe against real
 `docs/eval_set.json` content rather than a full `run_eval.py` pass, due to free-tier Gemini API quota
 limits — revisit once issue #24 is resolved.
