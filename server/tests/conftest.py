@@ -19,6 +19,7 @@ import src.storage.database as db  # noqa: E402
 import src.response_cache as response_cache  # noqa: E402
 import src.rate_limiter as rate_limiter  # noqa: E402
 import src.telemetry as telemetry  # noqa: E402
+import src.retrieval.hybrid as hybrid  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -74,6 +75,23 @@ def isolated_retention_sweep():
     telemetry.reset_retention_sweep_state()
     yield
     telemetry.reset_retention_sweep_state()
+
+
+@pytest.fixture(autouse=True)
+def isolated_retrieval_index_cache():
+    """
+    retrieval/hybrid.py's global full-corpus cache and per-scope cache
+    (#27) are both module-level/process-wide by the same design as the
+    fixtures above. Each test gets a fresh temp SQLite DB
+    (isolated_sqlite_db), but the caches themselves aren't reset between
+    tests - without this, a later test's doc_ids scope (e.g. "doc-1")
+    could reuse an earlier, unrelated test's cached chunks/bm25/matrix
+    for that same scope key if the two happen to have the same chunk
+    count, silently serving stale/wrong results.
+    """
+    hybrid.invalidate_index_cache()
+    yield
+    hybrid.invalidate_index_cache()
 
 
 @pytest.fixture

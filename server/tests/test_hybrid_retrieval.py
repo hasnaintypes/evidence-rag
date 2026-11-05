@@ -3,7 +3,7 @@ in-memory cosine-similarity path for local/SQLite mode (unchanged), and
 the new pgvector ANN path for supabase mode (src.storage.database's
 dense_ann_search(), see #17)."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import src.retrieval.hybrid as hybrid
 from src.config import settings
@@ -59,9 +59,21 @@ def test_supabase_mode_dense_retrieval_calls_the_ann_search(monkeypatch):
         {"id": 2, "doc_id": "doc-1", "chunk_text": "replace the air filter annually", "embedding": [0, 1, 0]},
     ]
 
+    # _get_scoped_index()'s own staleness check (_current_chunk_count())
+    # hits get_db_connection() directly - stubbed out here the same way
+    # as the rest of this test's DB-layer calls, since a real connection
+    # under storage_mode="supabase" would try to reach an actual Postgres
+    # instance via SUPABASE_DB_URL, which isn't configured in tests.
+    fake_cursor = MagicMock()
+    fake_cursor.fetchone.return_value = {"cnt": len(all_chunks)}
+    fake_conn = MagicMock()
+    fake_conn.cursor.return_value = fake_cursor
+
     with (
+        patch("src.retrieval.hybrid.get_db_connection", return_value=fake_conn),
         patch("src.retrieval.hybrid.get_chunks_for_sparse_by_doc_ids", return_value=all_chunks) as mock_scoped_fetch,
         patch("src.retrieval.hybrid.get_all_chunks_for_sparse") as mock_global_fetch,
+        patch("src.retrieval.hybrid.get_indexed_embedding_models", return_value=[]),
         patch(
             "src.retrieval.hybrid.dense_ann_search",
             return_value=[{"id": 2, "distance": 0.1}, {"id": 1, "distance": 0.9}],

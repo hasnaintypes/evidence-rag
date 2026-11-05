@@ -1,3 +1,5 @@
+from collections import OrderedDict
+
 import numpy as np
 from typing import List, Dict, Any, Optional
 from rank_bm25 import BM25Okapi
@@ -28,8 +30,9 @@ from src.llm import EMBEDDING_MODEL_NAME
 # doc_ids=None hybrid_retrieve() call.
 #
 # Every real chat request passes doc_ids (a conversation's 1-5 documents)
-# and never touches this cache at all - it builds a fresh, unscaled-with-
-# total-corpus-size index from just that scope instead (see #27). Only
+# and never touches this cache at all - it builds/reuses a fresh,
+# unscaled-with-total-corpus-size index scoped to just those documents
+# instead (see the per-scope cache below and #27). Only
 # scripts/run_eval.py's doc_ids=None full-corpus search still uses this.
 # --------------------------------------------------------------------------- #
 
@@ -40,11 +43,34 @@ _cache: Dict[str, Any] = {
     "embedding_matrix": None,  # np.ndarray, shape (n_chunks, dim), L2-normalized rows
 }
 
+# --------------------------------------------------------------------------- #
+# Per-scope index cache - doc_ids-given (real chat request) path
+#
+# A conversation stays on the same 1-5 document doc_ids for every turn,
+# so without caching, a multi-turn conversation against a large document
+# would re-tokenize every chunk and rebuild a fresh BM25Okapi object on
+# every single message - repeated CPU work on the chat request's hot
+# path for no reason, since nothing about that scope changed between
+# turns. Keyed by the sorted doc_ids tuple (order shouldn't matter to
+# cache identity) and bounded to _SCOPED_CACHE_MAX_ENTRIES
+# least-recently-used scopes, since unlike the single global cache
+# above, a busy server could otherwise accumulate one entry per distinct
+# doc_ids set ever queried, unbounded.
+# --------------------------------------------------------------------------- #
 
-def _current_chunk_count() -> int:
+_SCOPED_CACHE_MAX_ENTRIES = 20
+_scoped_cache: "OrderedDict[tuple, Dict[str, Any]]" = OrderedDict()
+
+
+def _current_chunk_count(doc_ids: Optional[List[str]] = None) -> int:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) as cnt FROM document_chunks")
+    if doc_ids:
+        mark = "%s" if settings.storage_mode == "supabase" else "?"
+        placeholders = ", ".join([mark] * len(doc_ids))
+        cursor.execute(f"SELECT COUNT(*) as cnt FROM document_chunks WHERE doc_id IN ({placeholders})", tuple(doc_ids))
+    else:
+        cursor.execute("SELECT COUNT(*) as cnt FROM document_chunks")
     count = cursor.fetchone()["cnt"]
     conn.close()
     return count
@@ -55,10 +81,30 @@ def _build_bm25_and_matrix(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
     Builds a BM25 index and (local/SQLite mode only) a normalized dense
     embedding matrix from an arbitrary chunk list. Shared by the global
     cached index below (_build_index(), the full corpus - doc_ids=None
-    callers only, e.g. scripts/run_eval.py) and hybrid_retrieve()'s
-    doc_ids-scoped path (a conversation's <=5 documents, built fresh per
-    call - see #27's "no separate cache per scope" note there).
+    callers only, e.g. scripts/run_eval.py) and the per-scope cached
+    index (_get_scoped_index(), a conversation's <=5 documents - #27).
+    Only called on an actual cache miss/rebuild in both cases, not per
+    request, so the extra get_indexed_embedding_models() query below is
+    cheap in practice despite running on every miss.
+
+    Callers must not call this with an empty chunks list - both cache
+    paths short-circuit that case themselves before reaching here.
     """
+    # Guard against silently mixing incompatible embedding dimensions -
+    # e.g. switching MODE from local (384-dim MiniLM) to cloud (1536-dim
+    # Azure) without re-ingesting. Without this check, the mismatch would
+    # only surface as a numpy shape-mismatch crash deep inside the
+    # embedding_matrix @ query_vec multiplication below, which is much
+    # harder to diagnose than a clear error raised here at index build time.
+    indexed_models = get_indexed_embedding_models()
+    if indexed_models and EMBEDDING_MODEL_NAME not in indexed_models:
+        raise RuntimeError(
+            f"Embedding model mismatch: current mode uses '{EMBEDDING_MODEL_NAME}', "
+            f"but the indexed documents were embedded with {indexed_models}. "
+            f"Re-run ingestion (scripts/ingest.py) after switching modes, or "
+            f"switch MODE back to match the indexed embedding model."
+        )
+
     corpus_tokenized = [chunk["chunk_text"].lower().split() for chunk in chunks]
     bm25 = BM25Okapi(corpus_tokenized)
 
@@ -94,26 +140,6 @@ def _build_index() -> None:
         _cache.update(chunk_count=0, chunks=[], bm25=None, embedding_matrix=None)
         return
 
-    # Guard against silently mixing incompatible embedding dimensions -
-    # e.g. switching MODE from local (384-dim MiniLM) to cloud (1536-dim
-    # Azure) without re-ingesting. Without this check, the mismatch would
-    # only surface as a numpy shape-mismatch crash deep inside the
-    # embedding_matrix @ query_vec multiplication below, which is much
-    # harder to diagnose than a clear error raised here at index build time.
-    # Only checked here (the full-corpus cache build), not for the
-    # doc_ids-scoped path - that check is a system-wide consistency guard,
-    # not something worth paying a DB round trip for on every scoped
-    # chat request just for a marginally clearer error on an already-rare
-    # misconfiguration.
-    indexed_models = get_indexed_embedding_models()
-    if indexed_models and EMBEDDING_MODEL_NAME not in indexed_models:
-        raise RuntimeError(
-            f"Embedding model mismatch: current mode uses '{EMBEDDING_MODEL_NAME}', "
-            f"but the indexed documents were embedded with {indexed_models}. "
-            f"Re-run ingestion (scripts/ingest.py) after switching modes, or "
-            f"switch MODE back to match the indexed embedding model."
-        )
-
     built = _build_bm25_and_matrix(all_chunks)
     _cache.update(chunk_count=len(all_chunks), chunks=all_chunks, **built)
 
@@ -127,15 +153,48 @@ def _get_index() -> Dict[str, Any]:
     return _cache
 
 
+def _get_scoped_index(doc_ids: List[str]) -> Dict[str, Any]:
+    """
+    Per-scope equivalent of _get_index() above, for the doc_ids-given
+    (real chat request) path - see #27. Keyed by the sorted doc_ids
+    tuple, rebuilt only when that scope's own chunk count has changed
+    since it was cached (same COUNT(*)-staleness pattern as the global
+    cache, just filtered to this scope's doc_ids), and evicted
+    least-recently-used once _SCOPED_CACHE_MAX_ENTRIES distinct scopes
+    have been cached.
+    """
+    key = tuple(sorted(doc_ids))
+    live_count = _current_chunk_count(doc_ids)
+    cached = _scoped_cache.get(key)
+    if cached is not None and cached["chunk_count"] == live_count:
+        _scoped_cache.move_to_end(key)
+        return cached
+
+    if live_count == 0:
+        entry = {"chunk_count": 0, "chunks": [], "bm25": None, "embedding_matrix": None}
+    else:
+        all_chunks = get_chunks_for_sparse_by_doc_ids(doc_ids)
+        built = _build_bm25_and_matrix(all_chunks)
+        entry = {"chunk_count": len(all_chunks), "chunks": all_chunks, **built}
+
+    _scoped_cache[key] = entry
+    _scoped_cache.move_to_end(key)
+    if len(_scoped_cache) > _SCOPED_CACHE_MAX_ENTRIES:
+        _scoped_cache.popitem(last=False)
+    return entry
+
+
 def invalidate_index_cache() -> None:
     """
-    Explicit cache invalidation hook. The COUNT(*) check in _get_index()
-    already catches added/removed chunks automatically, but it would miss
-    an edit that replaces content without changing the row count (e.g. a
-    future update-in-place feature). Call this after any bulk write to
-    document_chunks to be safe, e.g. at the end of ingest.py's run.
+    Explicit cache invalidation hook for both caches above. The COUNT(*)
+    checks in _get_index()/_get_scoped_index() already catch added/
+    removed chunks automatically, but they'd miss an edit that replaces
+    content without changing the row count (e.g. re-ingest, rename -
+    see api/services/document_service.py). Call this after any such
+    write to document_chunks to be safe.
     """
     _cache.update(chunk_count=None, chunks=None, bm25=None, embedding_matrix=None)
+    _scoped_cache.clear()
 
 
 def hybrid_retrieve(
@@ -158,22 +217,21 @@ def hybrid_retrieve(
             always scoped to 1-5 documents), both layers are scoped
             directly in SQL instead of ranking the full corpus and
             filtering afterward (#27): sparse (BM25) and, in local/SQLite
-            mode, the dense matrix are built fresh from just
-            get_chunks_for_sparse_by_doc_ids(doc_ids)'s rows - no
-            caching, since a <=5-document scope is already cheap enough
-            to build per call, and caching per-scope would mean juggling
-            a whole family of cache keys that invalidate independently
-            of the global one for no measurable win at this size. Dense
-            retrieval in supabase mode was already scoped this way via
-            dense_ann_search()'s own WHERE doc_id = ANY(...) (#17).
-            When doc_ids is omitted (only scripts/run_eval.py today),
-            both layers fall back to the full-corpus cached index below.
+            mode, the dense matrix are built from just
+            get_chunks_for_sparse_by_doc_ids(doc_ids)'s rows, cached
+            per-scope (_get_scoped_index()) so a conversation's repeated
+            turns against the same documents don't rebuild BM25 from
+            scratch every message. Dense retrieval in supabase mode was
+            already scoped this way via dense_ann_search()'s own
+            WHERE doc_id = ANY(...) (#17). When doc_ids is omitted (only
+            scripts/run_eval.py today), both layers fall back to the
+            full-corpus cached index below.
     """
     if doc_ids:
-        all_chunks: Optional[List[Dict[str, Any]]] = get_chunks_for_sparse_by_doc_ids(doc_ids)
+        scoped = _get_scoped_index(doc_ids)
+        all_chunks: Optional[List[Dict[str, Any]]] = scoped["chunks"]
         if not all_chunks:
             return []
-        scoped = _build_bm25_and_matrix(all_chunks)
         bm25: BM25Okapi = scoped["bm25"]
         embedding_matrix: Optional[np.ndarray] = scoped["embedding_matrix"]
     else:
