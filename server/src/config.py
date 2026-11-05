@@ -118,6 +118,23 @@ class Settings(BaseSettings):
     # accumulate scopes over the process's lifetime.
     response_cache_max_entries_per_scope: int = 200
 
+    # --- Per-user rate limiting (src/rate_limiter.py) --------------------
+    # Guards the two routes that spend Gemini quota per call - chat
+    # messages and uploads - against a single client exhausting the
+    # app's quota through repeated requests. In-memory/per-process, not
+    # shared across workers - see rate_limiter.py's module docstring.
+    rate_limit_enabled: bool = True
+    rate_limit_window_seconds: int = 60
+    # A chat turn costs several Gemini calls (query rewrite, embedding,
+    # grading/compression, generation, faithfulness judging) - kept
+    # tighter than upload's per-minute allowance for that reason.
+    rate_limit_chat_max_requests: int = 20
+    # An upload embeds one Gemini call per chunk, so a single large
+    # document can already be a burst - the per-minute allowance here
+    # limits how many separate uploads a user can kick off, not how many
+    # chunks one upload embeds.
+    rate_limit_upload_max_requests: int = 5
+
     # --- query_log retention (see scripts/purge_query_log.py) -----------
     # query_log stores raw query text indefinitely with no automatic
     # expiry today. Defaulted to 30 days as a reasonable starting policy -
