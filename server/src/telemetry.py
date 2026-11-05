@@ -1,6 +1,4 @@
 import json
-import time
-from contextlib import contextmanager
 from typing import Dict, Any, Optional
 
 from src.config import settings
@@ -13,8 +11,11 @@ from src.storage.database import get_db_connection
 # rag_pipeline.py and returned to the UI - useful for the current request,
 # but nothing was persisted. This adds a query_log table so past requests
 # (latency per stage, chunk counts, hop counts, success/failure) can be
-# inspected after the fact, which is what "structured logging with request
-# tracing" in the roadmap actually means.
+# inspected after the fact. Stage-level timing is now measured by
+# src/observability.py's traced_stage() (also logs each stage's
+# start/completion/failure under a per-request correlation id, not just
+# this table's end-of-run row - see #16) - that module owns per-stage
+# timing/tracing now, this one owns persisting the finished result.
 # --------------------------------------------------------------------------- #
 
 
@@ -62,30 +63,6 @@ def init_telemetry_table() -> None:
 
     conn.commit()
     conn.close()
-
-
-@contextmanager
-def timed_stage():
-    """
-    Context manager that measures elapsed time in milliseconds.
-    Replaces the repeated start_time = time.perf_counter() / round(...)
-    boilerplate that was duplicated across every phase in rag_pipeline.py.
-
-    Usage:
-        with timed_stage() as t:
-            do_work()
-        telemetry["stage_time_ms"] = t.elapsed_ms
-    """
-
-    class _Timer:
-        elapsed_ms: float = 0.0
-
-    timer = _Timer()
-    start = time.perf_counter()
-    try:
-        yield timer
-    finally:
-        timer.elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
 
 
 def log_query_event(
