@@ -1,6 +1,6 @@
 # Evaluation Report
 
-Eval set: `docs/eval_set.json` (8 questions)
+Eval set: `docs/eval/eval_set.json` (8 questions)
 
 **Ground truth is source-file-level** (did the correct document surface in the
 top-K retrieved chunks), not chunk-level - a coarser but honest signal given
