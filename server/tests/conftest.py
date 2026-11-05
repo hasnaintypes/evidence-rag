@@ -18,6 +18,7 @@ from src.config import settings  # noqa: E402
 import src.storage.database as db  # noqa: E402
 import src.response_cache as response_cache  # noqa: E402
 import src.rate_limiter as rate_limiter  # noqa: E402
+import src.telemetry as telemetry  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -60,6 +61,19 @@ def isolated_rate_limiter():
     rate_limiter.clear_rate_limits()
     yield
     rate_limiter.clear_rate_limits()
+
+
+@pytest.fixture(autouse=True)
+def isolated_retention_sweep():
+    """
+    telemetry.py's query_log retention sweep gate (#29) is module-level/
+    process-wide by the same design as the fixtures above - reset before
+    and after every test so one test's logged queries don't suppress (or
+    force) another, unrelated test's sweep attempt.
+    """
+    telemetry.reset_retention_sweep_state()
+    yield
+    telemetry.reset_retention_sweep_state()
 
 
 @pytest.fixture

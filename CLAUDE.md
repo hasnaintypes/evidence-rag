@@ -30,8 +30,10 @@ python scripts/compare_eval.py   # diffs the fresh run against docs/eval/eval_ba
 python scripts/test_connection.py  # quick Gemini API connectivity check
 python scripts/reset_data.py       # wipe local SQLite/file storage
 python scripts/purge_query_log.py  # delete query_log rows older than QUERY_LOG_RETENTION_DAYS
-                                    # (default 30) - NOT currently scheduled anywhere; this is a
-                                    # manual step until a deployment target is chosen (see #20)
+                                    # (default 30) immediately/on demand - the same purge also runs
+                                    # automatically (src/telemetry.py, gated to ~once/day on real
+                                    # request traffic, see #29), so this script is for a forced run
+
 ruff check .                        # lint (pyflakes rules only - see pyproject.toml)
 ruff format .                       # format (format .--check to verify without writing)
 ```
@@ -113,6 +115,10 @@ start/completion (with elapsed ms)/failure through the standard `logging` module
 correlation id (`request_id`, generated once per `process_chat_query()` call and folded into
 `telemetry`) — this is what makes "which stage failed/was slow for request X" answerable from
 container logs, not just from the single row `query_log` gets at the end of a run (see #16).
+That same row-write is also what enforces `QUERY_LOG_RETENTION_DAYS` in practice: `log_query_event()`
+piggybacks a retention sweep (`purge_query_log()`) onto real request traffic, gated to roughly once a
+day, rather than depending on an external scheduler whose right shape (cron, a scheduled GitHub
+Action, `pg_cron`) depends on deployment specifics this project doesn't hardcode (#29).
 `POST /conversations/{id}/messages` and `POST /upload` additionally sit behind
 `src/rate_limiter.py`'s per-user sliding-window limiter (`api/deps.py`'s
 `get_rate_limited_chat_user`/`get_rate_limited_upload_user`), so a single client can't exhaust the
