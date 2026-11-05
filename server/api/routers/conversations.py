@@ -2,7 +2,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from api.deps import get_current_user, CurrentUser
+from api.deps import get_current_user, get_rate_limited_chat_user, CurrentUser
 from api.schemas import ChatMessageIn, ConversationCreate, ConversationUpdate, AddConversationDocument
 from src.query_pipeline import process_chat_query
 from src.security import generate_source_token
@@ -119,7 +119,9 @@ def restore_checkpoint_endpoint(conversation_id: str, message_id: int, user: Cur
 
 
 @router.post("/conversations/{conversation_id}/messages")
-def send_message_endpoint(conversation_id: str, body: ChatMessageIn, user: CurrentUser = Depends(get_current_user)):
+def send_message_endpoint(
+    conversation_id: str, body: ChatMessageIn, user: CurrentUser = Depends(get_rate_limited_chat_user)
+):
     """
     Replaces the old flat POST /chat: scoped to one conversation's documents
     (doc_ids, up to 5), and folds recent turns into the prompt so follow-ups work.

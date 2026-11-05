@@ -1,7 +1,8 @@
 import jwt
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
 
 from src.config import settings
+from src.rate_limiter import enforce_chat_rate_limit, enforce_upload_rate_limit
 from src.storage.database import get_document_record
 
 # Cached JWKS client - fetches and caches Supabase's public signing keys
@@ -59,6 +60,24 @@ def get_current_user(authorization: str = Header(...)) -> CurrentUser:
         raise HTTPException(status_code=401, detail="Token is missing a subject claim.")
 
     return CurrentUser(id=user_id, email=payload.get("email"))
+
+
+def get_rate_limited_chat_user(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """
+    Drop-in replacement for get_current_user on routes that spend Gemini
+    quota per call (POST /conversations/{id}/messages) - authenticates
+    first, then enforces src/rate_limiter.py's per-user chat limit before
+    the route body (and the Gemini calls inside it) ever runs.
+    """
+    enforce_chat_rate_limit(user.id)
+    return user
+
+
+def get_rate_limited_upload_user(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """Same as get_rate_limited_chat_user, but for POST /upload's
+    separate (lower) per-user limit."""
+    enforce_upload_rate_limit(user.id)
+    return user
 
 
 def require_document_access(doc_id: str, user: CurrentUser) -> dict:
