@@ -457,8 +457,8 @@ def get_document_status(doc_id: str) -> Optional[Dict[str, Any]]:
 def get_document_record(doc_id: str) -> Optional[Dict[str, Any]]:
     """Returns {"user_id", "filename"} for doc_id (user_id None means
     shared/demo), or None if no document with this doc_id exists. Used to
-    enforce ownership on the document/graph routes - see api/deps.py's
-    require_document_access()."""
+    enforce ownership on the document/graph routes - see api/authz.py's
+    get_owned_document()."""
     conn = get_db_connection()
     cursor = conn.cursor()
     ph = _ph(1)

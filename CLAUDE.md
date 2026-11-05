@@ -165,16 +165,25 @@ index. `dense_ann_search()` also filters by `doc_ids` directly in SQL (`WHERE do
 rather than post-filtering a full-corpus ranking — partial progress on #27 for the dense layer only;
 the sparse/BM25 layer still scores the full cached corpus regardless of backend.
 
-### Authorization is route-scoped via `require_document_access()`
+### Routers are thin; `api/services/` holds the logic; `api/authz.py` holds ownership checks
 
-Conversations are scoped per-user, and so are `GET /documents/{id}/status`,
-`GET /documents/{id}/events` (SSE), `GET /graph`, and `GET /graph/section/{id}` — all call
-`api/deps.py`'s `require_document_access()`, which 404s (not 403s) for a document that doesn't exist
-or belongs to someone else (fixed in #22; see `server/tests/test_ownership.py` for the regression
-tests). `GET /source/{filename}` has no bearer-auth check (by design, for citation links — see its
-docstring), but is instead gated by a short-lived signed token (`src/security.py`). New routes should
-follow the same pattern: call `require_document_access()` (or the conversation-ownership equivalent
-in `api/routers/conversations.py`) rather than trusting a caller-supplied id directly.
+`api/routers/{documents,conversations,graph}.py` just parse the request and call into
+`api/services/{document,conversation,graph}_service.py` — `DocumentService`, `ConversationService`,
+`GraphService`. Each service method loads the resource, asserts ownership, then acts; routers no
+longer touch `src/storage/database.py` or `src/ingestion`/`src/query_pipeline` directly (#18, applying
+`02-Architecture.md`'s previously-proposed services layer).
+
+Ownership checks themselves live in `api/authz.py` (`get_owned_document()`, `get_owned_conversation()`,
+`get_owned_graph_scope()`), not scattered per-router — this is what the 2026-11-03 authz fixes (#22)
+originally established ad hoc (`api/deps.py`'s `require_document_access()`,
+`conversations.py`'s `_get_owned_conversation()`) and #18 centralized. Every one of them 404s (not 403s)
+for a resource that doesn't exist or belongs to someone else (see `server/tests/test_authz.py` for the
+unit-level coverage and `server/tests/test_ownership.py` for the integration-level cross-user coverage).
+`GET /source/{filename}` has no bearer-auth check (by design, for citation links — see
+`DocumentService.resolve_source_path()`'s docstring), but is instead gated by a short-lived signed
+token (`src/security.py`). A new resource-scoped route should add a service method that calls the
+matching `api/authz.py` helper (adding one if the resource type is new) rather than trusting a
+caller-supplied id directly.
 
 ### Entity graph is exploration-only
 
