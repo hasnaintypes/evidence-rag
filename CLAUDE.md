@@ -17,7 +17,7 @@ project's own convention overrides that default.
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env            # set GEMINI_API_KEY, STORAGE_MODE, SUPABASE_URL at minimum
-python scripts/ingest.py        # index docs/sample_docs/ as shared (user_id NULL) documents
+python scripts/ingest.py        # index docs/fixtures/sample_docs/ as shared (user_id NULL) documents
 uvicorn api.app:app --reload    # http://127.0.0.1:8000/docs for interactive API docs
 ```
 
@@ -25,8 +25,8 @@ uvicorn api.app:app --reload    # http://127.0.0.1:8000/docs for interactive API
 pytest tests/ -v                    # auth, ownership/authz, and chat-pipeline failure-path tests -
                                      # everything mocked (no real Gemini/Supabase calls), isolated
                                      # temp SQLite DB per test (see tests/conftest.py)
-python scripts/run_eval.py       # Precision@5 / Recall@5 / MRR / faithfulness over docs/eval_set.json
-python scripts/compare_eval.py   # diffs the fresh run against docs/eval_baseline.json, writes server/eval_status.txt
+python scripts/run_eval.py       # Precision@5 / Recall@5 / MRR / faithfulness over docs/eval/eval_set.json
+python scripts/compare_eval.py   # diffs the fresh run against docs/eval/eval_baseline.json, writes server/eval_status.txt
 python scripts/test_connection.py  # quick Gemini API connectivity check
 python scripts/reset_data.py       # wipe local SQLite/file storage
 python scripts/purge_query_log.py  # delete query_log rows older than QUERY_LOG_RETENTION_DAYS
@@ -41,7 +41,7 @@ on every PR/push, gating every merge - unlike the eval harness below, this isn't
 since auth/authz/pipeline-failure-path correctness tests must gate regardless of which files
 changed. `.github/workflows/eval.yml` runs the retrieval-quality eval harness, but only on
 PRs/pushes touching `server/src/retrieval/**`, `server/src/ingestion/**`,
-`server/src/query_pipeline.py`, or `docs/eval_set.json`. It auto-commits `docs/eval_baseline.json`
+`server/src/query_pipeline.py`, or `docs/eval/eval_set.json`. It auto-commits `docs/eval/eval_baseline.json`
 on merges to `main`. Test coverage is still partial - upload→background-ingestion→status
 transitions and the entity graph have no test coverage yet (see `tests/` for what's covered).
 
@@ -105,7 +105,7 @@ as-is → telemetry (`telemetry.py`) logs every stage's latency. The retrieval-c
 in "advanced mode" — naive mode skips reranking entirely and always attempts an answer — but the
 faithfulness gate runs in both modes, since the judge call doesn't depend on reranking.
 `FAITHFULNESS_GATE_THRESHOLD` (default 0.7, see `config.py`) was set from a small probe against real
-`docs/eval_set.json` content rather than a full `run_eval.py` pass, due to free-tier Gemini API quota
+`docs/eval/eval_set.json` content rather than a full `run_eval.py` pass, due to free-tier Gemini API quota
 limits — revisit once issue #24 is resolved.
 
 Every stage above runs inside `src/observability.py`'s `traced_stage()`, which logs that stage's
@@ -146,7 +146,7 @@ shared across workers or persisted across a restart.
 `STORAGE_MODE` (`local` vs `supabase`) only changes `server/src/storage/{database,files}.py` — SQLite
 vs. Postgres+pgvector for the DB, local disk vs. Supabase Storage for raw files. Parsing, chunking,
 reranking, and the entity graph run identically regardless of backend. `documents.user_id`
-is nullable: `NULL` means a shared/demo document visible to all signed-in users (the `docs/sample_docs/`
+is nullable: `NULL` means a shared/demo document visible to all signed-in users (the `docs/fixtures/sample_docs/`
 corpus, indexed via `scripts/ingest.py`); non-null means a private upload via `POST /upload`, scoped to
 that uploader. `make_doc_id(filename, user_id)` in `ingestion/pipeline.py` exists specifically so two
 different users' same-named upload don't collide on one `doc_id`.
@@ -203,7 +203,7 @@ wrappers with loading/error state so components don't duplicate fetch boilerplat
 ## Documentation
 
 Project documentation (PRD, architecture, security findings, roadmap, decisions) lives in the Obsidian
-vault at `~/Vaults/Main/Projects/EvidenceRAG/`, not in this repo. `docs/` here currently holds eval
-fixtures (`eval_set.json`, `eval_baseline.json`, `eval_report.md`) and the `sample_docs/` demo corpus —
-a restructuring into `docs/fixtures/` + `docs/eval/` is planned but not yet applied (see GitHub issue
-#19 and `06-Roadmap.md` in the vault).
+vault at `~/Vaults/Main/Projects/EvidenceRAG/`, not in this repo. `docs/` here is split into
+`docs/fixtures/` (the `sample_docs/` demo corpus) and `docs/eval/` (eval harness I/O —
+`eval_set.json`, `eval_baseline.json`, `eval_report.md`, `eval_metrics.json`) — see GitHub issue #19
+and `06-Roadmap.md` in the vault.
