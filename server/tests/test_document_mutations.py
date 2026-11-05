@@ -8,7 +8,7 @@ disk."""
 from unittest.mock import patch
 
 from tests.conftest import override_current_user
-from src.storage.database import get_document_record, upsert_document_record
+from src.storage.database import get_all_chunks_for_sparse, get_document_record, insert_chunk, upsert_document_record
 
 OWNER = "owner-user"
 OTHER = "other-user"
@@ -69,6 +69,40 @@ def test_rename_rejects_a_different_file_extension(client, app):
     override_current_user(app, OWNER)
 
     response = client.patch("/documents/doc-1", json={"filename": "renamed.docx"})
+    assert response.status_code == 400
+    assert get_document_record("doc-1")["filename"] == "private.pdf"
+
+
+def test_rename_updates_the_chunk_source_file_too(client, app):
+    """Each chunk carries its own copy of the filename for citations
+    (query_pipeline.py reads chunk["source_file"] directly) - a rename
+    that only touched the documents row would leave every already-
+    indexed chunk citing the old, now-nonexistent filename."""
+    _seed_private_document()
+    insert_chunk(
+        {
+            "chunk_text": "hello",
+            "metadata": {"doc_id": "doc-1", "source_file": "private.pdf", "page_number": 1, "chunk_index": 0},
+        },
+        embedding=[0.1, 0.2, 0.3],
+    )
+    override_current_user(app, OWNER)
+
+    with patch("api.services.document_service.rename_file"):
+        response = client.patch("/documents/doc-1", json={"filename": "renamed.pdf"})
+
+    assert response.status_code == 200
+    chunks = [c for c in get_all_chunks_for_sparse() if c["doc_id"] == "doc-1"]
+    assert chunks and all(c["source_file"] == "renamed.pdf" for c in chunks)
+
+
+def test_rename_rejects_a_path_only_filename(client, app):
+    """A value that sanitizes down to nothing (e.g. "/" or "..") must be
+    rejected with a clean 400, not passed through to rename_file()."""
+    _seed_private_document()
+    override_current_user(app, OWNER)
+
+    response = client.patch("/documents/doc-1", json={"filename": "/"})
     assert response.status_code == 400
     assert get_document_record("doc-1")["filename"] == "private.pdf"
 

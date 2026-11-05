@@ -121,6 +121,8 @@ class DocumentService:
         """
         record = get_owned_document_for_mutation(doc_id, user)
         new_filename = DocumentService._safe_filename(new_filename)
+        if not new_filename:
+            raise HTTPException(status_code=400, detail="Invalid filename.")
 
         old_ext = os.path.splitext(record["filename"])[1].lower()
         new_ext = os.path.splitext(new_filename)[1].lower()
@@ -134,7 +136,21 @@ class DocumentService:
             raise HTTPException(status_code=409, detail=f"'{new_filename}' is already in use by another document.")
 
         rename_file(record["filename"], new_filename)
-        rename_document(doc_id, new_filename)
+        try:
+            rename_document(doc_id, new_filename)
+        except Exception:
+            # Best-effort rollback so the stored file and the DB row don't
+            # end up disagreeing on the name - rename_file() already
+            # succeeded, so without this a failure here would otherwise
+            # leave get_source_path(old_filename) finding nothing.
+            try:
+                rename_file(new_filename, record["filename"])
+            except Exception:
+                pass
+            raise
+
+        invalidate_doc_id(doc_id)
+        invalidate_index_cache()
         return {"status": "renamed", "doc_id": doc_id, "filename": new_filename}
 
     @staticmethod
@@ -151,9 +167,16 @@ class DocumentService:
         record = get_owned_document_for_mutation(doc_id, user)
         delete_document_data(doc_id)
         delete_document_record(doc_id)
-        delete_file(record["filename"])
+        # Invalidated before delete_file() runs, not after: the DB rows
+        # are already permanently gone at this point regardless of
+        # whether the file removal below succeeds, so the in-memory
+        # retrieval index and response cache must stop serving this
+        # doc_id either way - a delete_file() failure (e.g. a Storage API
+        # error) shouldn't leave stale cache entries for data that no
+        # longer has any backing rows.
         invalidate_doc_id(doc_id)
         invalidate_index_cache()
+        delete_file(record["filename"])
         return {"status": "deleted"}
 
     @staticmethod
@@ -166,6 +189,22 @@ class DocumentService:
         changed" - that path is what a plain re-upload already covers.
         Same background-task handoff as upload() so the request doesn't
         block on embedding calls.
+
+        Known risk, not fixed here: prepare_ingest() deletes the
+        document's existing chunks/nodes/entities synchronously, before
+        finish_ingest()'s background re-embedding even starts (see
+        prepare_ingest()'s docstring) - this is the same window a plain
+        content-changed re-upload already has, but re-ingest newly
+        exposes it on a hash-unchanged document too, where the "before"
+        state was a short-circuited no-op with no risk at all. If the
+        background embedding then fails (rate-limit, API outage), the
+        document is left "failed" with zero chunks rather than its
+        previous working content. Properly closing this would mean
+        deferring the delete to finish_ingest, right before the new
+        chunks are inserted - which also requires moving knowledge_nodes
+        insertion (today inside prepare_ingest's synchronous parse phase)
+        to the same point, a bigger change to the shared ingestion
+        pipeline than this feature's scope. Tracked as #46.
         """
         record = get_owned_document_for_mutation(doc_id, user)
         file_path = get_source_path(record["filename"])

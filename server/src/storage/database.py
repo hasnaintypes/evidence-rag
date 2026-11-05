@@ -517,11 +517,21 @@ def rename_document(doc_id: str, new_filename: str) -> None:
     every chunk/node/entity/conversation reference keyed by it) is left
     untouched, so a rename can't orphan any existing data. Caller is
     responsible for renaming the underlying stored file to match (see
-    src/storage/files.py's rename_file()) before this is called."""
+    src/storage/files.py's rename_file()) before this is called.
+
+    Also updates document_chunks.source_file for this doc_id - each
+    chunk's row carries its own copy of the filename (set once at
+    ingestion, see ingestion/pipeline.py's _ingest_tree_aware()) rather
+    than joining back to `documents`, since query_pipeline.py and
+    judge.py read chunk["source_file"] directly for citations/faithfulness
+    checks. Without this, every already-indexed chunk would keep citing
+    the pre-rename filename - which GET /source/{filename} would then
+    404 on, since no document or stored file is named that anymore."""
     conn = get_db_connection()
     cursor = conn.cursor()
     ph = _ph(1)
     cursor.execute(f"UPDATE documents SET filename = {ph} WHERE doc_id = {ph}", (new_filename, doc_id))
+    cursor.execute(f"UPDATE document_chunks SET source_file = {ph} WHERE doc_id = {ph}", (new_filename, doc_id))
     conn.commit()
     conn.close()
 
