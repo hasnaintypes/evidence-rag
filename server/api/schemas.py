@@ -20,6 +20,10 @@ class AddConversationDocument(BaseModel):
     doc_id: str
 
 
+class DocumentRename(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+
+
 class ConversationOut(BaseModel):
     id: str
     doc_ids: list[str]

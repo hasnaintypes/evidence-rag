@@ -5,17 +5,24 @@ from typing import Any, Dict
 
 from fastapi import BackgroundTasks, HTTPException, UploadFile
 
-from api.authz import get_owned_document
+from api.authz import get_owned_document, get_owned_document_for_mutation
 from api.deps import CurrentUser
+from src.config import settings
 from src.ingestion.pipeline import prepare_ingest, finish_ingest, SUPPORTED_EXTENSIONS
+from src.response_cache import invalidate_doc_id
+from src.retrieval.hybrid import invalidate_index_cache
 from src.security import verify_source_token
 from src.storage.database import (
+    delete_document_data,
+    delete_document_record,
     document_filename_accessible,
+    filename_exists_elsewhere,
     filename_in_use_by_other,
     get_document_status,
     list_documents,
+    rename_document,
 )
-from src.storage.files import get_source_path, save_upload
+from src.storage.files import delete_file, get_source_path, rename_file, save_upload
 
 MAX_UPLOAD_SIZE_BYTES = 50 * 1024 * 1024  # matches the Supabase bucket's file size limit
 SSE_WATCH_INTERVAL_SECONDS = 1.0
@@ -98,6 +105,97 @@ class DocumentService:
         return {
             "status": "processing",
             "message": f"'{filename}' is being indexed…",
+            "doc_id": prep["doc_id"],
+            "analytics": {"chunk_count": len(prep["chunks_data"])},
+        }
+
+    @staticmethod
+    def rename(doc_id: str, new_filename: str, user: CurrentUser) -> Dict[str, Any]:
+        """
+        Updates the display/storage filename only - doc_id (and every
+        chunk/node/entity/conversation reference keyed by it) is left
+        untouched, so existing chat history and citations over this
+        document keep working after a rename. Restricted to the caller's
+        own uploads (get_owned_document_for_mutation 403s on a shared/
+        demo document) since it also moves the underlying stored file.
+        """
+        record = get_owned_document_for_mutation(doc_id, user)
+        new_filename = DocumentService._safe_filename(new_filename)
+
+        old_ext = os.path.splitext(record["filename"])[1].lower()
+        new_ext = os.path.splitext(new_filename)[1].lower()
+        if new_ext != old_ext:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Can't change a document's file type on rename (still '{old_ext}').",
+            )
+
+        if filename_exists_elsewhere(new_filename, exclude_doc_id=doc_id):
+            raise HTTPException(status_code=409, detail=f"'{new_filename}' is already in use by another document.")
+
+        rename_file(record["filename"], new_filename)
+        rename_document(doc_id, new_filename)
+        return {"status": "renamed", "doc_id": doc_id, "filename": new_filename}
+
+    @staticmethod
+    def delete(doc_id: str, user: CurrentUser) -> Dict[str, Any]:
+        """
+        Removes the document row, its chunks/nodes/entities/edges, its
+        stored file, and any response-cache entries scoped to it.
+        Restricted to the caller's own uploads, same as rename() above.
+        Conversations that already reference this doc_id are left as-is -
+        retrieval for a doc_id with no remaining chunks just yields
+        nothing for that document, the same as any other zero-chunk
+        scope, rather than erroring.
+        """
+        record = get_owned_document_for_mutation(doc_id, user)
+        delete_document_data(doc_id)
+        delete_document_record(doc_id)
+        delete_file(record["filename"])
+        invalidate_doc_id(doc_id)
+        invalidate_index_cache()
+        return {"status": "deleted"}
+
+    @staticmethod
+    def reingest(doc_id: str, user: CurrentUser, background_tasks: BackgroundTasks) -> Dict[str, Any]:
+        """
+        Re-runs the ingestion pipeline against the already-stored file,
+        bypassing prepare_ingest()'s hash-based "unchanged" short-circuit
+        (force=True) since the point of this action is "redo this
+        document's chunks/embeddings now", not "only if the bytes
+        changed" - that path is what a plain re-upload already covers.
+        Same background-task handoff as upload() so the request doesn't
+        block on embedding calls.
+        """
+        record = get_owned_document_for_mutation(doc_id, user)
+        file_path = get_source_path(record["filename"])
+        if not file_path:
+            raise HTTPException(status_code=404, detail="The stored file for this document is missing.")
+
+        try:
+            prep = prepare_ingest(file_path, record["filename"], user_id=user.id, force=True)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"File processing error: {str(e)}")
+        finally:
+            # get_source_path() downloads to a fresh temp file in supabase
+            # mode (see its docstring) - parsing/chunking above is the only
+            # thing that reads it, so it's safe to clean up right here,
+            # unlike GET /source/{filename}'s use of the same function,
+            # which still needs the path alive for FileResponse to stream.
+            # Local mode's file_path IS the permanent stored file - must
+            # not delete it.
+            if settings.storage_mode == "supabase":
+                os.remove(file_path)
+
+        if prep["status"] == "empty":
+            raise HTTPException(status_code=400, detail="The file content is empty or could not be chunked properly.")
+
+        background_tasks.add_task(finish_ingest, prep["doc_id"], prep["chunks_data"])
+        invalidate_index_cache()
+
+        return {
+            "status": "processing",
+            "message": f"'{record['filename']}' is being re-indexed…",
             "doc_id": prep["doc_id"],
             "analytics": {"chunk_count": len(prep["chunks_data"])},
         }
