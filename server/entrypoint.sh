@@ -8,9 +8,10 @@
 #   (root, since Docker auto-creates missing bind-mount sources as root),
 #   not from this image's build-time chown - so it has to be re-applied
 #   every container start, not just once in the Dockerfile.
-# - appuser's $HOME: --no-create-home left it absent, but
-#   src/retrieval/reranker.py's CrossEncoder lazily downloads and caches
-#   its model under $HOME/.cache on first use.
+# - appuser's $HOME: --no-create-home left it absent. Reranking no longer
+#   needs this (src/retrieval/reranker.py is a Gemini call now, not a
+#   locally-cached model - see #20), but other libraries can still default
+#   to writing cache files under $HOME, so it stays writable defensively.
 set -e
 
 mkdir -p /app/server/data "$HOME"
