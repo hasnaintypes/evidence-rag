@@ -28,10 +28,8 @@ import {
   uploadDocument,
 } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
-import { MAX_CONVERSATION_DOCS } from "@/lib/types";
+import { ACCEPTED_DOCUMENT_EXTENSIONS, MAX_CONVERSATION_DOCS } from "@/lib/types";
 import { Loader2, Paperclip } from "lucide-react";
-
-const ACCEPTED_EXTENSIONS = ".md,.pdf,.docx,.xlsx,.xls,.csv";
 
 type PendingAttachment = {
   localId: string;
@@ -227,7 +225,7 @@ export function ChatComposer() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept={ACCEPTED_EXTENSIONS}
+                accept={ACCEPTED_DOCUMENT_EXTENSIONS}
                 multiple
                 className="hidden"
                 onChange={handleFileSelected}

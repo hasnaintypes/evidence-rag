@@ -135,6 +135,28 @@ export async function getDocuments(): Promise<DocumentRecord[]> {
   return data.documents;
 }
 
+export async function renameDocument(docId: string, filename: string): Promise<void> {
+  await apiFetch(`/documents/${encodeURIComponent(docId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename }),
+  });
+}
+
+export async function deleteDocument(docId: string): Promise<void> {
+  await apiFetch(`/documents/${encodeURIComponent(docId)}`, { method: "DELETE" });
+}
+
+export async function reingestDocument(
+  docId: string,
+): Promise<{ docId: string; status: DocumentStatus["status"] }> {
+  const response = await apiFetch(`/documents/${encodeURIComponent(docId)}/reingest`, {
+    method: "POST",
+  });
+  const data = (await response.json()) as { status: string; doc_id: string };
+  return { docId: data.doc_id, status: data.status === "unchanged" ? "ready" : "processing" };
+}
+
 export async function getGraphData(docId?: string): Promise<GraphData> {
   const path = docId ? `/graph?doc_id=${encodeURIComponent(docId)}` : "/graph";
   const response = await apiFetch(path);

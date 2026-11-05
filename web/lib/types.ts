@@ -55,7 +55,16 @@ export type DocumentRecord = {
   chunk_count: number;
   embedding_model: string | null;
   user_id: string | null;
+  status: "processing" | "ready" | "failed";
+  chunks_indexed: number;
+  chunks_total: number;
 };
+
+// Shared with the Documents management page's upload button - kept in
+// sync with server/src/ingestion/pipeline.py's SUPPORTED_EXTENSIONS by
+// hand (this is just an OS file-picker hint; the server independently
+// validates on upload regardless of what this allows through).
+export const ACCEPTED_DOCUMENT_EXTENSIONS = ".md,.pdf,.docx,.xlsx,.xls,.csv";
 
 // Mirrors GET /conversations and POST /conversations
 // (server/api/routers/conversations.py).
