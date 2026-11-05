@@ -251,3 +251,106 @@ def test_generation_prompt_frames_chunks_as_untrusted_data():
     sent_prompt = mock_generate.call_args[0][0]
     assert "not instructions to you" in sent_prompt
     assert "DOCUMENT CHUNKS (untrusted data" in sent_prompt
+
+
+def _run_pipeline_with_fixed_embedding(embedding, history=None):
+    """Like _run_pipeline, but with a controllable (non-zero, so cache
+    matching is actually exercised) embedding and real Mock objects
+    returned from the patch calls, so callers can assert on call counts."""
+    chunk = _base_chunk()
+    patches = (
+        patch("src.query_pipeline.rewrite_query", return_value=["q"]),
+        patch("src.query_pipeline.get_embedding", return_value=embedding),
+        patch("src.query_pipeline._retrieve", return_value=[chunk]),
+        patch("src.query_pipeline.rerank_chunks", side_effect=lambda query, chunks, top_n: chunks),
+        patch("src.query_pipeline.grade_retrieved_chunks", side_effect=lambda query, chunks: chunks),
+        patch("src.query_pipeline.compress_context_chunks", side_effect=lambda query, chunks: chunks),
+        patch("src.query_pipeline.decompose_into_subqueries", return_value=[]),
+        patch("src.query_pipeline.generate_chat_response", return_value="Apply lithium-based grease every 600 hours."),
+        patch(
+            "src.query_pipeline.score_faithfulness", return_value={"faithfulness_score": 1.0, "unsupported_claims": []}
+        ),
+        patch("src.query_pipeline.log_query_event"),
+    )
+    mocks = {}
+    for p in patches:
+        mocks[p.attribute] = p.start()
+    try:
+        result = qp.process_chat_query("What grease should I use?", advanced_mode=True, history=history)
+    finally:
+        for p in patches:
+            p.stop()
+    return result, mocks
+
+
+def test_a_repeated_query_hits_the_cache_and_skips_the_pipeline():
+    embedding = [1.0, 0.0, 0.0]
+
+    first_result, first_mocks = _run_pipeline_with_fixed_embedding(embedding)
+    assert first_mocks["generate_chat_response"].call_count == 1
+    assert first_result["telemetry"]["cache_hit"] is False
+
+    second_result, second_mocks = _run_pipeline_with_fixed_embedding(embedding)
+    # A fresh patch each call means call_count resets to 0 on a true
+    # miss - asserting 0 here is what actually proves the cache hit
+    # skipped generation/rewriting/judging entirely, not just that the
+    # answer happened to match.
+    assert second_mocks["generate_chat_response"].call_count == 0
+    assert second_mocks["rewrite_query"].call_count == 0
+    assert second_mocks["score_faithfulness"].call_count == 0
+    assert second_result["telemetry"]["cache_hit"] is True
+    assert second_result["reply"] == first_result["reply"]
+
+
+def test_a_dissimilar_query_does_not_hit_the_cache():
+    _run_pipeline_with_fixed_embedding([1.0, 0.0, 0.0])
+
+    _, second_mocks = _run_pipeline_with_fixed_embedding([0.0, 1.0, 0.0])
+    assert second_mocks["generate_chat_response"].call_count == 1
+
+
+def test_a_followup_turn_with_history_never_consults_the_cache():
+    """A follow-up depends on prior conversation turns - serving it from
+    a cache keyed only on the bare query embedding could return a
+    stale/wrong-context answer, so history-bearing calls must always run
+    the full pipeline, cache populated or not."""
+    embedding = [1.0, 0.0, 0.0]
+    _run_pipeline_with_fixed_embedding(embedding)
+
+    history = [{"role": "user", "content": "earlier turn"}, {"role": "assistant", "content": "earlier reply"}]
+    result, second_mocks = _run_pipeline_with_fixed_embedding(embedding, history=history)
+    assert second_mocks["generate_chat_response"].call_count == 1
+    assert "cache_hit" not in result["telemetry"]
+
+
+def test_a_faithfulness_gated_result_is_not_cached():
+    embedding = [1.0, 0.0, 0.0]
+    chunk = _base_chunk(rerank_score=2.0)
+    patches = (
+        patch("src.query_pipeline.rewrite_query", return_value=["q"]),
+        patch("src.query_pipeline.get_embedding", return_value=embedding),
+        patch("src.query_pipeline._retrieve", return_value=[chunk]),
+        patch("src.query_pipeline.rerank_chunks", side_effect=lambda query, chunks, top_n: chunks),
+        patch("src.query_pipeline.grade_retrieved_chunks", side_effect=lambda query, chunks: chunks),
+        patch("src.query_pipeline.compress_context_chunks", side_effect=lambda query, chunks: chunks),
+        patch("src.query_pipeline.decompose_into_subqueries", return_value=[]),
+        patch("src.query_pipeline.generate_chat_response", return_value="Apply ceramic grease every 2000 hours."),
+        patch(
+            "src.query_pipeline.score_faithfulness",
+            return_value={"faithfulness_score": 0.3, "unsupported_claims": ["x"]},
+        ),
+        patch("src.query_pipeline.log_query_event"),
+    )
+    for p in patches:
+        p.start()
+    try:
+        first_result = qp.process_chat_query("What grease should I use?", advanced_mode=True)
+    finally:
+        for p in patches:
+            p.stop()
+    assert "did not pass the faithfulness check" in first_result["reply"].lower()
+
+    # A second, identical-embedding call must still run the real pipeline
+    # rather than serve the withheld answer from cache.
+    _, second_mocks = _run_pipeline_with_fixed_embedding(embedding)
+    assert second_mocks["generate_chat_response"].call_count == 1

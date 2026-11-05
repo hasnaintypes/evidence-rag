@@ -16,6 +16,7 @@ import pytest  # noqa: E402
 
 from src.config import settings  # noqa: E402
 import src.storage.database as db  # noqa: E402
+import src.response_cache as response_cache  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -31,6 +32,20 @@ def isolated_sqlite_db(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "test.db"))
     db.init_db()
     yield db
+
+
+@pytest.fixture(autouse=True)
+def isolated_response_cache():
+    """
+    response_cache.py's cache is a module-level dict, shared process-wide
+    by design (same pattern as hybrid.py's in-memory index) - but that
+    means it would otherwise leak between tests, letting an earlier
+    test's cached pipeline result silently answer a later, unrelated
+    test's query. Cleared before and after every test.
+    """
+    response_cache.clear_cache()
+    yield
+    response_cache.clear_cache()
 
 
 @pytest.fixture

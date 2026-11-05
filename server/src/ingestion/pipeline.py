@@ -18,6 +18,7 @@ from src.ingestion.parsers import get_parser
 from src.ingestion.parsers.base import NodeType
 from src.ingestion.chunking import chunk_document, chunk_nodes
 from src.llm import get_embedding, EMBEDDING_MODEL_NAME
+from src.response_cache import invalidate_doc_id
 from src.graph import build_document_graph
 
 # Each chunk's embedding is one blocking Gemini API call - sequential was
@@ -136,8 +137,13 @@ def prepare_ingest(file_path: str, filename: str, user_id: str = None) -> dict:
     if stored_hash is not None:
         # File existed before but content changed - clear stale nodes/chunks
         # first, otherwise old and new versions would coexist and retrieval
-        # would return duplicate/contradictory chunks.
+        # would return duplicate/contradictory chunks. Also drop any cached
+        # response_cache.py entries scoped to this doc_id - otherwise a
+        # repeat/near-duplicate question could keep serving the pre-edit
+        # cached answer for up to RESPONSE_CACHE_TTL_SECONDS after the
+        # content underneath it has already changed.
         delete_document_data(doc_id)
+        invalidate_doc_id(doc_id)
 
     parser = get_parser(file_path)
     if hasattr(parser, "parse_to_tree"):

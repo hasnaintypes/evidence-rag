@@ -98,6 +98,26 @@ class Settings(BaseSettings):
     # constant once that's run.
     faithfulness_gate_threshold: float = 0.7
 
+    # --- Semantic response cache (src/response_cache.py) ----------------
+    # Only consulted/populated for a conversation's first turn (no prior
+    # history) and only for a fully-successful, non-gated result - see
+    # response_cache.py's module docstring for why. In-memory/per-process,
+    # not shared across workers.
+    response_cache_enabled: bool = True
+    # Cosine-similarity cutoff against a cached query's embedding for a
+    # new query to count as "the same question" - 0.97 is deliberately
+    # conservative (near-exact rewordings only), not tuned against a
+    # labeled near-duplicate dataset. Err toward missing a cache hit
+    # (falls through to a real pipeline run - same cost as today) rather
+    # than serving an answer to a question that only superficially
+    # resembles the cached one.
+    response_cache_similarity_threshold: float = 0.97
+    response_cache_ttl_seconds: int = 3600
+    # Cap per (doc_ids, advanced_mode) scope, not a global cap - bounds
+    # memory per scope regardless of how many distinct document sets
+    # accumulate scopes over the process's lifetime.
+    response_cache_max_entries_per_scope: int = 200
+
     # --- query_log retention (see scripts/purge_query_log.py) -----------
     # query_log stores raw query text indefinitely with no automatic
     # expiry today. Defaulted to 30 days as a reasonable starting policy -

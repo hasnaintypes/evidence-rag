@@ -121,6 +121,14 @@ verbatim into the generation prompt — `src/guardrails.py`'s `scan_for_injectio
 instruction-hierarchy framing telling the model to treat chunk content as data, never as
 instructions. Treat both as partial, iterative defenses, not a one-shot fix — see issue #13.
 
+`src/response_cache.py` caches a fully-successful pipeline result (never a generation failure or a
+gated/abstained one) keyed by `(doc_ids, advanced_mode)` and matched by cosine similarity against the
+query embedding, so a near-duplicate question can skip query rewriting, generation, and faithfulness
+judging entirely. Only consulted/populated on a conversation's first turn (no prior `history`) — a
+follow-up depends on prior turns, so caching it under the bare query embedding risks serving a
+stale/wrong-context answer. In-memory/per-process, same as `retrieval/hybrid.py`'s index cache — not
+shared across workers or persisted across a restart.
+
 ### Storage is swappable, pipeline logic is not
 
 `STORAGE_MODE` (`local` vs `supabase`) only changes `server/src/storage/{database,files}.py` — SQLite
