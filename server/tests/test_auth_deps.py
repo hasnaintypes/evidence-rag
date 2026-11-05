@@ -1,7 +1,8 @@
 """Unit tests for api/deps.py - JWT verification (missing/expired/invalid/
-happy path) and the require_document_access ownership helper. The JWKS
-client itself (a real network call to Supabase) is mocked - these tests
-cover deps.py's own branching logic, not Supabase's key rotation."""
+happy path). The JWKS client itself (a real network call to Supabase) is
+mocked - these tests cover deps.py's own branching logic, not Supabase's
+key rotation. Ownership-check helpers (api/authz.py) are covered
+separately in tests/test_authz.py."""
 
 from unittest.mock import MagicMock, patch
 
@@ -9,7 +10,7 @@ import jwt
 import pytest
 from fastapi import HTTPException
 
-from api.deps import get_current_user, require_document_access, CurrentUser
+from api.deps import get_current_user
 
 
 def _mock_jwks_client(decoded_payload=None, decode_side_effect=None):
@@ -90,33 +91,3 @@ def test_valid_token_returns_the_current_user():
             assert user.email == "a@b.com"
     finally:
         decode_patch.stop()
-
-
-def test_require_document_access_404s_on_unknown_document():
-    with patch("api.deps.get_document_record", return_value=None):
-        with pytest.raises(HTTPException) as exc_info:
-            require_document_access("missing-doc", CurrentUser(id="user-1", email=None))
-        assert exc_info.value.status_code == 404
-
-
-def test_require_document_access_404s_on_another_users_document():
-    with patch("api.deps.get_document_record", return_value={"user_id": "owner", "filename": "a.pdf"}):
-        with pytest.raises(HTTPException) as exc_info:
-            require_document_access("doc-1", CurrentUser(id="someone-else", email=None))
-        assert exc_info.value.status_code == 404
-
-
-def test_require_document_access_allows_the_owner():
-    record = {"user_id": "owner", "filename": "a.pdf"}
-    with patch("api.deps.get_document_record", return_value=record):
-        result = require_document_access("doc-1", CurrentUser(id="owner", email=None))
-        assert result == record
-
-
-def test_require_document_access_allows_any_user_on_a_shared_document():
-    """user_id=None on the document record means shared/demo (e.g.
-    docs/sample_docs) - every signed-in user can access it."""
-    record = {"user_id": None, "filename": "shared.pdf"}
-    with patch("api.deps.get_document_record", return_value=record):
-        result = require_document_access("doc-1", CurrentUser(id="anyone", email=None))
-        assert result == record
