@@ -43,7 +43,13 @@ def compress_context_chunks(query: str, chunks: List[Dict[str, Any]]) -> List[Di
             compressed_chunks.append(chunk)
             continue
 
-        if chunk.get("rerank_score", 0.0) > 1.5:
+        # Very-high-confidence chunks skip sentence-window trimming and
+        # keep their full chunk_text. rerank_score is a 0.0-1.0 Gemini-
+        # scored relevance value (see retrieval/reranker.py's docstring) -
+        # this threshold used to be 1.5 against the old cross-encoder's
+        # raw logit output; recalibrated here too (missed in the initial
+        # pass - caught by code review).
+        if chunk.get("rerank_score", 0.0) > 0.9:
             _attach_parent_context(chunk)
             compressed_chunks.append(chunk)
             continue
