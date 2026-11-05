@@ -37,6 +37,22 @@ def get_owned_document(doc_id: str, user: CurrentUser) -> Dict[str, Any]:
     return record
 
 
+def get_owned_document_for_mutation(doc_id: str, user: CurrentUser) -> Dict[str, Any]:
+    """
+    Stricter than get_owned_document() above: a shared/demo document
+    (user_id IS NULL) is readable by every signed-in user but not safe for
+    any one of them to rename/delete/re-ingest, since it has no single
+    owner to attribute the mutation to and every other user still relies
+    on it. Raises 404 for the same not-found-or-someone-else's cases as
+    get_owned_document(), and 403 (not 404 - the resource's existence
+    and shared status aren't secrets) when it exists but is shared.
+    """
+    record = get_owned_document(doc_id, user)
+    if record["user_id"] is None:
+        raise HTTPException(status_code=403, detail="Shared documents can't be modified.")
+    return record
+
+
 def get_owned_conversation(conversation_id: str, user: CurrentUser) -> Dict[str, Any]:
     """Raises 404 (not 403) for a conversation that exists but belongs to
     someone else - doesn't confirm to a caller that a given ID exists at all."""

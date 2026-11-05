@@ -113,7 +113,7 @@ def _ingest_legacy(parser, file_path: str, filename: str, doc_id: str) -> list:
     return chunks_data
 
 
-def prepare_ingest(file_path: str, filename: str, user_id: str = None) -> dict:
+def prepare_ingest(file_path: str, filename: str, user_id: str = None, force: bool = False) -> dict:
     """
     Fast, synchronous phase: hash-based dedup check, parsing, chunking.
     Safe to run inline in an API request (no network calls - parsing is
@@ -126,12 +126,19 @@ def prepare_ingest(file_path: str, filename: str, user_id: str = None) -> dict:
     caller to hand to finish_ingest() - inline for the CLI script, or via
     FastAPI's BackgroundTasks for the API so the slow part (one Gemini
     call per chunk) doesn't hold the HTTP request open.
+
+    force=True skips the "unchanged" short-circuit even when the file's
+    hash matches what's already indexed - used by
+    DocumentService.reingest() for an explicit "redo this document"
+    action (e.g. to pick up a chunking/parsing fix with no content
+    change), where "nothing to do" isn't the expected outcome of
+    clicking the button.
     """
     doc_id = make_doc_id(filename, user_id=user_id)
     current_hash = file_hash(file_path)
     stored_hash = get_document_hash(doc_id)
 
-    if stored_hash == current_hash:
+    if stored_hash == current_hash and not force:
         return {"status": "unchanged", "chunk_count": 0, "doc_id": doc_id}
 
     if stored_hash is not None:

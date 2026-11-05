@@ -2,6 +2,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
 
 from api.deps import get_current_user, get_rate_limited_upload_user, CurrentUser
+from api.schemas import DocumentRename
 from api.services.document_service import DocumentService
 
 router = APIRouter()
@@ -19,6 +20,23 @@ def upload_file_endpoint(
     user: CurrentUser = Depends(get_rate_limited_upload_user),
 ):
     return DocumentService.upload(file, user, background_tasks)
+
+
+@router.patch("/documents/{doc_id}")
+def rename_document_endpoint(doc_id: str, body: DocumentRename, user: CurrentUser = Depends(get_current_user)):
+    return DocumentService.rename(doc_id, body.filename, user)
+
+
+@router.delete("/documents/{doc_id}")
+def delete_document_endpoint(doc_id: str, user: CurrentUser = Depends(get_current_user)):
+    return DocumentService.delete(doc_id, user)
+
+
+@router.post("/documents/{doc_id}/reingest")
+def reingest_document_endpoint(
+    doc_id: str, background_tasks: BackgroundTasks, user: CurrentUser = Depends(get_rate_limited_upload_user)
+):
+    return DocumentService.reingest(doc_id, user, background_tasks)
 
 
 @router.get("/documents/{doc_id}/status")

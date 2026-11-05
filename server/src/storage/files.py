@@ -81,3 +81,34 @@ def get_source_path(filename: str) -> Optional[str]:
 
     file_path = os.path.join(SAMPLE_DOCS_DIR, filename)
     return file_path if os.path.exists(file_path) else None
+
+
+def delete_file(filename: str) -> None:
+    """Removes the stored file backing `filename`. Silently no-ops if it's
+    already gone (local mode) or the bucket call reports missing (Supabase
+    mode) - called from DocumentService.delete() after the DB rows are
+    already gone, so a half-deleted document shouldn't leave the route
+    erroring over a file that's the actual thing being removed."""
+    if settings.storage_mode == "supabase":
+        client = _supabase_client()
+        client.storage.from_(settings.supabase_storage_bucket).remove([filename])
+        return
+
+    file_path = os.path.join(SAMPLE_DOCS_DIR, filename)
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+
+def rename_file(old_filename: str, new_filename: str) -> None:
+    """Moves the stored file from old_filename to new_filename, keeping
+    the same bytes - called from DocumentService.rename() alongside
+    database.py's rename_document() so the DB row's filename and the
+    actual stored object stay in sync."""
+    if settings.storage_mode == "supabase":
+        client = _supabase_client()
+        client.storage.from_(settings.supabase_storage_bucket).move(old_filename, new_filename)
+        return
+
+    old_path = os.path.join(SAMPLE_DOCS_DIR, old_filename)
+    new_path = os.path.join(SAMPLE_DOCS_DIR, new_filename)
+    os.rename(old_path, new_path)

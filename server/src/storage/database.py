@@ -491,6 +491,64 @@ def filename_in_use_by_other(filename: str, user_id: str) -> bool:
     return row is not None
 
 
+def filename_exists_elsewhere(filename: str, exclude_doc_id: str) -> bool:
+    """
+    True if `filename` already belongs to any document other than
+    `exclude_doc_id` - regardless of owner, since storage (src/storage/files.py)
+    keys bytes purely by filename in one flat namespace (SAMPLE_DOCS_DIR
+    locally, one Supabase Storage bucket otherwise). Checked before a
+    rename is accepted (DocumentService.rename()) so renaming doesn't
+    silently overwrite another document's stored file, including one
+    already owned by the same caller.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT 1 FROM documents WHERE filename = {_ph(1)} AND doc_id != {_ph(1)} LIMIT 1",
+        (filename, exclude_doc_id),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
+
+
+def rename_document(doc_id: str, new_filename: str) -> None:
+    """Updates only the display/storage filename - doc_id (and therefore
+    every chunk/node/entity/conversation reference keyed by it) is left
+    untouched, so a rename can't orphan any existing data. Caller is
+    responsible for renaming the underlying stored file to match (see
+    src/storage/files.py's rename_file()) before this is called.
+
+    Also updates document_chunks.source_file for this doc_id - each
+    chunk's row carries its own copy of the filename (set once at
+    ingestion, see ingestion/pipeline.py's _ingest_tree_aware()) rather
+    than joining back to `documents`, since query_pipeline.py and
+    judge.py read chunk["source_file"] directly for citations/faithfulness
+    checks. Without this, every already-indexed chunk would keep citing
+    the pre-rename filename - which GET /source/{filename} would then
+    404 on, since no document or stored file is named that anymore."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = _ph(1)
+    cursor.execute(f"UPDATE documents SET filename = {ph} WHERE doc_id = {ph}", (new_filename, doc_id))
+    cursor.execute(f"UPDATE document_chunks SET source_file = {ph} WHERE doc_id = {ph}", (new_filename, doc_id))
+    conn.commit()
+    conn.close()
+
+
+def delete_document_record(doc_id: str) -> None:
+    """Deletes the `documents` row itself - delete_document_data() above
+    only clears the dependent knowledge_nodes/document_chunks/entities/
+    entity_edges rows, not the document row, since it's also reused by
+    prepare_ingest() for a re-ingest where the row should survive."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    ph = _ph(1)
+    cursor.execute(f"DELETE FROM documents WHERE doc_id = {ph}", (doc_id,))
+    conn.commit()
+    conn.close()
+
+
 def document_filename_accessible(filename: str, user_id: str) -> bool:
     """True if `filename` belongs to a shared/demo document (user_id IS
     NULL) or to one owned by `user_id`. Used by GET /source/{filename},
