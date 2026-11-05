@@ -799,6 +799,71 @@ def get_all_chunks_for_sparse() -> List[Dict[str, Any]]:
     return chunks
 
 
+def dense_ann_search(
+    query_embedding: List[float], top_k: int, doc_ids: Optional[List[str]] = None
+) -> List[Dict[str, Any]]:
+    """
+    Supabase-mode-only approximate-nearest-neighbor search: asks Postgres
+    for the top_k chunks closest to query_embedding by cosine distance,
+    via pgvector's `<=>` operator against an expression cast to
+    `halfvec(3072)` - matching idx_chunks_embedding
+    (scripts/supabase_schema.sql), the HNSW index this exists to use.
+
+    The cast is not cosmetic: pgvector's HNSW index has a hard 2000-
+    dimension cap for the plain `vector` type, and gemini-embedding-001
+    (EMBEDDING_DIM below, see src/llm.py) produces 3072-dim vectors - an
+    HNSW index directly on `embedding` would fail to create at all
+    ("column cannot have more than 2000 dimensions for hnsw index",
+    confirmed against a real pgvector 0.8 instance while building this).
+    `halfvec` (half-precision) raises that cap to 4000, so the index is
+    built on `(embedding::halfvec(3072))` instead - every query against
+    it, including this one, must apply the identical cast on both sides
+    of `<=>` or the planner has no matching expression to use the index
+    for, and silently falls back to a full sequential scan + sort.
+
+    doc_ids, when given, is filtered in SQL (WHERE doc_id = ANY(...))
+    rather than in Python after the fact - the planner can push this
+    filter ahead of or alongside the ANN search instead of the previous
+    retrieval/hybrid.py approach of always ranking the entire corpus and
+    discarding out-of-scope hits afterward (see #27).
+
+    Only meaningful for storage_mode="supabase" - local/SQLite mode has
+    no pgvector extension or ANN index, and keeps the existing in-memory
+    cosine-similarity path in retrieval/hybrid.py instead of calling this.
+    """
+    if settings.storage_mode != "supabase":
+        raise RuntimeError("dense_ann_search() requires storage_mode='supabase' (pgvector).")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    # pgvector accepts a bracketed literal ("[0.1,0.2,...]") cast to
+    # ::halfvec(3072) - same literal format insert_chunk()/
+    # insert_chunks_batch() use when writing embeddings (as ::vector;
+    # the storage column itself stays full-precision `vector`, only this
+    # query-side expression is cast down to match the index).
+    embedding_literal = "[" + ",".join(str(float(x)) for x in query_embedding) + "]"
+
+    base_select = """
+        SELECT id, doc_id, source_file, page_number, chunk_index, chunk_text,
+               node_type, heading_path, node_ids, parent_id, bbox,
+               embedding::halfvec(3072) <=> %s::halfvec(3072) AS distance
+        FROM document_chunks
+    """
+    if doc_ids:
+        cursor.execute(
+            base_select + " WHERE doc_id = ANY(%s) ORDER BY embedding::halfvec(3072) <=> %s::halfvec(3072) LIMIT %s",
+            (embedding_literal, list(doc_ids), embedding_literal, top_k),
+        )
+    else:
+        cursor.execute(
+            base_select + " ORDER BY embedding <=> %s::vector LIMIT %s",
+            (embedding_literal, embedding_literal, top_k),
+        )
+    rows = cursor.fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 # --------------------------------------------------------------------------- #
 # Entity graph (entities + co-occurrence edges)
 # --------------------------------------------------------------------------- #
