@@ -9,7 +9,7 @@ interface NumbersThatSpeakProps {
 
 /**
  * "Numbers that speak" - a floating card showing retrieval Precision@5,
- * pulled from the real eval numbers in docs/eval_report.md (advanced
+ * pulled from the real eval numbers in docs/eval/eval_report.md (advanced
  * pipeline vs. naive dense-retrieval baseline).
  */
 const NumbersThatSpeak: React.FC<NumbersThatSpeakProps> = ({
