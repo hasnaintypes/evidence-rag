@@ -245,7 +245,7 @@ def process_chat_query(
     sources = _build_sources(final_context_chunks, user_id)
 
     # --- PHASE 5.5: Retrieval-confidence abstention gate ---
-    # advanced_mode only - naive mode never runs the cross-encoder, so
+    # advanced_mode only - naive mode never runs reranking, so
     # every chunk defaults to rerank_score 0.0 there and this check would
     # either never fire or always fire depending on the threshold sign,
     # neither of which reflects actual retrieval confidence.

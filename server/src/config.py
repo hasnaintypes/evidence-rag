@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     retrieval_confidence_threshold: float = 0.5
 
     # --- Faithfulness hard gate (both modes - the judge call in
-    # evaluation/judge.py doesn't depend on the cross-encoder, unlike the
+    # evaluation/judge.py doesn't depend on reranking, unlike the
     # retrieval-confidence gate above) ---
     # Below this score, process_chat_query() replaces the generated answer
     # with an explicit "did not pass the faithfulness check" flag instead

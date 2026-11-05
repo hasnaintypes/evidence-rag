@@ -21,7 +21,7 @@ def grade_retrieved_chunks(query: str, chunks: List[Dict[str, Any]]) -> List[Dic
     """
     Grades retrieved chunks: enforces semantic uniqueness using Jaccard
     similarity to prevent redundant context, and prunes chunks that pass
-    neither the cross-encoder relevance bar nor a basic keyword-hit check.
+    neither the rerank_score relevance bar nor a basic keyword-hit check.
     """
     valid_chunks = []
     seen_texts = set()
@@ -56,7 +56,7 @@ def grade_retrieved_chunks(query: str, chunks: List[Dict[str, Any]]) -> List[Dic
         hit_count = sum(1 for word in query_words if word in text_normalized)
         hit_ratio = hit_count / len(query_words) if query_words else 1.0
 
-        # Keep the chunk if the cross-encoder scored it as relevant OR it
+        # Keep the chunk if the reranker scored it as relevant OR it
         # has meaningful keyword overlap with the query
         if chunk.get("rerank_score", 0.0) > RERANK_SCORE_THRESHOLD or hit_ratio >= 0.2:
             valid_chunks.append(chunk)
@@ -68,11 +68,11 @@ def grade_retrieved_chunks(query: str, chunks: List[Dict[str, Any]]) -> List[Dic
 def meets_confidence_threshold(chunks: List[Dict[str, Any]], threshold: float) -> bool:
     """
     Final abstention gate: returns whether at least one of the given
-    chunks' cross-encoder rerank_score clears `threshold`.
+    chunks' rerank_score clears `threshold`.
 
     A chunk can pass grade_retrieved_chunks() above via the keyword-hit
-    fallback alone (hit_ratio >= 0.2) even with a poor/negative
-    rerank_score - useful for not over-pruning candidates, but not a
+    fallback alone (hit_ratio >= 0.2) even with a low rerank_score -
+    useful for not over-pruning candidates, but not a
     strong enough signal to synthesize an answer from. Called by
     query_pipeline.py after retrieval/rerank/grade/the follow-up hop: if
     even the best chunk found doesn't clear this bar, the pipeline should
