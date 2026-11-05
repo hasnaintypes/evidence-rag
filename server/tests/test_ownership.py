@@ -183,7 +183,7 @@ def test_source_route_rejects_a_missing_token(client):
 def test_source_route_serves_the_file_for_the_owner(client):
     _seed_private_document(filename="private.pdf")
     token = generate_source_token("private.pdf", OWNER)
-    with patch("api.routers.documents.get_source_path", return_value=None):
+    with patch("api.services.document_service.get_source_path", return_value=None):
         # Ownership passes; the 404 here is "file not on disk", not an
         # authz failure - confirms the token/ownership check let it
         # through to the next stage rather than blocking it.
