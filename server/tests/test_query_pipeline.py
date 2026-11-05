@@ -5,7 +5,10 @@ Retrieval/generation/judge calls are mocked throughout; these tests
 exercise query_pipeline.py's own branching logic, not Gemini or the
 cross-encoder."""
 
+import logging
 from unittest.mock import patch
+
+import pytest
 
 import src.query_pipeline as qp
 from src.config import settings
@@ -58,6 +61,38 @@ def _run_pipeline(
         patch("src.query_pipeline.log_query_event"),
     ):
         return qp.process_chat_query("What grease should I use?", advanced_mode=advanced_mode)
+
+
+def test_telemetry_carries_a_request_id_for_log_correlation():
+    """request_id ties this run's telemetry/query_log row back to the
+    stage-level log lines src/observability.py emitted for it - see #16."""
+    result = _run_pipeline(retrieve_return=[_base_chunk()])
+    assert result["telemetry"]["request_id"]
+
+
+def test_a_stage_failure_is_logged_distinctly_before_propagating(caplog):
+    """A raised exception inside a stage (here: generation) must still
+    propagate (callers like api/routers/conversations.py catch it
+    broadly), but observability.py's traced_stage() should have already
+    logged which stage failed, under this call's request_id - that's the
+    visibility the blanket except alone doesn't give."""
+    with caplog.at_level(logging.INFO, logger="evidence_rag.pipeline"):
+        with (
+            patch("src.query_pipeline.rewrite_query", return_value=["q"]),
+            patch("src.query_pipeline.get_embedding", return_value=[0.0] * 8),
+            patch("src.query_pipeline._retrieve", return_value=[_base_chunk()]),
+            patch("src.query_pipeline.rerank_chunks", side_effect=lambda query, chunks, top_n: chunks),
+            patch("src.query_pipeline.grade_retrieved_chunks", side_effect=lambda query, chunks: chunks),
+            patch("src.query_pipeline.compress_context_chunks", side_effect=lambda query, chunks: chunks),
+            patch("src.query_pipeline.decompose_into_subqueries", return_value=[]),
+            patch("src.query_pipeline.generate_chat_response", side_effect=RuntimeError("gemini is down")),
+        ):
+            with pytest.raises(RuntimeError):
+                qp.process_chat_query("What grease should I use?", advanced_mode=True)
+
+    error_records = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert error_records
+    assert "stage=generation" in error_records[0].getMessage()
 
 
 def test_empty_retrieval_returns_an_honest_no_results_reply():
