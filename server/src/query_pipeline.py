@@ -1,4 +1,3 @@
-import time
 from src.config import settings
 from src.llm import get_embedding, generate_chat_response
 from src.retrieval.query_rewriter import rewrite_query, decompose_into_subqueries
@@ -7,6 +6,7 @@ from src.retrieval.reranker import rerank_chunks
 from src.retrieval.grader import grade_retrieved_chunks, meets_confidence_threshold
 from src.retrieval.compression import compress_context_chunks
 from src.evaluation.judge import score_faithfulness
+from src.observability import new_request_id, traced_stage
 from src.telemetry import log_query_event
 from src.security import generate_source_token
 from src.guardrails import scan_for_injection_patterns
@@ -62,25 +62,24 @@ def process_chat_query(
     working source_token, but the pipeline still runs without it (token
     omitted) so this isn't a breaking change for any other caller.
     """
-    telemetry = {}
+    request_id = new_request_id()
+    telemetry = {"request_id": request_id}
 
     # --- PHASE 1: Embedding ---
     # Computed before query expansion (reversed from the two phases'
     # natural numbering) specifically so the semantic cache lookup below
     # can run before paying for query rewriting's LLM call too, not just
     # generation/judging - the whole point of checking early.
-    start_time = time.perf_counter()
-    query_embedding = get_embedding(query)
-    telemetry["embedding_time_ms"] = round((time.perf_counter() - start_time) * 1000, 1)
+    with traced_stage(request_id, "embedding", telemetry, user_id):
+        query_embedding = get_embedding(query)
 
     # --- PHASE 1.5: Semantic response cache ---
     # Only consulted on a conversation's first turn (no prior history) -
     # see response_cache.py's module docstring for why a follow-up turn
     # is never served from cache.
     if not history:
-        start_time = time.perf_counter()
-        cached = get_cached_response(doc_ids, advanced_mode, query_embedding)
-        telemetry["cache_lookup_time_ms"] = round((time.perf_counter() - start_time) * 1000, 1)
+        with traced_stage(request_id, "cache_lookup", telemetry, user_id):
+            cached = get_cached_response(doc_ids, advanced_mode, query_embedding)
         if cached is not None:
             # No log_query_event() call here, deliberately - query_log
             # records outcomes of actual pipeline runs (retrieval/
@@ -94,23 +93,23 @@ def process_chat_query(
         telemetry["cache_hit"] = False
 
     # --- PHASE 2: Query expansion ---
-    start_time = time.perf_counter()
-    expanded_queries = rewrite_query(query) if advanced_mode else [query]
-    telemetry["query_expansion_time_ms"] = round((time.perf_counter() - start_time) * 1000, 1)
+    with traced_stage(request_id, "query_expansion", telemetry, user_id):
+        expanded_queries = rewrite_query(query) if advanced_mode else [query]
 
     # --- PHASE 3: Multi-track hybrid retrieval ---
-    start_time = time.perf_counter()
     all_candidate_chunks = []
     seen_chunk_ids = set()
 
-    search_width = 8 if advanced_mode else 4
-    for q_track in expanded_queries:
-        retrieved = _retrieve(query_text=q_track, query_embedding=query_embedding, top_k=search_width, doc_ids=doc_ids)
-        for chunk in retrieved:
-            if chunk["id"] not in seen_chunk_ids:
-                seen_chunk_ids.add(chunk["id"])
-                all_candidate_chunks.append(chunk)
-    telemetry["retrieval_time_ms"] = round((time.perf_counter() - start_time) * 1000, 1)
+    with traced_stage(request_id, "retrieval", telemetry, user_id):
+        search_width = 8 if advanced_mode else 4
+        for q_track in expanded_queries:
+            retrieved = _retrieve(
+                query_text=q_track, query_embedding=query_embedding, top_k=search_width, doc_ids=doc_ids
+            )
+            for chunk in retrieved:
+                if chunk["id"] not in seen_chunk_ids:
+                    seen_chunk_ids.add(chunk["id"])
+                    all_candidate_chunks.append(chunk)
 
     if not all_candidate_chunks:
         return _empty_result(
@@ -126,27 +125,25 @@ def process_chat_query(
         telemetry["rerank_time_ms"] = 0.0
         telemetry["culling_and_compression_time_ms"] = 0.0
     else:
-        start_time = time.perf_counter()
-        reranked = rerank_chunks(query=query, chunks=all_candidate_chunks, top_n=6)
-        telemetry["rerank_time_ms"] = round((time.perf_counter() - start_time) * 1000, 1)
+        with traced_stage(request_id, "rerank", telemetry, user_id):
+            reranked = rerank_chunks(query=query, chunks=all_candidate_chunks, top_n=6)
 
-        start_time = time.perf_counter()
-        graded = grade_retrieved_chunks(query=query, chunks=reranked)
-        compressed = compress_context_chunks(query=query, chunks=graded)
+        with traced_stage(request_id, "culling_and_compression", telemetry, user_id):
+            graded = grade_retrieved_chunks(query=query, chunks=reranked)
+            compressed = compress_context_chunks(query=query, chunks=graded)
 
-        top_score = compressed[0].get("rerank_score", 0.0) if compressed else 0.0
+            top_score = compressed[0].get("rerank_score", 0.0) if compressed else 0.0
 
-        # Adaptive chunk budget: fewer, higher-confidence chunks when the
-        # top hit is very strong; more chunks when the signal is weak/spread
-        if top_score > 1.2:
-            chunk_limit = 2
-        elif top_score > 0.65:
-            chunk_limit = 4
-        else:
-            chunk_limit = 5
+            # Adaptive chunk budget: fewer, higher-confidence chunks when the
+            # top hit is very strong; more chunks when the signal is weak/spread
+            if top_score > 1.2:
+                chunk_limit = 2
+            elif top_score > 0.65:
+                chunk_limit = 4
+            else:
+                chunk_limit = 5
 
-        final_context_chunks = compressed[:chunk_limit]
-        telemetry["culling_and_compression_time_ms"] = round((time.perf_counter() - start_time) * 1000, 1)
+            final_context_chunks = compressed[:chunk_limit]
 
     if not final_context_chunks:
         return _empty_result(
@@ -162,34 +159,33 @@ def process_chat_query(
     # above), so simple/well-matched questions never pay the extra cost.
     # Only sub-query generation itself calls the LLM, and only when triggered.
     hop_count = 1
-    start_time = time.perf_counter()
-    if advanced_mode and top_score <= 0.65 and len(final_context_chunks) > 0:
-        subqueries = decompose_into_subqueries(query)
-        if subqueries:
-            hop_count = 2
-            followup_candidates = []
-            for sub_q in subqueries:
-                sub_embedding = get_embedding(sub_q)
-                retrieved = _retrieve(
-                    query_text=sub_q, query_embedding=sub_embedding, top_k=search_width, doc_ids=doc_ids
-                )
-                for chunk in retrieved:
-                    if chunk["id"] not in seen_chunk_ids:
-                        seen_chunk_ids.add(chunk["id"])
-                        followup_candidates.append(chunk)
+    with traced_stage(request_id, "followup_hop", telemetry, user_id):
+        if advanced_mode and top_score <= 0.65 and len(final_context_chunks) > 0:
+            subqueries = decompose_into_subqueries(query)
+            if subqueries:
+                hop_count = 2
+                followup_candidates = []
+                for sub_q in subqueries:
+                    sub_embedding = get_embedding(sub_q)
+                    retrieved = _retrieve(
+                        query_text=sub_q, query_embedding=sub_embedding, top_k=search_width, doc_ids=doc_ids
+                    )
+                    for chunk in retrieved:
+                        if chunk["id"] not in seen_chunk_ids:
+                            seen_chunk_ids.add(chunk["id"])
+                            followup_candidates.append(chunk)
 
-            if followup_candidates:
-                reranked_followup = rerank_chunks(query=query, chunks=followup_candidates, top_n=6)
-                graded_followup = grade_retrieved_chunks(query=query, chunks=reranked_followup)
-                compressed_followup = compress_context_chunks(query=query, chunks=graded_followup)
+                if followup_candidates:
+                    reranked_followup = rerank_chunks(query=query, chunks=followup_candidates, top_n=6)
+                    graded_followup = grade_retrieved_chunks(query=query, chunks=reranked_followup)
+                    compressed_followup = compress_context_chunks(query=query, chunks=graded_followup)
 
-                # Merge with the original results rather than replacing them -
-                # the first hop's chunks were still relevant, just incomplete
-                merged = final_context_chunks + compressed_followup
-                merged_sorted = sorted(merged, key=lambda c: c.get("rerank_score", 0.0), reverse=True)
-                final_context_chunks = merged_sorted[:6]  # slightly wider budget after a merge
-                top_score = final_context_chunks[0].get("rerank_score", 0.0) if final_context_chunks else top_score
-    telemetry["followup_hop_time_ms"] = round((time.perf_counter() - start_time) * 1000, 1)
+                    # Merge with the original results rather than replacing them -
+                    # the first hop's chunks were still relevant, just incomplete
+                    merged = final_context_chunks + compressed_followup
+                    merged_sorted = sorted(merged, key=lambda c: c.get("rerank_score", 0.0), reverse=True)
+                    final_context_chunks = merged_sorted[:6]  # slightly wider budget after a merge
+                    top_score = final_context_chunks[0].get("rerank_score", 0.0) if final_context_chunks else top_score
 
     # --- PHASE 5: Context packaging (heading/node-type aware) ---
     context_text = ""
@@ -304,9 +300,8 @@ QUESTION:
 ANSWER:"""
 
     # --- PHASE 6: Generation ---
-    start_time = time.perf_counter()
-    raw_response = generate_chat_response(prompt)
-    telemetry["generation_time_ms"] = round((time.perf_counter() - start_time) * 1000, 1)
+    with traced_stage(request_id, "generation", telemetry, user_id):
+        raw_response = generate_chat_response(prompt)
 
     final_summary = raw_response.strip()
     generation_failed = "error during generation" in final_summary.lower() or len(final_summary) < 5
@@ -332,9 +327,8 @@ ANSWER:"""
     # generation itself already failed - there's no real claim to judge,
     # just an apology message, and judging it would waste a call and
     # muddy the faithfulness signal with failed-generation noise.
-    start_time = time.perf_counter()
-    faithfulness_result = None if generation_failed else score_faithfulness(final_summary, final_context_chunks)
-    telemetry["faithfulness_scoring_time_ms"] = round((time.perf_counter() - start_time) * 1000, 1)
+    with traced_stage(request_id, "faithfulness_scoring", telemetry, user_id):
+        faithfulness_result = None if generation_failed else score_faithfulness(final_summary, final_context_chunks)
 
     faithfulness_score = faithfulness_result["faithfulness_score"] if faithfulness_result else None
     unsupported_claims = faithfulness_result["unsupported_claims"] if faithfulness_result else []
