@@ -15,6 +15,6 @@
 set -e
 
 mkdir -p /app/server/data "$HOME"
-chown -R appuser:appuser /app/server/data /app/docs/sample_docs "$HOME"
+chown -R appuser:appuser /app/server/data /app/docs/fixtures/sample_docs "$HOME"
 
 exec su -s /bin/sh appuser -c 'exec "$0" "$@"' -- "$@"
