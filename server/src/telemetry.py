@@ -1,8 +1,94 @@
 import json
+import logging
+import threading
+import time
 from typing import Dict, Any, Optional
 
 from src.config import settings
 from src.storage.database import get_db_connection
+
+logger = logging.getLogger("evidence_rag.telemetry")
+
+# --------------------------------------------------------------------------- #
+# query_log retention sweep (#29)
+#
+# QUERY_LOG_RETENTION_DAYS (src/config.py) wasn't actually enforced until
+# something calls scripts/purge_query_log.py, and nothing did - no cron, no
+# scheduled GitHub Action, no pg_cron job. The right dedicated-scheduler
+# mechanism depends on deployment specifics (a GitHub Action can reach a
+# supabase-mode Postgres directly, but can't touch a local-mode SQLite
+# file that only exists on whatever machine runs the server; that machine
+# might not support cron either, e.g. Render's free web_service plan).
+# Rather than hardcode one of those, this piggybacks the sweep on real
+# request traffic - the same "check on every Nth real call instead of
+# running a dedicated scheduler" pattern as rate_limiter.py's periodic
+# sweep, gated by wall-clock time here (not call count) so it actually
+# tracks "about once a day" regardless of traffic volume. In-memory/
+# per-process state, same accepted limitation as the rate limiter/
+# response cache/retrieval index cache elsewhere in this codebase - a
+# process restart (e.g. Render's free-tier spin-down-on-idle) just means
+# the next logged query re-triggers one, which is safe since
+# purge_query_log() is idempotent either way.
+# --------------------------------------------------------------------------- #
+
+PURGE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
+
+_purge_lock = threading.Lock()
+_last_purge_attempt = 0.0
+
+
+def _run_sweep() -> None:
+    """The actual purge work, run off the request thread - see
+    _maybe_run_retention_sweep()'s docstring for why. Never raises: a
+    purge failure must not break the chat response whose request
+    triggered it, but it is logged (not silently swallowed, per #29's
+    acceptance criteria), unlike log_query_event()'s own insert failures
+    above."""
+    try:
+        deleted = purge_query_log(settings.query_log_retention_days)
+        if deleted:
+            logger.info(
+                "query_log retention sweep deleted %d row(s) older than %d days",
+                deleted,
+                settings.query_log_retention_days,
+            )
+    except Exception:
+        logger.exception("query_log retention sweep failed")
+
+
+def _maybe_run_retention_sweep() -> None:
+    """Called at the end of every log_query_event() - a no-op unless at
+    least PURGE_CHECK_INTERVAL_SECONDS have passed since the last attempt
+    (successful or not).
+
+    Dispatches the actual purge onto a background thread rather than
+    running it inline: purge_query_log() deletes in batches of 1000,
+    each its own get_db_connection()/DELETE/commit round trip, precisely
+    because a first run (or any day with a large backlog) can mean
+    clearing a lot of rows - see its own docstring. Running that
+    synchronously inside log_query_event() would mean whichever real
+    user's chat request happens to log the query that trips the daily
+    gate pays that latency in their response time. A plain daemon
+    thread, not FastAPI's BackgroundTasks, since log_query_event() is
+    called from query_pipeline.py as a plain function, not from a route
+    handler with a BackgroundTasks instance in scope."""
+    global _last_purge_attempt
+    now = time.time()
+    with _purge_lock:
+        if now - _last_purge_attempt < PURGE_CHECK_INTERVAL_SECONDS:
+            return
+        _last_purge_attempt = now
+
+    threading.Thread(target=_run_sweep, daemon=True).start()
+
+
+def reset_retention_sweep_state() -> None:
+    """Test-only reset so one test's sweep doesn't suppress another's -
+    same role as rate_limiter.py's clear_rate_limits()."""
+    global _last_purge_attempt
+    with _purge_lock:
+        _last_purge_attempt = 0.0
+
 
 # --------------------------------------------------------------------------- #
 # Structured request logging
@@ -142,6 +228,8 @@ def log_query_event(
         conn.close()
     except Exception:
         pass  # telemetry logging must never break the chat response
+
+    _maybe_run_retention_sweep()
 
 
 def get_recent_queries(limit: int = 50) -> list:
