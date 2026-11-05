@@ -17,6 +17,7 @@ import pytest  # noqa: E402
 from src.config import settings  # noqa: E402
 import src.storage.database as db  # noqa: E402
 import src.response_cache as response_cache  # noqa: E402
+import src.rate_limiter as rate_limiter  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -46,6 +47,19 @@ def isolated_response_cache():
     response_cache.clear_cache()
     yield
     response_cache.clear_cache()
+
+
+@pytest.fixture(autouse=True)
+def isolated_rate_limiter():
+    """
+    rate_limiter.py's request-timestamp map is module-level/process-wide
+    by the same design as response_cache.py's cache - cleared before and
+    after every test so one test's simulated requests don't push a later,
+    unrelated test over the limit.
+    """
+    rate_limiter.clear_rate_limits()
+    yield
+    rate_limiter.clear_rate_limits()
 
 
 @pytest.fixture

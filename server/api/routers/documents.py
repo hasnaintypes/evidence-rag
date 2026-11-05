@@ -5,7 +5,7 @@ import time
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
 
-from api.deps import get_current_user, require_document_access, CurrentUser
+from api.deps import get_current_user, get_rate_limited_upload_user, require_document_access, CurrentUser
 from src.storage.database import (
     list_documents,
     get_document_status,
@@ -30,7 +30,9 @@ def documents_endpoint(user: CurrentUser = Depends(get_current_user)):
 
 @router.post("/upload")
 def upload_file_endpoint(
-    background_tasks: BackgroundTasks, file: UploadFile = File(...), user: CurrentUser = Depends(get_current_user)
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    user: CurrentUser = Depends(get_rate_limited_upload_user),
 ):
     """
     Saves and parses/chunks an uploaded document inline (fast, local CPU
