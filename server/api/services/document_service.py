@@ -100,7 +100,13 @@ class DocumentService:
         if prep["status"] == "empty":
             raise HTTPException(status_code=400, detail="The file content is empty or could not be chunked properly.")
 
-        background_tasks.add_task(finish_ingest, prep["doc_id"], prep["chunks_data"])
+        background_tasks.add_task(
+            finish_ingest,
+            prep["doc_id"],
+            prep["chunks_data"],
+            nodes=prep.get("nodes"),
+            is_replace=prep.get("is_replace", False),
+        )
 
         return {
             "status": "processing",
@@ -190,21 +196,13 @@ class DocumentService:
         Same background-task handoff as upload() so the request doesn't
         block on embedding calls.
 
-        Known risk, not fixed here: prepare_ingest() deletes the
-        document's existing chunks/nodes/entities synchronously, before
-        finish_ingest()'s background re-embedding even starts (see
-        prepare_ingest()'s docstring) - this is the same window a plain
-        content-changed re-upload already has, but re-ingest newly
-        exposes it on a hash-unchanged document too, where the "before"
-        state was a short-circuited no-op with no risk at all. If the
-        background embedding then fails (rate-limit, API outage), the
-        document is left "failed" with zero chunks rather than its
-        previous working content. Properly closing this would mean
-        deferring the delete to finish_ingest, right before the new
-        chunks are inserted - which also requires moving knowledge_nodes
-        insertion (today inside prepare_ingest's synchronous parse phase)
-        to the same point, a bigger change to the shared ingestion
-        pipeline than this feature's scope. Tracked as #46.
+        #46, fixed: prepare_ingest() no longer deletes the document's
+        existing chunks/nodes/entities up front. That delete is deferred
+        to finish_ingest(), right before the new chunks are written - and
+        only runs once every chunk's embedding has actually succeeded. If
+        the background re-embedding fails instead (rate-limit, API
+        outage), the document is left "failed" with its previous, working
+        content still intact rather than zeroed out.
         """
         record = get_owned_document_for_mutation(doc_id, user)
         file_path = get_source_path(record["filename"])
@@ -229,8 +227,20 @@ class DocumentService:
         if prep["status"] == "empty":
             raise HTTPException(status_code=400, detail="The file content is empty or could not be chunked properly.")
 
-        background_tasks.add_task(finish_ingest, prep["doc_id"], prep["chunks_data"])
-        invalidate_index_cache()
+        # No invalidate_index_cache() call here - unlike rename()/delete()
+        # above, the actual document_chunks swap for a re-ingest happens
+        # inside finish_ingest() itself (deferred until the new
+        # embeddings succeed, see #46), which calls it at that point.
+        # Calling it here too would only clear the cache before the swap
+        # happens, not after, so it wouldn't protect against the stale-
+        # cache window it's meant to close.
+        background_tasks.add_task(
+            finish_ingest,
+            prep["doc_id"],
+            prep["chunks_data"],
+            nodes=prep.get("nodes"),
+            is_replace=prep.get("is_replace", False),
+        )
 
         return {
             "status": "processing",

@@ -19,6 +19,7 @@ from src.ingestion.parsers.base import NodeType
 from src.ingestion.chunking import chunk_document, chunk_nodes
 from src.llm import get_embedding, EMBEDDING_MODEL_NAME
 from src.response_cache import invalidate_doc_id
+from src.retrieval.hybrid import invalidate_index_cache
 from src.graph import build_document_graph
 
 # Each chunk's embedding is one blocking Gemini API call - sequential was
@@ -64,12 +65,16 @@ def make_doc_id(filename: str, user_id: str = None) -> str:
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:12]
 
 
-def _ingest_tree_aware(parser, file_path: str, doc_id: str, filename: str) -> list:
+def _parse_tree_aware(parser, file_path: str, doc_id: str, filename: str) -> tuple:
+    """Parses into a KnowledgeNode tree and produces chunk data entirely in
+    memory - no DB writes here. Node persistence (insert_nodes) and the
+    entity graph are deferred to finish_ingest(), after embeddings succeed,
+    so a failed re-embedding never leaves a document's old data deleted
+    with nothing valid to replace it (#46)."""
     nodes = parser.parse_to_tree(file_path, doc_id=doc_id)
     if not nodes:
-        return []
+        return [], []
 
-    insert_nodes(nodes)
     chunks_data = chunk_nodes(
         nodes,
         chunk_size=settings.chunk_size_tokens,
@@ -85,14 +90,7 @@ def _ingest_tree_aware(parser, file_path: str, doc_id: str, filename: str) -> li
         item["metadata"]["doc_id"] = doc_id
         item["metadata"]["source_file"] = filename
 
-    # Entity graph runs after insert_nodes() since it reads children back
-    # from storage via get_children().
-    if settings.enable_entity_graph:
-        section_nodes = [n for n in nodes if n.type == NodeType.SECTION]
-        if section_nodes:
-            build_document_graph(doc_id, section_nodes)
-
-    return chunks_data
+    return nodes, chunks_data
 
 
 def _ingest_legacy(parser, file_path: str, filename: str, doc_id: str) -> list:
@@ -133,6 +131,13 @@ def prepare_ingest(file_path: str, filename: str, user_id: str = None, force: bo
     action (e.g. to pick up a chunking/parsing fix with no content
     change), where "nothing to do" isn't the expected outcome of
     clicking the button.
+
+    Deliberately does NOT delete the document's existing nodes/chunks here,
+    even when content changed - that swap is deferred to finish_ingest(),
+    right after the new chunks' embeddings have actually succeeded (see
+    #46). Until then, the old data stays exactly as it was, so a failed
+    background re-embedding leaves the document in its previous working
+    state instead of "failed" with zero chunks.
     """
     doc_id = make_doc_id(filename, user_id=user_id)
     current_hash = file_hash(file_path)
@@ -141,20 +146,12 @@ def prepare_ingest(file_path: str, filename: str, user_id: str = None, force: bo
     if stored_hash == current_hash and not force:
         return {"status": "unchanged", "chunk_count": 0, "doc_id": doc_id}
 
-    if stored_hash is not None:
-        # File existed before but content changed - clear stale nodes/chunks
-        # first, otherwise old and new versions would coexist and retrieval
-        # would return duplicate/contradictory chunks. Also drop any cached
-        # response_cache.py entries scoped to this doc_id - otherwise a
-        # repeat/near-duplicate question could keep serving the pre-edit
-        # cached answer for up to RESPONSE_CACHE_TTL_SECONDS after the
-        # content underneath it has already changed.
-        delete_document_data(doc_id)
-        invalidate_doc_id(doc_id)
+    is_replace = stored_hash is not None
 
     parser = get_parser(file_path)
+    nodes: list = []
     if hasattr(parser, "parse_to_tree"):
-        chunks_data = _ingest_tree_aware(parser, file_path, doc_id, filename)
+        nodes, chunks_data = _parse_tree_aware(parser, file_path, doc_id, filename)
     else:
         chunks_data = _ingest_legacy(parser, file_path, filename, doc_id)
 
@@ -174,13 +171,24 @@ def prepare_ingest(file_path: str, filename: str, user_id: str = None, force: bo
         chunks_total=len(indexable),
     )
 
-    return {"status": "ready_to_index", "doc_id": doc_id, "chunks_data": indexable}
+    return {
+        "status": "ready_to_index",
+        "doc_id": doc_id,
+        "chunks_data": indexable,
+        "nodes": nodes,
+        "is_replace": is_replace,
+    }
 
 
 PROGRESS_FLUSH_INTERVAL_SECONDS = 1.0
 
 
-def finish_ingest(doc_id: str, chunks_data: List[Dict[str, Any]]) -> dict:
+def finish_ingest(
+    doc_id: str,
+    chunks_data: List[Dict[str, Any]],
+    nodes: list = None,
+    is_replace: bool = False,
+) -> dict:
     """
     Slow phase: embeds every chunk concurrently (EMBED_CONCURRENCY workers -
     measured ~4.6x faster than sequential for Gemini's embedding API, which
@@ -198,7 +206,20 @@ def finish_ingest(doc_id: str, chunks_data: List[Dict[str, Any]]) -> dict:
     undercut the concurrency gain it was meant to just observe.
 
     On any failure the document is marked "failed" rather than left stuck
-    at "processing" forever.
+    at "processing" forever - and, critically, nothing about the document's
+    previous data has been touched yet at that point (see below), so a
+    failed re-embedding leaves the old, working chunks/nodes exactly as
+    they were instead of zeroing the document out (#46).
+
+    `nodes` (the in-memory KnowledgeNode tree from prepare_ingest(), empty
+    for the legacy non-tree parsers) and `is_replace` (whether this call is
+    replacing a previously-indexed version of the same doc_id) are only
+    acted on here, after every chunk's embedding has already succeeded:
+    is_replace=True triggers delete_document_data() for the old
+    nodes/chunks/entities right before the new ones are written, and nodes
+    are inserted (plus the entity graph rebuilt) before the new chunks -
+    this ordering, not prepare_ingest's synchronous parse phase, is what
+    used to delete old data before new data was confirmed valid.
     """
     indexed_count = 0
     count_lock = threading.Lock()
@@ -235,6 +256,35 @@ def finish_ingest(doc_id: str, chunks_data: List[Dict[str, Any]]) -> dict:
         stop_flushing.set()
         flusher.join(timeout=PROGRESS_FLUSH_INTERVAL_SECONDS + 1)
 
+    # Every chunk embedded successfully - only now is it safe to replace
+    # the document's previous data. Also drops any cached
+    # response_cache.py entries scoped to this doc_id - otherwise a
+    # repeat/near-duplicate question could keep serving the pre-edit
+    # cached answer for up to RESPONSE_CACHE_TTL_SECONDS after the
+    # content underneath it has already changed - and the retrieval/
+    # hybrid.py scoped index cache, whose own staleness check is a plain
+    # COUNT(*) against document_chunks (hybrid.py's _get_scoped_index()):
+    # a content edit that doesn't change the chunk count would otherwise
+    # sail past that check and keep serving pre-edit chunk text
+    # indefinitely. document_service.py's reingest()/upload() callers
+    # don't call invalidate_index_cache() themselves around this swap -
+    # it has to happen here, at the actual delete+insert, since that's
+    # now deferred into this background call rather than done
+    # synchronously before the caller returns.
+    if is_replace:
+        delete_document_data(doc_id)
+        invalidate_doc_id(doc_id)
+        invalidate_index_cache()
+
+    if nodes:
+        insert_nodes(nodes)
+        # Entity graph runs after insert_nodes() since it reads children
+        # back from storage via get_children().
+        if settings.enable_entity_graph:
+            section_nodes = [n for n in nodes if n.type == NodeType.SECTION]
+            if section_nodes:
+                build_document_graph(doc_id, section_nodes)
+
     insert_chunks_batch(embedded)
 
     indexed_total = len(embedded)
@@ -255,4 +305,6 @@ def ingest_file(file_path: str, filename: str, user_id: str = None) -> dict:
     prep = prepare_ingest(file_path, filename, user_id=user_id)
     if prep["status"] != "ready_to_index":
         return prep
-    return finish_ingest(prep["doc_id"], prep["chunks_data"])
+    return finish_ingest(
+        prep["doc_id"], prep["chunks_data"], nodes=prep.get("nodes"), is_replace=prep.get("is_replace", False)
+    )
