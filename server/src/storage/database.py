@@ -1170,25 +1170,35 @@ def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
     return _hydrate_conversation_row(row, filename_map)
 
 
-def add_document_to_conversation(conversation_id: str, user_id: str, doc_id: str) -> Dict[str, Any]:
+def add_document_to_conversation(conversation_id: str, doc_id: str) -> Dict[str, Any]:
     """Appends doc_id to a conversation's document set, capped at
-    MAX_CONVERSATION_DOCS. Ownership is folded into this function's own
-    SELECT (WHERE id AND user_id) instead of a separate caller-side
-    ownership check, and the updated conversation is hydrated here (one
-    more query, same connection) instead of the caller re-fetching from
-    scratch - 3 round trips total instead of the previous 5 (separate
-    ownership check + internal read + write + full re-fetch's own 2).
-    Raises ValueError (not-found/duplicate/cap) so the router can map the
-    message to the right status code."""
+    MAX_CONVERSATION_DOCS. Ownership must already be confirmed by the
+    caller (api/authz.py's get_owned_conversation(), the same pattern
+    every other mutation uses) before this is called - this function used
+    to fold its own inline ownership check into this SELECT instead, which
+    was the one service call site that didn't route through api/authz.py
+    like everything else (#54). It now only handles the duplicate/cap
+    business rules and raises ValueError for either, which the caller
+    maps to a 400 - no more string-matching the message to pick a status
+    code, since not-found is ordinarily ruled out before this runs.
+
+    Still re-checks for a missing row (raising LookupError, not ValueError
+    - a distinct type the caller maps to 404) rather than assuming the
+    caller's earlier existence check still holds: that check and this
+    SELECT are two separate round trips, so a concurrent delete of the
+    same conversation in between would otherwise make `dict(None)` raise
+    an unhandled TypeError here instead of a clean 404 (caught in code
+    review on the PR that introduced this split).
+
+    The updated conversation is hydrated here (one more query, same
+    connection) instead of the caller re-fetching from scratch."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        f"SELECT * FROM conversations WHERE id = {_ph(1)} AND user_id = {_ph(1)}", (conversation_id, user_id)
-    )
+    cursor.execute(f"SELECT * FROM conversations WHERE id = {_ph(1)}", (conversation_id,))
     row = cursor.fetchone()
-    if not row:
+    if row is None:
         conn.close()
-        raise ValueError("Conversation not found.")
+        raise LookupError("Conversation not found.")
     row = dict(row)
     doc_ids = json.loads(row["doc_ids"])
     if doc_id in doc_ids:

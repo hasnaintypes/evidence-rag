@@ -72,14 +72,28 @@ class ConversationService:
 
     @staticmethod
     def add_document(conversation_id: str, doc_id: str, user: CurrentUser) -> Dict[str, Any]:
+        """Ownership is asserted via get_owned_conversation() (404 for a
+        non-owner/missing conversation), same as every other mutation
+        here - add_document_to_conversation() used to fold its own inline
+        ownership check into this call instead and reported it by raising
+        ValueError("Conversation not found.") for the router to string-
+        match back into a 404, the one call site that didn't route
+        through api/authz.py like the rest (#54).
+
+        add_document_to_conversation() still raises LookupError (not
+        ValueError) if the conversation vanished between the ownership
+        check above and its own SELECT (a concurrent delete) - a distinct
+        type, not another string to match, so that race still 404s
+        instead of surfacing as an unhandled 500."""
+        get_owned_conversation(conversation_id, user)
         if not all_documents_accessible([doc_id], user.id):
             raise HTTPException(status_code=404, detail="Document not found.")
         try:
-            return add_document_to_conversation(conversation_id, user_id=user.id, doc_id=doc_id)
+            return add_document_to_conversation(conversation_id, doc_id=doc_id)
+        except LookupError as e:
+            raise HTTPException(status_code=404, detail=str(e))
         except ValueError as e:
-            detail = str(e)
-            status_code = 404 if detail == "Conversation not found." else 400
-            raise HTTPException(status_code=status_code, detail=detail)
+            raise HTTPException(status_code=400, detail=str(e))
 
     @staticmethod
     def restore_checkpoint(conversation_id: str, message_id: int, user: CurrentUser) -> Dict[str, Any]:
