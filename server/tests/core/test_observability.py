@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from src.observability import new_request_id, traced_stage
+from src.core.observability import new_request_id, traced_stage
 
 
 def test_request_ids_are_short_and_unique():

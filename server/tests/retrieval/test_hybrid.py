@@ -6,7 +6,7 @@ dense_ann_search(), see #17)."""
 from unittest.mock import MagicMock, patch
 
 import src.retrieval.hybrid as hybrid
-from src.config import settings
+from src.core.config import settings
 from src.storage.database import insert_chunk
 
 

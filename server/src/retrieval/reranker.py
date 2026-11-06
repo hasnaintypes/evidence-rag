@@ -1,6 +1,6 @@
 from typing import Any, Dict, List
 
-from src.llm import generate_structured_response
+from src.core.llm import generate_structured_response
 
 # --------------------------------------------------------------------------- #
 # LLM-based reranking (Gemini), replacing a locally-hosted cross-encoder

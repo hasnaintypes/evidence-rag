@@ -4,7 +4,7 @@ from typing import Optional
 
 import jwt
 
-from src.config import settings
+from src.core.config import settings
 
 # How long a citation link stays valid after being generated in a chat/graph
 # response - long enough to open it from that response, short enough to

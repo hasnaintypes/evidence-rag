@@ -5,7 +5,7 @@ from typing import Dict
 
 from fastapi import HTTPException
 
-from src.config import settings
+from src.core.config import settings
 
 # --------------------------------------------------------------------------- #
 # Per-user sliding-window rate limiting

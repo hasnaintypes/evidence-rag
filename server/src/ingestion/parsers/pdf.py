@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 import pdfplumber
 
 from src.ingestion.parsers.base import BaseParser, KnowledgeNode, NodeType
-from src.llm import transcribe_page_image
+from src.core.llm import transcribe_page_image
 
 # Pages with less extracted text than this are treated as scanned/image-only
 # and routed through the Gemini vision fallback instead of the word-position

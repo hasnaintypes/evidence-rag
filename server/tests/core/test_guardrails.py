@@ -1,6 +1,6 @@
 """Unit tests for src/guardrails.py's prompt-injection heuristic scanner."""
 
-from src.guardrails import scan_for_injection_patterns
+from src.core.guardrails import scan_for_injection_patterns
 
 
 def test_detects_ignore_previous_instructions():

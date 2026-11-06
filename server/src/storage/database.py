@@ -3,7 +3,7 @@ import json
 import os
 from typing import List, Dict, Any, Optional
 
-from src.config import settings
+from src.core.config import settings
 
 DB_PATH = "data/rag.db"
 

@@ -4,7 +4,7 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.storage.database import init_db
-from src.config import SAMPLE_DOCS_DIR
+from src.core.config import SAMPLE_DOCS_DIR
 from src.ingestion.pipeline import ingest_file, SUPPORTED_EXTENSIONS
 
 

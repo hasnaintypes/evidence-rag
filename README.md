@@ -203,21 +203,24 @@ Concrete, source-checked figures rather than vague claims — each one points at
 
 ```
 ├── server/
-│   ├── api/            FastAPI app, routers (health, documents, conversations, graph), JWT deps
+│   ├── api/            FastAPI app, routers (health, documents, conversations, graph), services/, authz.py
 │   ├── src/
-│   │   ├── config.py, llm.py, query_pipeline.py, graph.py (entity extraction), telemetry.py
-│   │   ├── storage/     database.py (SQLite / Postgres+pgvector), files.py (disk / Supabase Storage)
-│   │   ├── ingestion/   pipeline.py, chunking.py, parsers/ (tree-aware, per format)
-│   │   ├── retrieval/   hybrid.py, reranker.py, grader.py, query_rewriter.py, compression.py
-│   │   └── evaluation/  judge.py (faithfulness scoring)
-│   └── scripts/        ingest.py, run_eval.py, compare_eval.py, supabase_schema.sql
-├── web/                 Next.js frontend (app/, components/, hooks/, stores/, lib/)
+│   │   ├── query_pipeline.py, graph.py (entity extraction)
+│   │   ├── core/         config.py, llm.py, security.py, telemetry.py, observability.py, rate_limiter.py,
+│   │   │                 response_cache.py, guardrails.py - cross-cutting infra, not one pipeline stage
+│   │   ├── storage/       database.py (SQLite / Postgres+pgvector), files.py (disk / Supabase Storage)
+│   │   ├── ingestion/     pipeline.py, chunking.py, parsers/ (tree-aware, per format)
+│   │   ├── retrieval/     hybrid.py, reranker.py, grader.py, query_rewriter.py, compression.py
+│   │   └── evaluation/    judge.py (faithfulness scoring)
+│   ├── tests/            api/, retrieval/, ingestion/, core/ - mirrors src/'s own domain split
+│   └── scripts/          ingest.py, run_eval.py, compare_eval.py, supabase_schema.sql
+├── web/                   Next.js frontend (app/, components/, hooks/, stores/, lib/)
 └── docs/
-    ├── fixtures/         sample_docs/ (demo corpus)
-    └── eval/             eval_set.json / eval_report.md / eval_baseline.json / eval_metrics.json
+    ├── fixtures/          sample_docs/ (demo corpus)
+    └── eval/              eval_set.json / eval_report.md / eval_baseline.json / eval_metrics.json
 ```
 
-A production-grade restructuring (a `services/` layer, split schemas, a real `tests/` tree) is approved and tracked in the [Roadmap](#roadmap--production-hardening) below; the `docs/` split into `fixtures/` + `eval/` shown above has landed (#19).
+The `services/`/`authz.py` layer (#18), the `docs/` split into `fixtures/` + `eval/` (#19), and the `src/core/`+`tests/` domain grouping shown above have all landed.
 
 ---
 

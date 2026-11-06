@@ -4,7 +4,7 @@ import tempfile
 from contextlib import contextmanager
 from typing import Optional
 
-from src.config import settings, SAMPLE_DOCS_DIR
+from src.core.config import settings, SAMPLE_DOCS_DIR
 from src.ingestion.pipeline import EXTENSION_MIME_TYPES
 
 

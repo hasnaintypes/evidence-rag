@@ -5,7 +5,7 @@ import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.query_pipeline import process_chat_query
-from src.config import EVAL_SET_PATH, EVAL_REPORT_PATH, EVAL_METRICS_PATH
+from src.core.config import EVAL_SET_PATH, EVAL_REPORT_PATH, EVAL_METRICS_PATH
 
 
 def compute_metrics(retrieved_sources: list, expected_source, k: int) -> dict:

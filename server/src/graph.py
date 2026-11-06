@@ -2,7 +2,7 @@ import re
 import json
 from typing import List, Dict, Any
 
-from src.llm import generate_chat_response
+from src.core.llm import generate_chat_response
 from src.storage.database import upsert_entity, upsert_edge, get_children
 
 ENTITY_EXTRACTION_PROMPT = """Extract 2 to 8 key technical terms, part names, or \

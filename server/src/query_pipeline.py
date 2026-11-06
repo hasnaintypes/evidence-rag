@@ -1,16 +1,16 @@
-from src.config import settings
-from src.llm import get_embedding, generate_chat_response
+from src.core.config import settings
+from src.core.llm import get_embedding, generate_chat_response
 from src.retrieval.query_rewriter import rewrite_query, decompose_into_subqueries
 from src.retrieval.hybrid import hybrid_retrieve
 from src.retrieval.reranker import rerank_chunks
 from src.retrieval.grader import grade_retrieved_chunks, meets_confidence_threshold
 from src.retrieval.compression import compress_context_chunks
 from src.evaluation.judge import score_faithfulness
-from src.observability import new_request_id, traced_stage
-from src.telemetry import log_query_event
-from src.security import generate_source_token
-from src.guardrails import scan_for_injection_patterns
-from src.response_cache import get_cached_response, store_cached_response
+from src.core.observability import new_request_id, traced_stage
+from src.core.telemetry import log_query_event
+from src.core.security import generate_source_token
+from src.core.guardrails import scan_for_injection_patterns
+from src.core.response_cache import get_cached_response, store_cached_response
 
 MAX_HOPS = 2  # initial retrieval pass + at most 1 follow-up hop, never more
 SNIPPET_MAX_CHARS = 280  # citation snippet length - enough to verify a claim, not the whole chunk

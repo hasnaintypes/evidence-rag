@@ -4,7 +4,7 @@ from fastapi import HTTPException
 
 from api.authz import get_owned_document, get_owned_graph_scope
 from api.deps import CurrentUser
-from src.security import generate_source_token
+from src.core.security import generate_source_token
 from src.storage.database import get_graph_data, get_node
 
 

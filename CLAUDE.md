@@ -31,7 +31,7 @@ python scripts/test_connection.py  # quick Gemini API connectivity check
 python scripts/reset_data.py       # wipe local SQLite/file storage
 python scripts/purge_query_log.py  # delete query_log rows older than QUERY_LOG_RETENTION_DAYS
                                     # (default 30) immediately/on demand - the same purge also runs
-                                    # automatically (src/telemetry.py, gated to ~once/day on real
+                                    # automatically (src/core/telemetry.py, gated to ~once/day on real
                                     # request traffic, see #29), so this script is for a forced run
 
 ruff check .                        # lint (pyflakes rules only - see pyproject.toml)
@@ -44,8 +44,8 @@ since auth/authz/pipeline-failure-path correctness tests must gate regardless of
 changed. `.github/workflows/eval.yml` runs the retrieval-quality eval harness, but only on
 PRs/pushes touching `server/src/retrieval/**`, `server/src/ingestion/**`,
 `server/src/query_pipeline.py`, or `docs/eval/eval_set.json`. It auto-commits `docs/eval/eval_baseline.json`
-on merges to `main`. `tests/test_document_upload.py`/`test_document_status.py`/`test_graph.py` cover
-the upload→background-ingestion→status flow and the entity graph (previously untested).
+on merges to `main`. `tests/api/test_documents_upload.py`/`test_documents_status.py`/`test_graph.py`
+cover the upload→background-ingestion→status flow and the entity graph (previously untested).
 
 ### Web (`web/`)
 
@@ -110,7 +110,7 @@ faithfulness gate runs in both modes, since the judge call doesn't depend on rer
 `docs/eval/eval_set.json` content rather than a full `run_eval.py` pass, due to free-tier Gemini API quota
 limits — revisit once issue #24 is resolved.
 
-Every stage above runs inside `src/observability.py`'s `traced_stage()`, which logs that stage's
+Every stage above runs inside `src/core/observability.py`'s `traced_stage()`, which logs that stage's
 start/completion (with elapsed ms)/failure through the standard `logging` module under a per-request
 correlation id (`request_id`, generated once per `process_chat_query()` call and folded into
 `telemetry`) — this is what makes "which stage failed/was slow for request X" answerable from
@@ -120,12 +120,12 @@ piggybacks a retention sweep (`purge_query_log()`) onto real request traffic, ga
 day, rather than depending on an external scheduler whose right shape (cron, a scheduled GitHub
 Action, `pg_cron`) depends on deployment specifics this project doesn't hardcode (#29).
 `POST /conversations/{id}/messages` and `POST /upload` additionally sit behind
-`src/rate_limiter.py`'s per-user sliding-window limiter (`api/deps.py`'s
+`src/core/rate_limiter.py`'s per-user sliding-window limiter (`api/deps.py`'s
 `get_rate_limited_chat_user`/`get_rate_limited_upload_user`), so a single client can't exhaust the
 app's Gemini quota through repeated requests (#15). Both are in-memory/per-process, same limitation
 as `response_cache.py`/`hybrid.py`'s index cache below.
 
-Chat/structured generation calls (`src/llm.py`) try a configured fallback model
+Chat/structured generation calls (`src/core/llm.py`) try a configured fallback model
 (`GEMINI_FALLBACK_CHAT_MODEL`) once if the primary model's call fails or rate-limits — a real
 mitigation, not just theoretical: this project hit the free tier's daily quota mid-session while
 tuning the faithfulness threshold above. Embedding calls retry the same model instead, since
@@ -133,13 +133,13 @@ tuning the faithfulness threshold above. Embedding calls retry the same model in
 dimension.
 
 Document chunks are untrusted content (any signed-in user can upload a document) that gets embedded
-verbatim into the generation prompt — `src/guardrails.py`'s `scan_for_injection_patterns()` flags
+verbatim into the generation prompt — `src/core/guardrails.py`'s `scan_for_injection_patterns()` flags
 (never blocks/strips) chunks matching common prompt-injection heuristics into
 `telemetry["injection_flags"]`, and the generation prompt itself carries explicit
 instruction-hierarchy framing telling the model to treat chunk content as data, never as
 instructions. Treat both as partial, iterative defenses, not a one-shot fix — see issue #13.
 
-`src/response_cache.py` caches a fully-successful pipeline result (never a generation failure or a
+`src/core/response_cache.py` caches a fully-successful pipeline result (never a generation failure or a
 gated/abstained one) keyed by `(doc_ids, advanced_mode)` and matched by cosine similarity against the
 query embedding, so a near-duplicate question can skip query rewriting, generation, and faithfulness
 judging entirely. Only consulted/populated on a conversation's first turn (no prior `history`) — a
@@ -190,11 +190,12 @@ Ownership checks themselves live in `api/authz.py` (`get_owned_document()`, `get
 `get_owned_graph_scope()`), not scattered per-router — this is what the 2026-11-03 authz fixes (#22)
 originally established ad hoc (`api/deps.py`'s `require_document_access()`,
 `conversations.py`'s `_get_owned_conversation()`) and #18 centralized. Every one of them 404s (not 403s)
-for a resource that doesn't exist or belongs to someone else (see `server/tests/test_authz.py` for the
-unit-level coverage and `server/tests/test_ownership.py` for the integration-level cross-user coverage).
+for a resource that doesn't exist or belongs to someone else (see `server/tests/api/test_authz.py` for
+the unit-level coverage and `server/tests/api/test_ownership.py` for the integration-level cross-user
+coverage).
 `GET /source/{filename}` has no bearer-auth check (by design, for citation links — see
 `DocumentService.resolve_source_path()`'s docstring), but is instead gated by a short-lived signed
-token (`src/security.py`). A new resource-scoped route should add a service method that calls the
+token (`src/core/security.py`). A new resource-scoped route should add a service method that calls the
 matching `api/authz.py` helper (adding one if the resource type is new) rather than trusting a
 caller-supplied id directly.
 

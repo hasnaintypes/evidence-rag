@@ -7,11 +7,11 @@ from fastapi import BackgroundTasks, HTTPException, UploadFile
 
 from api.authz import get_owned_document, get_owned_document_for_mutation
 from api.deps import CurrentUser
-from src.config import settings
+from src.core.config import settings
 from src.ingestion.pipeline import prepare_ingest, finish_ingest, SUPPORTED_EXTENSIONS
-from src.response_cache import invalidate_doc_id
+from src.core.response_cache import invalidate_doc_id
 from src.retrieval.hybrid import invalidate_index_cache
-from src.security import verify_source_token
+from src.core.security import verify_source_token
 from src.storage.database import (
     delete_document_data,
     delete_document_record,

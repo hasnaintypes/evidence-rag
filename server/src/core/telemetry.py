@@ -4,7 +4,7 @@ import threading
 import time
 from typing import Dict, Any, Optional
 
-from src.config import settings
+from src.core.config import settings
 from src.storage.database import get_db_connection
 
 logger = logging.getLogger("evidence_rag.telemetry")

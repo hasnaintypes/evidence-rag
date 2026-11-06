@@ -14,11 +14,11 @@ os.environ.setdefault("GEMINI_API_KEY", "test-key-not-a-real-credential")
 
 import pytest  # noqa: E402
 
-from src.config import settings  # noqa: E402
+from src.core.config import settings  # noqa: E402
 import src.storage.database as db  # noqa: E402
-import src.response_cache as response_cache  # noqa: E402
-import src.rate_limiter as rate_limiter  # noqa: E402
-import src.telemetry as telemetry  # noqa: E402
+import src.core.response_cache as response_cache  # noqa: E402
+import src.core.rate_limiter as rate_limiter  # noqa: E402
+import src.core.telemetry as telemetry  # noqa: E402
 import src.retrieval.hybrid as hybrid  # noqa: E402
 
 
