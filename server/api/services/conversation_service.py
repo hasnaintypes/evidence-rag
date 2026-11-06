@@ -1,3 +1,4 @@
+import logging
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -7,6 +8,11 @@ from api.authz import get_owned_conversation
 from api.deps import CurrentUser
 from src.query_pipeline import process_chat_query
 from src.core.security import generate_source_token
+
+# Same "inherits whatever handler the process entry point set up for the
+# root logger" convention as observability.py's "evidence_rag.pipeline"
+# logger and llm.py's "evidence_rag.llm" logger.
+logger = logging.getLogger("evidence_rag.api")
 from src.storage.database import (
     add_document_to_conversation,
     all_documents_accessible,
@@ -88,6 +94,20 @@ class ConversationService:
         """
         Replaces the old flat POST /chat: scoped to one conversation's documents
         (doc_ids, up to 5), and folds recent turns into the prompt so follow-ups work.
+
+        A pipeline failure (process_chat_query() raising) is a genuine 500, not a
+        200 with a fabricated "An error occurred: ..." reply - that used to be
+        stored as if it were a real assistant turn, permanently, indistinguishable
+        from an honest answer except by reading the text, and could leak internal
+        exception detail into chat history (#52). The exception is logged here
+        (process_chat_query()'s own stage-level tracing, via
+        src.core.observability.traced_stage, already logged *which stage* failed
+        under its own request_id - this is the service-layer record of the
+        request that hit it) and a generic message is raised instead; nothing
+        gets persisted as the assistant's turn. The user's own message above is
+        already inserted by this point and stays - they did send it - the
+        conversation just has no reply yet, same as it would if the request
+        never reached this far at all.
         """
         conversation = get_owned_conversation(conversation_id, user)
 
@@ -104,15 +124,9 @@ class ConversationService:
                 history=history,
                 user_id=user.id,
             )
-        except Exception as e:
-            result = {
-                "reply": f"An error occurred: {str(e)}",
-                "thinking": "Pipeline failure.",
-                "telemetry": {},
-                "chunks_matrix": [],
-                "sources": [],
-                "faithfulness": {"score": None, "unsupported_claims": []},
-            }
+        except Exception:
+            logger.exception("process_chat_query failed for conversation_id=%s user_id=%s", conversation_id, user.id)
+            raise HTTPException(status_code=500, detail="Failed to generate a response. Please try again.")
 
         assistant_message = insert_message(
             conversation_id,
