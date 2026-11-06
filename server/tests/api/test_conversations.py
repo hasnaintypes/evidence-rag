@@ -11,7 +11,12 @@ instead of add_document_to_conversation()'s own inline check.
 from unittest.mock import patch
 
 from tests.conftest import override_current_user
-from src.storage.database import MAX_CONVERSATION_DOCS, create_conversation, get_conversation_messages, upsert_document_record
+from src.storage.database import (
+    MAX_CONVERSATION_DOCS,
+    create_conversation,
+    get_conversation_messages,
+    upsert_document_record,
+)
 
 OWNER = "owner-user"
 OTHER = "other-user"
@@ -72,7 +77,9 @@ def test_send_message_returns_the_real_reply_on_success(client, app):
 
 def test_add_document_404s_for_a_non_owner_of_the_conversation(client, app):
     conversation_id = _seed_conversation(owner=OWNER)
-    upsert_document_record(doc_id="doc-2", filename="doc2.md", file_hash="h2", node_count=1, chunk_count=1, user_id=OTHER)
+    upsert_document_record(
+        doc_id="doc-2", filename="doc2.md", file_hash="h2", node_count=1, chunk_count=1, user_id=OTHER
+    )
     override_current_user(app, OTHER)
 
     response = client.post(f"/conversations/{conversation_id}/documents", json={"doc_id": "doc-2"})
@@ -118,7 +125,9 @@ def test_add_document_400s_at_the_conversation_document_cap(client, app):
 
 def test_add_document_succeeds_for_the_owner(client, app):
     conversation_id = _seed_conversation(owner=OWNER)
-    upsert_document_record(doc_id="doc-2", filename="doc2.md", file_hash="h2", node_count=1, chunk_count=1, user_id=OWNER)
+    upsert_document_record(
+        doc_id="doc-2", filename="doc2.md", file_hash="h2", node_count=1, chunk_count=1, user_id=OWNER
+    )
     override_current_user(app, OWNER)
 
     response = client.post(f"/conversations/{conversation_id}/documents", json={"doc_id": "doc-2"})
