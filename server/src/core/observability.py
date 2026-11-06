@@ -7,13 +7,16 @@ from typing import Dict, Optional
 # --------------------------------------------------------------------------- #
 # Stage-level tracing
 #
-# query_log (src/telemetry.py) already records a per-stage timing
+# query_log (src/core/telemetry.py) already records a per-stage timing
 # breakdown, but only as one row written at the very end of a successful
 # or failed pipeline run - there's no way to see, from the outside, which
 # stage a request is currently in, or which stage actually raised if the
-# whole call blew up (api/routers/conversations.py's send_message_endpoint
-# wraps process_chat_query() in one broad except, so today every failure
-# looks identical from the logs: "An error occurred: <message>").
+# whole call blew up. api/services/conversation_service.py's
+# send_message() wraps process_chat_query() in one broad except and logs
+# the exception (previously: fabricated a fake "An error occurred:
+# <message>" reply and returned 200 - fixed in #52) - this module is what
+# makes "which stage, under which request_id" answerable from container
+# logs even though that one call site only sees "it failed" overall.
 #
 # This gives every call to process_chat_query() a short correlation id
 # and emits one structured log line per stage (start, completion with
