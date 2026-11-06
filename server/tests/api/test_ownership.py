@@ -65,7 +65,7 @@ def test_conversation_creation_accepts_a_shared_document(client, app):
     override_current_user(app, OTHER)
 
     response = client.post("/conversations", json={"doc_ids": ["shared-doc"]})
-    assert response.status_code == 200
+    assert response.status_code == 201
 
 
 def test_get_conversation_404s_for_a_non_owner(client, app):

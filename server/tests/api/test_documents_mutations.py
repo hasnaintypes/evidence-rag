@@ -197,6 +197,6 @@ def test_reingest_forces_past_the_unchanged_short_circuit(client, app):
         }
         response = client.post("/documents/doc-1/reingest")
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert response.json()["status"] == "processing"
     mock_prepare_ingest.assert_called_once_with("/tmp/fake-private.pdf", "private.pdf", user_id=OWNER, force=True)

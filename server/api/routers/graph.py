@@ -1,3 +1,5 @@
+from typing import Optional
+
 from fastapi import APIRouter, Depends
 
 from api.deps import get_current_user, CurrentUser
@@ -7,7 +9,7 @@ router = APIRouter()
 
 
 @router.get("/graph")
-def graph_endpoint(doc_id: str = None, user: CurrentUser = Depends(get_current_user)):
+def graph_endpoint(doc_id: Optional[str] = None, user: CurrentUser = Depends(get_current_user)):
     return GraphService.get_graph(doc_id, user)
 
 
