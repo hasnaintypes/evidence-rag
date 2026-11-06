@@ -44,8 +44,8 @@ since auth/authz/pipeline-failure-path correctness tests must gate regardless of
 changed. `.github/workflows/eval.yml` runs the retrieval-quality eval harness, but only on
 PRs/pushes touching `server/src/retrieval/**`, `server/src/ingestion/**`,
 `server/src/query_pipeline.py`, or `docs/eval/eval_set.json`. It auto-commits `docs/eval/eval_baseline.json`
-on merges to `main`. `tests/test_document_upload.py`/`test_document_status.py`/`test_graph.py` cover
-the upload→background-ingestion→status flow and the entity graph (previously untested).
+on merges to `main`. `tests/api/test_documents_upload.py`/`test_documents_status.py`/`test_graph.py`
+cover the upload→background-ingestion→status flow and the entity graph (previously untested).
 
 ### Web (`web/`)
 
@@ -190,8 +190,9 @@ Ownership checks themselves live in `api/authz.py` (`get_owned_document()`, `get
 `get_owned_graph_scope()`), not scattered per-router — this is what the 2026-11-03 authz fixes (#22)
 originally established ad hoc (`api/deps.py`'s `require_document_access()`,
 `conversations.py`'s `_get_owned_conversation()`) and #18 centralized. Every one of them 404s (not 403s)
-for a resource that doesn't exist or belongs to someone else (see `server/tests/test_authz.py` for the
-unit-level coverage and `server/tests/test_ownership.py` for the integration-level cross-user coverage).
+for a resource that doesn't exist or belongs to someone else (see `server/tests/api/test_authz.py` for
+the unit-level coverage and `server/tests/api/test_ownership.py` for the integration-level cross-user
+coverage).
 `GET /source/{filename}` has no bearer-auth check (by design, for citation links — see
 `DocumentService.resolve_source_path()`'s docstring), but is instead gated by a short-lived signed
 token (`src/core/security.py`). A new resource-scoped route should add a service method that calls the
