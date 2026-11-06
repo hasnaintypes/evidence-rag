@@ -44,8 +44,8 @@ since auth/authz/pipeline-failure-path correctness tests must gate regardless of
 changed. `.github/workflows/eval.yml` runs the retrieval-quality eval harness, but only on
 PRs/pushes touching `server/src/retrieval/**`, `server/src/ingestion/**`,
 `server/src/query_pipeline.py`, or `docs/eval/eval_set.json`. It auto-commits `docs/eval/eval_baseline.json`
-on merges to `main`. Test coverage is still partial - upload→background-ingestion→status
-transitions and the entity graph have no test coverage yet (see `tests/` for what's covered).
+on merges to `main`. `tests/test_document_upload.py`/`test_document_status.py`/`test_graph.py` cover
+the upload→background-ingestion→status flow and the entity graph (previously untested).
 
 ### Web (`web/`)
 
