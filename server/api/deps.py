@@ -65,7 +65,7 @@ def get_rate_limited_chat_user(user: CurrentUser = Depends(get_current_user)) ->
     """
     Drop-in replacement for get_current_user on routes that spend Gemini
     quota per call (POST /conversations/{id}/messages) - authenticates
-    first, then enforces src/rate_limiter.py's per-user chat limit before
+    first, then enforces src/core/rate_limiter.py's per-user chat limit before
     the route body (and the Gemini calls inside it) ever runs.
     """
     enforce_chat_rate_limit(user.id)

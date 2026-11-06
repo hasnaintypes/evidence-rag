@@ -305,7 +305,7 @@ class DocumentService:
         """
         Resolves an ingested source file's on-disk/storage path for the
         citation viewer, enforcing ownership via a short-lived signed
-        `token` (src/security.py) rather than get_current_user - see
+        `token` (src/core/security.py) rather than get_current_user - see
         api/routers/documents.py's serve_source_document() docstring for
         why that route can't require a bearer token.
         """

@@ -1,7 +1,7 @@
 """
-Deletes query_log rows older than QUERY_LOG_RETENTION_DAYS (src/config.py,
+Deletes query_log rows older than QUERY_LOG_RETENTION_DAYS (src/core/config.py,
 default 30). The retention policy is now also enforced automatically -
-src/telemetry.py's log_query_event() runs the same purge lazily, gated to
+src/core/telemetry.py's log_query_event() runs the same purge lazily, gated to
 roughly once a day, piggybacked on real request traffic (see #29) - so
 this script is no longer the only thing that enforces it. It's still
 useful for an immediate/forced run (e.g. right after lowering

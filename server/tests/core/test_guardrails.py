@@ -1,4 +1,4 @@
-"""Unit tests for src/guardrails.py's prompt-injection heuristic scanner."""
+"""Unit tests for src/core/guardrails.py's prompt-injection heuristic scanner."""
 
 from src.core.guardrails import scan_for_injection_patterns
 

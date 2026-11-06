@@ -5,7 +5,7 @@ import sys
 # src...."/"from api...." imports to resolve, same requirement as api/app.py.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# src/config.py's Settings() requires GEMINI_API_KEY with no default, and is
+# src/core/config.py's Settings() requires GEMINI_API_KEY with no default, and is
 # instantiated at import time - CI has no server/.env file, so this has to
 # be set before any test file imports anything under src/. A placeholder is
 # fine: every test here mocks the Gemini call sites directly rather than

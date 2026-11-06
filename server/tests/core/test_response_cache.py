@@ -1,4 +1,4 @@
-"""Unit tests for src/response_cache.py's semantic response cache."""
+"""Unit tests for src/core/response_cache.py's semantic response cache."""
 
 import threading
 import time

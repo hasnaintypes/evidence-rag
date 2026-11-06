@@ -28,7 +28,7 @@ class GraphService:
     def get_section(node_id: str, user: CurrentUser) -> Dict[str, Any]:
         """The source section behind a graph node, for the UI's
         click-to-inspect panel. Also issues a signed source_token (see
-        src/security.py) so the "open source document" link can be built
+        src/core/security.py) so the "open source document" link can be built
         without the frontend needing to mint one itself."""
         node = get_node(node_id)
         if not node:
