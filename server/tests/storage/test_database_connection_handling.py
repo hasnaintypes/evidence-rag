@@ -18,6 +18,7 @@ sample of functions raise mid-body and asserting close() still ran.
 
 from unittest.mock import MagicMock, patch
 
+import psycopg2
 import pytest
 
 import src.storage.database as db
@@ -59,6 +60,54 @@ def test_connection_is_closed_even_when_the_query_raises(call):
             call()
 
     fake_conn.close.assert_called_once()
+
+
+def _fake_connection(alive: bool):
+    """A fake psycopg2 connection whose SELECT 1 liveness ping
+    (_is_alive()) succeeds or fails depending on `alive`."""
+    fake_cursor = MagicMock()
+    fake_cursor.__enter__ = MagicMock(return_value=fake_cursor)
+    fake_cursor.__exit__ = MagicMock(return_value=False)
+    if not alive:
+        fake_cursor.execute.side_effect = psycopg2.OperationalError("SSL connection has been closed unexpectedly")
+    fake_conn = MagicMock()
+    fake_conn.cursor.return_value = fake_cursor
+    return fake_conn
+
+
+def test_get_db_connection_discards_a_dead_pooled_connection_and_retries():
+    """Regression for #57: a connection the server dropped while idle
+    (Supabase pooler recycling it mid-eval-run) doesn't set conn.closed -
+    psycopg2 only finds out the socket is dead on the next real query.
+    get_db_connection() must ping with SELECT 1 on checkout, discard a
+    dead connection (close=True back to the pool), and retry with a
+    fresh one - rather than handing the dead one to the caller, whose
+    first real query would then fail with
+    `OperationalError: SSL connection has been closed unexpectedly`."""
+    dead_conn = _fake_connection(alive=False)
+    live_conn = _fake_connection(alive=True)
+    fake_pool = MagicMock()
+    fake_pool.getconn.side_effect = [dead_conn, live_conn]
+
+    with patch("src.storage.database._get_supabase_pool", return_value=fake_pool):
+        result = db.get_db_connection()
+
+    assert fake_pool.getconn.call_count == 2
+    fake_pool.putconn.assert_called_once_with(dead_conn, close=True)
+    assert result._conn is live_conn
+
+
+def test_get_db_connection_skips_the_retry_when_the_first_connection_is_alive():
+    live_conn = _fake_connection(alive=True)
+    fake_pool = MagicMock()
+    fake_pool.getconn.side_effect = [live_conn]
+
+    with patch("src.storage.database._get_supabase_pool", return_value=fake_pool):
+        result = db.get_db_connection()
+
+    assert fake_pool.getconn.call_count == 1
+    fake_pool.putconn.assert_not_called()
+    assert result._conn is live_conn
 
 
 def test_add_document_to_conversation_closes_on_a_business_rule_raise():

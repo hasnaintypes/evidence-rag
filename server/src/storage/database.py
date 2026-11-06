@@ -76,13 +76,41 @@ class _PooledConnection:
         return getattr(self._conn, name)
 
 
+def _is_alive(conn) -> bool:
+    """Pings a pooled psycopg2 connection with a trivial query. A server-
+    or network-side drop (idle timeout, Supabase pooler recycling it) does
+    NOT set conn.closed - psycopg2 only learns the socket is dead the next
+    time it actually tries to use it, which is exactly what _PooledConnection
+    .close()'s `self._conn.closed` check above can't catch. Checking here,
+    once per checkout, is what lets a dead connection get discarded before
+    a caller's real query fails on it (see #57 - a sequential eval run hit
+    `psycopg2.OperationalError: SSL connection has been closed unexpectedly`
+    on the first query after a connection had sat idle across several
+    slow Gemini API calls)."""
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT 1")
+        conn.rollback()
+        return True
+    except Exception:
+        return False
+
+
 def get_db_connection():
     """Returns a DB-API connection for the active storage backend.
     Rows are dict-like in both cases (sqlite3.Row / RealDictCursor) so
     row["col"] and dict(row) work identically regardless of storage_mode."""
     if settings.storage_mode == "supabase":
         pool = _get_supabase_pool()
-        return _PooledConnection(pool, pool.getconn())
+        conn = pool.getconn()
+        if not _is_alive(conn):
+            # Discard the dead connection instead of handing it to a
+            # caller whose first real query would otherwise fail on it -
+            # getconn() creates a fresh one as long as the pool is below
+            # maxconn, which discarding this one makes room for.
+            pool.putconn(conn, close=True)
+            conn = pool.getconn()
+        return _PooledConnection(pool, conn)
 
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
