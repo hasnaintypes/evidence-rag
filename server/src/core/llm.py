@@ -1,6 +1,8 @@
 import json
+import logging
 
 from google import genai
+from google.genai import errors as genai_errors
 from google.genai import types
 from src.core.config import settings
 from typing import Any, Dict, List, Optional
@@ -11,31 +13,84 @@ EMBEDDING_MODEL_NAME = settings.gemini_embedding_model
 
 client = genai.Client(api_key=settings.gemini_api_key)
 
+# Logs model-routing decisions (which candidate failed/was skipped and
+# why, which one ultimately answered) through the standard logging
+# module - same "inherits whatever handler the process entry point set
+# up for the root logger" convention as observability.py's
+# "evidence_rag.pipeline" logger, rather than returning this detail
+# through every caller's return value (judge.py, graph.py, reranker.py,
+# query_rewriter.py, query_pipeline.py all just want the generated text/
+# dict back, not a routing trace).
+logger = logging.getLogger("evidence_rag.llm")
+
 # --------------------------------------------------------------------------- #
 # Model routing / fallback
 #
-# generate_chat_response()/generate_structured_response() call the primary
-# model first, then settings.gemini_fallback_chat_model once on any
-# failure (API error, rate-limit, malformed response) - a single same-
-# provider fallback, not a retry loop or a multi-vendor abstraction (out
-# of scope - see GitHub issue #12's non-goals). Whichever model succeeds
-# returns through the exact same code path, so a fallback-model answer is
-# indistinguishable to query_pipeline.py from a primary-model one and
-# still goes through the faithfulness/abstention gates there - it isn't a
-# bypass, just a different source for the same "generated text" value.
+# generate_chat_response()/generate_structured_response() walk
+# _CHAT_MODEL_CANDIDATES in order, trying the next one on any failure
+# (API error, rate-limit, malformed response) - a same-provider cascade,
+# not a retry loop or a multi-vendor abstraction (out of scope - see
+# GitHub issue #12's non-goals). Whichever model succeeds returns through
+# the exact same code path, so a fallback-model answer is indistinguishable
+# to query_pipeline.py from a primary-model one and still goes through the
+# faithfulness/abstention gates there - it isn't a bypass, just a
+# different source for the same "generated text" value.
+#
+# The chain defaults to the 2-element (gemini_chat_model,
+# gemini_fallback_chat_model) pair for backward compatibility, but
+# settings.gemini_chat_model_chain (a comma-separated env var) can
+# override it with an arbitrary-length list - each extra model is a
+# separate free-tier quota bucket, directly multiplying the total request
+# budget available before every candidate is exhausted. See
+# scripts/list_available_models.py for discovering which model ids this
+# API key can actually call right now, rather than guessing from a
+# marketing-name list that may not match the real API model id.
 # --------------------------------------------------------------------------- #
 
-_CHAT_MODEL_CANDIDATES = (settings.gemini_chat_model, settings.gemini_fallback_chat_model)
+
+def _build_chat_model_chain() -> List[str]:
+    if settings.gemini_chat_model_chain.strip():
+        chain = [m.strip() for m in settings.gemini_chat_model_chain.split(",") if m.strip()]
+        if chain:
+            return chain
+    return [settings.gemini_chat_model, settings.gemini_fallback_chat_model]
+
+
+_CHAT_MODEL_CANDIDATES = _build_chat_model_chain()
+
+
+def _is_quota_or_rate_limit_error(exc: Exception) -> bool:
+    """True for Gemini's actual quota/rate-limit signal (HTTP 429 /
+    RESOURCE_EXHAUSTED), as opposed to some other failure (malformed
+    request, transient network error, etc). Doesn't change the cascade
+    behavior below - every failure still moves on to the next candidate
+    regardless of cause - but lets the routing log say *why* a candidate
+    was skipped, which is the detail #16's observability work is after:
+    seeing "candidate #3 is absorbing most traffic" as an early warning
+    before the whole chain is exhausted, rather than only finding out
+    once every model in it fails at once."""
+    if isinstance(exc, genai_errors.APIError):
+        if exc.code == 429:
+            return True
+        if exc.status and "RESOURCE_EXHAUSTED" in str(exc.status).upper():
+            return True
+    return False
+
+
+def _skip_reason(exc: Exception) -> str:
+    return "quota/rate-limit" if _is_quota_or_rate_limit_error(exc) else "error"
 
 
 def get_embedding(text: str) -> List[float]:
     """
     Generates a vector embedding for the provided text via the Gemini API.
 
-    Retries once on the same model (no model-swap fallback - a different
-    embedding model would produce a vector of a different dimension than
-    what's already indexed, see settings.gemini_fallback_chat_model's
-    comment). Still raises on a second failure, same as before this
+    Retries once on the same model (no model-swap fallback, and
+    deliberately no multi-model chain like the chat functions below have -
+    a different embedding model would produce a vector of a different
+    dimension/semantic space than what's already indexed; see
+    settings.gemini_fallback_chat_model's comment). Still raises on a
+    second failure, same as before this
     retry was added - callers (e.g. query_pipeline.py, via
     api/routers/conversations.py's blanket exception handler) already
     treat an uncaught embedding failure as a pipeline failure to report
@@ -51,9 +106,9 @@ def get_embedding(text: str) -> List[float]:
 
 def generate_chat_response(prompt: str, max_tokens: Optional[int] = None) -> str:
     """
-    Sends the augmented prompt to Gemini and returns the response, trying
-    settings.gemini_fallback_chat_model once if the primary model's call
-    fails for any reason (API error, rate-limit, etc).
+    Sends the augmented prompt to Gemini and returns the response, walking
+    _CHAT_MODEL_CANDIDATES (settings.gemini_chat_model_chain, or the
+    2-element primary/fallback pair by default) until one succeeds.
 
     max_tokens: overrides settings.generation_max_tokens for this call.
     Useful for short, structured outputs (e.g. entity extraction JSON
@@ -78,10 +133,15 @@ def generate_chat_response(prompt: str, max_tokens: Optional[int] = None) -> str
             # worth trying the fallback on too, same as
             # generate_structured_response()'s empty-response check below.
             if response.text:
+                if model != _CHAT_MODEL_CANDIDATES[0]:
+                    logger.warning("generate_chat_response: served by fallback candidate %r", model)
                 return response.text
             errors.append(f"{model}: empty response")
+            logger.warning("generate_chat_response: candidate %r returned an empty response, trying next", model)
         except Exception as e:
             errors.append(f"{model}: {e}")
+            logger.warning("generate_chat_response: candidate %r failed (%s), trying next", model, _skip_reason(e))
+    logger.error("generate_chat_response: every candidate in the chain failed: %s", "; ".join(errors))
     return f"Error during generation: {'; '.join(errors)}"
 
 
@@ -134,8 +194,8 @@ def generate_structured_response(
     Returns None on any failure (API error, non-JSON output, schema
     mismatch) so callers can fall back gracefully rather than crash -
     same "best-effort enrichment, never breaks the main response" pattern
-    as the rest of this module. Tries settings.gemini_fallback_chat_model
-    once if the primary model's call fails, same as generate_chat_response().
+    as the rest of this module. Walks the same _CHAT_MODEL_CANDIDATES
+    chain as generate_chat_response().
     """
     config = types.GenerateContentConfig(
         temperature=temperature,
@@ -148,8 +208,15 @@ def generate_structured_response(
             response = client.models.generate_content(model=model, contents=prompt, config=config)
             raw_text = response.text
             if not raw_text:
+                logger.warning("generate_structured_response: candidate %r returned an empty response", model)
                 continue
-            return json.loads(raw_text)
-        except Exception:
-            continue
+            parsed = json.loads(raw_text)
+            if model != _CHAT_MODEL_CANDIDATES[0]:
+                logger.warning("generate_structured_response: served by fallback candidate %r", model)
+            return parsed
+        except Exception as e:
+            logger.warning(
+                "generate_structured_response: candidate %r failed (%s), trying next", model, _skip_reason(e)
+            )
+    logger.error("generate_structured_response: every candidate in the chain failed")
     return None

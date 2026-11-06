@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     gemini_chat_model: str = "gemini-2.5-flash"
     gemini_embedding_model: str = "gemini-embedding-001"
     # Same-provider fallback used by generate_chat_response()/
-    # generate_structured_response() (src/llm.py) when the primary chat
+    # generate_structured_response() (src/core/llm.py) when the primary chat
     # model's call fails or rate-limits - a different model is often on a
     # separate quota bucket, so this is a real mitigation for exactly the
     # failure this session hit while tuning #10's faithfulness threshold
@@ -62,6 +62,17 @@ class Settings(BaseSettings):
     # width for the already-indexed corpus. get_embedding() retries the
     # same model instead.
     gemini_fallback_chat_model: str = "gemini-2.5-flash-lite"
+    # Optional longer chain, comma-separated (e.g.
+    # "gemini-2.5-flash,gemini-2.5-flash-lite,gemini-2.0-flash,gemini-2.0-flash-lite"),
+    # split at point of use in llm.py - same convention as
+    # cors_allowed_origins above, not a pydantic-parsed list field.
+    # Empty (the default) means "use gemini_chat_model/gemini_fallback_chat_model
+    # above as a 2-element chain" for backward compatibility with existing
+    # .env files; setting this overrides them with an arbitrary-length
+    # chain instead. Each extra model is a free-tier quota bucket of its
+    # own - see scripts/list_available_models.py for discovering which
+    # model ids this API key can actually call before putting them here.
+    gemini_chat_model_chain: str = ""
 
     # --- Entity graph (opt-in, adds one LLM call per document section) ---
     enable_entity_graph: bool = False
