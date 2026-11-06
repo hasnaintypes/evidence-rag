@@ -125,12 +125,18 @@ Action, `pg_cron`) depends on deployment specifics this project doesn't hardcode
 app's Gemini quota through repeated requests (#15). Both are in-memory/per-process, same limitation
 as `response_cache.py`/`hybrid.py`'s index cache below.
 
-Chat/structured generation calls (`src/core/llm.py`) try a configured fallback model
-(`GEMINI_FALLBACK_CHAT_MODEL`) once if the primary model's call fails or rate-limits — a real
-mitigation, not just theoretical: this project hit the free tier's daily quota mid-session while
-tuning the faithfulness threshold above. Embedding calls retry the same model instead, since
-`document_chunks.embedding` is a fixed-width pgvector column tied to one embedding model's output
-dimension.
+Chat/structured generation calls (`src/core/llm.py`) walk a configured chat-model chain until one
+succeeds — a real mitigation, not just theoretical: this project hit the free tier's daily quota
+mid-session while tuning the faithfulness threshold above. The chain defaults to the 2-element
+`GEMINI_CHAT_MODEL`/`GEMINI_FALLBACK_CHAT_MODEL` pair, but `GEMINI_CHAT_MODEL_CHAIN` (comma-separated)
+overrides it with an arbitrary-length list — each extra model is a separate free-tier quota bucket.
+`scripts/list_available_models.py` lists which model ids a given key can actually call right now
+(filtered by name heuristic to exclude TTS/image/music/agent-product models that also expose the
+same `generateContent` action) to build that value from, rather than guessing. Failures are logged
+through the `evidence_rag.llm` logger with whether the skip was quota/rate-limit-shaped or some
+other error, same "inherits the root logger's handler" pattern as `src/core/observability.py`.
+Embedding calls retry the same model instead (no chain), since `document_chunks.embedding` is a
+fixed-width pgvector column tied to one embedding model's output dimension.
 
 Document chunks are untrusted content (any signed-in user can upload a document) that gets embedded
 verbatim into the generation prompt — `src/core/guardrails.py`'s `scan_for_injection_patterns()` flags

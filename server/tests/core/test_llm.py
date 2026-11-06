@@ -6,6 +6,7 @@ failure across both models must still report honestly rather than raise."""
 from unittest.mock import MagicMock, patch
 
 import pytest
+from google.genai import errors as genai_errors
 
 import src.core.llm as llm
 from src.core.config import settings
@@ -156,3 +157,77 @@ def test_get_embedding_still_raises_if_both_attempts_fail():
     with patch.object(llm.client.models, "embed_content", side_effect=RuntimeError("down")):
         with pytest.raises(RuntimeError):
             llm.get_embedding("some text")
+
+
+# --- Configurable chat model chain (GEMINI_CHAT_MODEL_CHAIN) ---------------
+
+
+def test_build_chat_model_chain_falls_back_to_the_two_field_default(monkeypatch):
+    monkeypatch.setattr(settings, "gemini_chat_model_chain", "")
+    assert llm._build_chat_model_chain() == [settings.gemini_chat_model, settings.gemini_fallback_chat_model]
+
+
+def test_build_chat_model_chain_parses_an_arbitrary_length_comma_separated_list(monkeypatch):
+    monkeypatch.setattr(
+        settings, "gemini_chat_model_chain", "gemini-2.5-flash, gemini-2.0-flash ,gemini-2.0-flash-lite"
+    )
+    assert llm._build_chat_model_chain() == ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
+
+
+def test_build_chat_model_chain_treats_whitespace_only_as_unset(monkeypatch):
+    monkeypatch.setattr(settings, "gemini_chat_model_chain", "   ")
+    assert llm._build_chat_model_chain() == [settings.gemini_chat_model, settings.gemini_fallback_chat_model]
+
+
+def test_generate_chat_response_walks_a_longer_configured_chain(monkeypatch):
+    monkeypatch.setattr(llm, "_CHAT_MODEL_CANDIDATES", ["model-a", "model-b", "model-c"])
+    calls = []
+
+    def fake_generate_content(model, contents, config):
+        calls.append(model)
+        if model == "model-c":
+            return _FakeResponse("third model answered")
+        raise RuntimeError(f"{model} down")
+
+    with patch.object(llm.client.models, "generate_content", side_effect=fake_generate_content):
+        result = llm.generate_chat_response("some prompt")
+
+    assert result == "third model answered"
+    assert calls == ["model-a", "model-b", "model-c"]
+
+
+# --- Quota/rate-limit error classification ----------------------------------
+
+
+def _quota_error() -> genai_errors.ClientError:
+    return genai_errors.ClientError(429, {"error": {"status": "RESOURCE_EXHAUSTED", "message": "quota exceeded"}})
+
+
+def test_is_quota_or_rate_limit_error_detects_a_429():
+    assert llm._is_quota_or_rate_limit_error(_quota_error()) is True
+
+
+def test_is_quota_or_rate_limit_error_detects_resource_exhausted_status_without_code_429():
+    exc = genai_errors.APIError(400, {"error": {"status": "RESOURCE_EXHAUSTED", "message": "quota"}})
+    assert llm._is_quota_or_rate_limit_error(exc) is True
+
+
+def test_is_quota_or_rate_limit_error_false_for_an_unrelated_error():
+    assert llm._is_quota_or_rate_limit_error(RuntimeError("network blip")) is False
+    assert llm._is_quota_or_rate_limit_error(genai_errors.APIError(500, {"error": {"status": "INTERNAL"}})) is False
+
+
+def test_generate_chat_response_logs_the_quota_skip_reason(monkeypatch, caplog):
+    monkeypatch.setattr(llm, "_CHAT_MODEL_CANDIDATES", ["model-a", "model-b"])
+
+    def fake_generate_content(model, contents, config):
+        if model == "model-a":
+            raise _quota_error()
+        return _FakeResponse("answer")
+
+    with patch.object(llm.client.models, "generate_content", side_effect=fake_generate_content):
+        with caplog.at_level("WARNING", logger="evidence_rag.llm"):
+            result = llm.generate_chat_response("some prompt")
+
+    assert result == "answer"
+    assert any("quota/rate-limit" in record.message for record in caplog.records)
