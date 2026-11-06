@@ -834,13 +834,10 @@ def insert_chunk(chunk: Dict[str, Any], embedding: List[float]) -> None:
     conn.close()
 
 
-def get_all_chunks_for_sparse() -> List[Dict[str, Any]]:
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM document_chunks")
-    rows = cursor.fetchall()
-    conn.close()
-
+def _decode_chunk_rows(rows: List[Any]) -> List[Dict[str, Any]]:
+    """Shared by get_all_chunks_for_sparse()/get_chunks_for_sparse_by_doc_ids()
+    below - decodes each row's embedding (and, for local mode, node_ids/bbox)
+    out of its stored text/BLOB representation into real Python objects."""
     is_supabase = settings.storage_mode == "supabase"
     chunks = []
     for row in rows:
@@ -855,6 +852,37 @@ def get_all_chunks_for_sparse() -> List[Dict[str, Any]]:
             d["bbox"] = json.loads(d["bbox"]) if d["bbox"] else None
         chunks.append(d)
     return chunks
+
+
+def get_all_chunks_for_sparse() -> List[Dict[str, Any]]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM document_chunks")
+    rows = cursor.fetchall()
+    conn.close()
+    return _decode_chunk_rows(rows)
+
+
+def get_chunks_for_sparse_by_doc_ids(doc_ids: List[str]) -> List[Dict[str, Any]]:
+    """
+    Same row shape as get_all_chunks_for_sparse(), but filtered to
+    `doc_ids` directly in SQL (WHERE doc_id IN (...)) instead of fetching
+    the whole corpus and filtering in Python afterward - see #27.
+
+    Used by retrieval/hybrid.py's hybrid_retrieve() whenever doc_ids is
+    given (every real chat request - conversations are always scoped to
+    1-5 documents), so sparse (BM25) retrieval only ever scores chunks
+    from those documents regardless of how large the total corpus grows,
+    matching what dense_ann_search() above already does for the dense
+    layer in supabase mode. doc_ids must be non-empty - callers already
+    only reach this when doc_ids is truthy.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(f"SELECT * FROM document_chunks WHERE doc_id IN ({_ph(len(doc_ids))})", tuple(doc_ids))
+    rows = cursor.fetchall()
+    conn.close()
+    return _decode_chunk_rows(rows)
 
 
 def dense_ann_search(

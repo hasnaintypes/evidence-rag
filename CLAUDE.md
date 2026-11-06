@@ -168,8 +168,15 @@ HNSW index caps at 2000 dimensions and `gemini-embedding-001` produces 3072-dim 
 against the index (including `dense_ann_search()`) must apply the identical `::halfvec(3072)` cast on
 both sides of `<=>`, or the planner silently falls back to a full sequential scan instead of using the
 index. `dense_ann_search()` also filters by `doc_ids` directly in SQL (`WHERE doc_id = ANY(...)`)
-rather than post-filtering a full-corpus ranking — partial progress on #27 for the dense layer only;
-the sparse/BM25 layer still scores the full cached corpus regardless of backend.
+rather than post-filtering a full-corpus ranking. The sparse/BM25 layer is scoped the same way now
+too (#27, closed): whenever `doc_ids` is given (every real chat request — conversations are always
+scoped to 1-5 documents), `retrieval/hybrid.py` builds its BM25 index (and, in local/SQLite mode, the
+dense matrix) from `database.py`'s `get_chunks_for_sparse_by_doc_ids()` (`WHERE doc_id IN (...)`)
+instead of the full-corpus cache, so per-query latency/memory scales with the conversation's own
+document set, not the total system-wide corpus. That scoped index is itself cached per doc_ids scope
+(`_get_scoped_index()`, LRU-bounded) so a conversation's repeated turns against the same documents
+don't rebuild it every message. The full-corpus cache (`_build_index()`/`_get_index()`) still exists
+for the one remaining `doc_ids=None` caller, `scripts/run_eval.py`'s full-corpus eval search.
 
 ### Routers are thin; `api/services/` holds the logic; `api/authz.py` holds ownership checks
 

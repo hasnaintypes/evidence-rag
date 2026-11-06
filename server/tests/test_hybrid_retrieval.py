@@ -48,17 +48,22 @@ def test_local_mode_dense_retrieval_still_uses_the_in_memory_matrix():
 def test_supabase_mode_dense_retrieval_calls_the_ann_search(monkeypatch):
     """storage_mode="supabase" must route dense retrieval through
     dense_ann_search() (the pgvector HNSW ANN query) instead of building
-    an in-memory embedding matrix - the cached index's embedding_matrix
-    should stay None, and the fused ranking should reflect the ANN
-    search's returned order."""
+    an in-memory embedding matrix, and (with doc_ids given, the real
+    chat-request path - see #27) sparse retrieval is scoped via
+    get_chunks_for_sparse_by_doc_ids() rather than the global cache. The
+    fused ranking should reflect the ANN search's returned order."""
     monkeypatch.setattr(settings, "storage_mode", "supabase")
-    hybrid.invalidate_index_cache()
 
     all_chunks = [
         {"id": 1, "doc_id": "doc-1", "chunk_text": "grease the spindle every 600 hours", "embedding": [1, 0, 0]},
         {"id": 2, "doc_id": "doc-1", "chunk_text": "replace the air filter annually", "embedding": [0, 1, 0]},
     ]
 
+    # _get_scoped_index()'s own staleness check (_current_chunk_count())
+    # hits get_db_connection() directly - stubbed out here the same way
+    # as the rest of this test's DB-layer calls, since a real connection
+    # under storage_mode="supabase" would try to reach an actual Postgres
+    # instance via SUPABASE_DB_URL, which isn't configured in tests.
     fake_cursor = MagicMock()
     fake_cursor.fetchone.return_value = {"cnt": len(all_chunks)}
     fake_conn = MagicMock()
@@ -66,7 +71,8 @@ def test_supabase_mode_dense_retrieval_calls_the_ann_search(monkeypatch):
 
     with (
         patch("src.retrieval.hybrid.get_db_connection", return_value=fake_conn),
-        patch("src.retrieval.hybrid.get_all_chunks_for_sparse", return_value=all_chunks),
+        patch("src.retrieval.hybrid.get_chunks_for_sparse_by_doc_ids", return_value=all_chunks) as mock_scoped_fetch,
+        patch("src.retrieval.hybrid.get_all_chunks_for_sparse") as mock_global_fetch,
         patch("src.retrieval.hybrid.get_indexed_embedding_models", return_value=[]),
         patch(
             "src.retrieval.hybrid.dense_ann_search",
@@ -77,11 +83,13 @@ def test_supabase_mode_dense_retrieval_calls_the_ann_search(monkeypatch):
             query_text="grease", query_embedding=[1.0, 0.0, 0.0], top_k=5, doc_ids=["doc-1"]
         )
 
+    mock_scoped_fetch.assert_called_once_with(["doc-1"])
+    mock_global_fetch.assert_not_called()  # the global cache must not be touched for a scoped request
+
     mock_ann.assert_called_once()
     _, call_kwargs = mock_ann.call_args
     assert call_kwargs["doc_ids"] == ["doc-1"]
 
-    assert hybrid._cache["embedding_matrix"] is None
     # chunk id 2 was ranked first by the (mocked) ANN search, even though
     # id 1 is the sparse/BM25 winner for this query - confirms the fused
     # rank actually reflects dense_ann_search's order rather than falling
