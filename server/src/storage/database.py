@@ -1,11 +1,30 @@
 import sqlite3
 import json
 import os
+import time
 from typing import List, Dict, Any, Optional
 
 from src.core.config import settings
 
 DB_PATH = "data/rag.db"
+
+# How long a liveness check (_is_alive()) is trusted before re-checking the
+# same connection object again - without this, every single
+# get_db_connection() call (dozens per request - see telemetry.py/hybrid.py/
+# every service) would pay an extra SELECT 1 round trip on top of its real
+# query, undoing much of what pooling was introduced to avoid (see
+# _get_supabase_pool()'s docstring). 30s comfortably covers the gap between
+# a request's own DB calls; a connection idle long enough to actually go
+# stale (minutes, per #57) will always be past this window when next
+# borrowed.
+_LIVENESS_CHECK_INTERVAL_SECONDS = 30
+
+# Bounded, not open-ended, same "one bounded retry" pattern as llm.py's
+# model-fallback chain and query_pipeline.py's single extra retrieval hop -
+# covers a handful of stale connections accumulated in the pool, not "every
+# connection in the pool is dead" (a real outage worth surfacing via the
+# caller's own query failing, not retried forever here).
+_MAX_LIVENESS_CHECKOUT_ATTEMPTS = 3
 
 # --------------------------------------------------------------------------- #
 # Connection
@@ -37,12 +56,27 @@ def _get_supabase_pool():
     global _supabase_pool
     if _supabase_pool is None:
         import psycopg2.pool
+        import psycopg2.extensions
         import psycopg2.extras
 
         if not settings.supabase_db_url:
             raise RuntimeError("STORAGE_MODE=supabase requires SUPABASE_DB_URL to be set.")
+
+        class _TrackedConnection(psycopg2.extensions.connection):
+            """Plain psycopg2 connection objects have no __dict__, so they
+            can't carry a last_verified_at attribute directly - subclassing
+            (not the base connection class itself) is what makes _is_alive()
+            below able to remember when a given connection was last pinged,
+            instead of re-checking every single checkout."""
+
+            last_verified_at: float = 0.0
+
         _supabase_pool = psycopg2.pool.ThreadedConnectionPool(
-            minconn=1, maxconn=10, dsn=settings.supabase_db_url, cursor_factory=psycopg2.extras.RealDictCursor
+            minconn=1,
+            maxconn=10,
+            dsn=settings.supabase_db_url,
+            cursor_factory=psycopg2.extras.RealDictCursor,
+            connection_factory=_TrackedConnection,
         )
     return _supabase_pool
 
@@ -76,13 +110,50 @@ class _PooledConnection:
         return getattr(self._conn, name)
 
 
+def _is_alive(conn) -> bool:
+    """Pings a pooled psycopg2 connection with a trivial query, unless it
+    was already verified within _LIVENESS_CHECK_INTERVAL_SECONDS (tracked
+    on the connection itself - see _TrackedConnection above). A server- or
+    network-side drop (idle timeout, Supabase pooler recycling it) does
+    NOT set conn.closed - psycopg2 only learns the socket is dead the next
+    time it actually tries to use it, which is exactly what
+    _PooledConnection.close()'s `self._conn.closed` check can't catch.
+    Checking on checkout is what lets a dead connection get discarded
+    before a caller's real query fails on it (see #57 - a sequential eval
+    run hit `psycopg2.OperationalError: SSL connection has been closed
+    unexpectedly` on the first query after a connection had sat idle
+    across several slow Gemini API calls)."""
+    now = time.monotonic()
+    if now - getattr(conn, "last_verified_at", 0.0) < _LIVENESS_CHECK_INTERVAL_SECONDS:
+        return True
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT 1")
+        conn.rollback()
+        conn.last_verified_at = now
+        return True
+    except Exception:
+        return False
+
+
 def get_db_connection():
     """Returns a DB-API connection for the active storage backend.
     Rows are dict-like in both cases (sqlite3.Row / RealDictCursor) so
     row["col"] and dict(row) work identically regardless of storage_mode."""
     if settings.storage_mode == "supabase":
         pool = _get_supabase_pool()
-        return _PooledConnection(pool, pool.getconn())
+        conn = pool.getconn()
+        attempts = 1
+        # Bounded retry (_MAX_LIVENESS_CHECKOUT_ATTEMPTS), not a single
+        # fixed retry - ThreadedConnectionPool.getconn() pops from its own
+        # idle-connection list, so a second call can just as easily hand
+        # back another already-stale connection if more than one went bad
+        # at once, not necessarily a fresh one.
+        while not _is_alive(conn) and attempts < _MAX_LIVENESS_CHECKOUT_ATTEMPTS:
+            pool.putconn(conn, close=True)
+            conn = pool.getconn()
+            attempts += 1
+        return _PooledConnection(pool, conn)
 
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
