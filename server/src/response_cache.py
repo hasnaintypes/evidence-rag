@@ -143,10 +143,11 @@ def invalidate_doc_id(doc_id: str) -> None:
     """
     Drops every cached entry for any scope whose doc_ids set includes
     `doc_id` - called when a document's indexed content changes (see
-    ingestion/pipeline.py's prepare_ingest(), right before
+    ingestion/pipeline.py's finish_ingest(), right before
     delete_document_data() clears the old nodes/chunks for a re-ingested
-    file) so a stale, pre-edit cached answer can't outlive the content it
-    was generated from. Scope keys are "doc_id,doc_id,...|advanced_mode"
+    file, once the new content's embeddings have actually succeeded) so a
+    stale, pre-edit cached answer can't outlive the content it was
+    generated from. Scope keys are "doc_id,doc_id,...|advanced_mode"
     (see _scope_key()), so a plain comma-split membership check is enough
     without needing a parallel doc_id -> scope-keys index.
     """
