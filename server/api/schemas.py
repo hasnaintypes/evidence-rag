@@ -47,3 +47,20 @@ class MessageOut(BaseModel):
 class ConversationDetailOut(BaseModel):
     conversation: ConversationOut
     messages: list[MessageOut]
+
+
+class ConversationListOut(BaseModel):
+    conversations: list[ConversationOut]
+
+
+class ChatReplyOut(MessageOut):
+    """POST /conversations/{id}/messages's response shape - a message
+    row plus the extra explainability fields query_pipeline.py attaches
+    (telemetry, chunks_matrix, thinking) that the frontend's chat panel
+    reads directly. Kept as its own schema rather than reusing MessageOut
+    as-is, since a bare response_model=MessageOut here would silently
+    strip these fields instead of validating them (#56)."""
+
+    telemetry: dict = {}
+    chunks_matrix: list = []
+    thinking: str = ""

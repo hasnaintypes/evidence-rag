@@ -117,7 +117,7 @@ def test_upload_schedules_finish_ingest_with_nodes_and_is_replace(client, app):
         }
         response = _upload(client)
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     body = response.json()
     assert body["status"] == "processing"
     assert body["doc_id"] == "doc-1"
@@ -150,4 +150,4 @@ def test_upload_handles_missing_nodes_is_replace_keys_gracefully(client, app, is
     ):
         response = _upload(client)
 
-    assert response.status_code == 200
+    assert response.status_code == 202

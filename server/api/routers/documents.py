@@ -1,4 +1,4 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, Response, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
 
 from api.deps import get_current_user, get_rate_limited_upload_user, CurrentUser
@@ -15,11 +15,18 @@ def documents_endpoint(user: CurrentUser = Depends(get_current_user)):
 
 @router.post("/upload")
 def upload_file_endpoint(
+    response: Response,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     user: CurrentUser = Depends(get_rate_limited_upload_user),
 ):
-    return DocumentService.upload(file, user, background_tasks)
+    result = DocumentService.upload(file, user, background_tasks)
+    # Only the "processing" case actually schedules a background task -
+    # "unchanged" (hash-based dedup short-circuit) did no work, so it
+    # keeps the default 200 rather than always claiming 202 (#56).
+    if result["status"] == "processing":
+        response.status_code = 202
+    return result
 
 
 @router.patch("/documents/{doc_id}")
@@ -32,7 +39,7 @@ def delete_document_endpoint(doc_id: str, user: CurrentUser = Depends(get_curren
     return DocumentService.delete(doc_id, user)
 
 
-@router.post("/documents/{doc_id}/reingest")
+@router.post("/documents/{doc_id}/reingest", status_code=202)
 def reingest_document_endpoint(
     doc_id: str, background_tasks: BackgroundTasks, user: CurrentUser = Depends(get_rate_limited_upload_user)
 ):
