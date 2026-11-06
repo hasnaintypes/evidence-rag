@@ -21,6 +21,27 @@ function authHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+// FastAPI's HTTPException responses carry a {"detail": "..."} body with
+// the specific reason (409 filename conflicts, 413 size limits, 400
+// unsupported format, etc. - see server/api/services/*.py's
+// raise HTTPException(..., detail=...) call sites). Returns null (not
+// the generic fallback) on anything that doesn't match that shape
+// (empty body, non-JSON body, or a FastAPI 422 validation error, whose
+// "detail" is a list of per-field errors, not a single string) so the
+// caller can fall back to its own generic message instead of surfacing
+// "[object Object]" or similar.
+async function extractErrorDetail(response: Response): Promise<string | null> {
+  try {
+    const body = (await response.json()) as { detail?: unknown };
+    if (typeof body?.detail === "string" && body.detail.trim()) {
+      return body.detail;
+    }
+  } catch {
+    // Not JSON (or no body) - nothing to extract.
+  }
+  return null;
+}
+
 async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const auth = authHeaders();
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -28,7 +49,8 @@ async function apiFetch(path: string, init: RequestInit = {}): Promise<Response>
     headers: { ...auth, ...(init.headers ?? {}) },
   });
   if (!response.ok) {
-    throw new Error(`Request to ${path} failed with status ${response.status}`);
+    const detail = await extractErrorDetail(response);
+    throw new Error(detail ?? `Request to ${path} failed with status ${response.status}`);
   }
   return response;
 }
