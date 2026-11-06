@@ -13,8 +13,8 @@ thread, keeping assertions deterministic without a real race."""
 import logging
 from unittest.mock import patch
 
-import src.telemetry as telemetry
-from src.telemetry import log_query_event
+import src.core.telemetry as telemetry
+from src.core.telemetry import log_query_event
 
 
 class _ImmediateThread:
@@ -29,12 +29,12 @@ class _ImmediateThread:
 
 
 def _log_once():
-    with patch("src.telemetry.threading.Thread", _ImmediateThread):
+    with patch("src.core.telemetry.threading.Thread", _ImmediateThread):
         log_query_event(query="q", telemetry={})
 
 
 def test_sweep_runs_on_the_first_logged_query(caplog):
-    with patch("src.telemetry.purge_query_log", return_value=3) as mock_purge:
+    with patch("src.core.telemetry.purge_query_log", return_value=3) as mock_purge:
         with caplog.at_level(logging.INFO, logger="evidence_rag.telemetry"):
             _log_once()
 
@@ -43,7 +43,7 @@ def test_sweep_runs_on_the_first_logged_query(caplog):
 
 
 def test_sweep_does_not_run_again_within_the_interval():
-    with patch("src.telemetry.purge_query_log", return_value=0) as mock_purge:
+    with patch("src.core.telemetry.purge_query_log", return_value=0) as mock_purge:
         _log_once()
         _log_once()
         _log_once()
@@ -52,7 +52,7 @@ def test_sweep_does_not_run_again_within_the_interval():
 
 
 def test_sweep_runs_again_once_the_interval_has_elapsed():
-    with patch("src.telemetry.purge_query_log", return_value=0) as mock_purge:
+    with patch("src.core.telemetry.purge_query_log", return_value=0) as mock_purge:
         _log_once()
         telemetry._last_purge_attempt -= telemetry.PURGE_CHECK_INTERVAL_SECONDS + 1
         _log_once()
@@ -61,7 +61,7 @@ def test_sweep_runs_again_once_the_interval_has_elapsed():
 
 
 def test_a_purge_failure_is_logged_not_raised(caplog):
-    with patch("src.telemetry.purge_query_log", side_effect=RuntimeError("db unavailable")):
+    with patch("src.core.telemetry.purge_query_log", side_effect=RuntimeError("db unavailable")):
         with caplog.at_level(logging.ERROR, logger="evidence_rag.telemetry"):
             _log_once()  # must not raise
 
@@ -69,7 +69,7 @@ def test_a_purge_failure_is_logged_not_raised(caplog):
 
 
 def test_no_log_line_when_nothing_was_deleted(caplog):
-    with patch("src.telemetry.purge_query_log", return_value=0):
+    with patch("src.core.telemetry.purge_query_log", return_value=0):
         with caplog.at_level(logging.INFO, logger="evidence_rag.telemetry"):
             _log_once()
 
@@ -96,7 +96,7 @@ def test_the_sweep_does_not_run_on_the_calling_thread():
         release.wait(timeout=2)
         return 0
 
-    with patch("src.telemetry.purge_query_log", side_effect=_slow_purge):
+    with patch("src.core.telemetry.purge_query_log", side_effect=_slow_purge):
         log_query_event(query="q", telemetry={})
         # The call above only dispatches the thread; give it a moment to
         # actually start running _slow_purge before asserting.

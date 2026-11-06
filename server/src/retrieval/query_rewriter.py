@@ -1,6 +1,6 @@
 from typing import List
 
-from src.llm import generate_chat_response
+from src.core.llm import generate_chat_response
 
 MAX_QUERY_TRACKS = 3
 

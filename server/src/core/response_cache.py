@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from src.config import settings
+from src.core.config import settings
 
 # --------------------------------------------------------------------------- #
 # Semantic response cache

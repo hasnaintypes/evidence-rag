@@ -3,8 +3,8 @@
 import threading
 import time
 
-from src.config import settings
-from src.response_cache import get_cached_response, invalidate_doc_id, store_cached_response
+from src.core.config import settings
+from src.core.response_cache import get_cached_response, invalidate_doc_id, store_cached_response
 
 
 def test_miss_on_an_empty_cache():

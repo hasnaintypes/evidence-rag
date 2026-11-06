@@ -4,7 +4,7 @@ import numpy as np
 from typing import List, Dict, Any, Optional
 from rank_bm25 import BM25Okapi
 
-from src.config import settings
+from src.core.config import settings
 from src.storage.database import (
     dense_ann_search,
     get_all_chunks_for_sparse,
@@ -12,7 +12,7 @@ from src.storage.database import (
     get_db_connection,
     get_indexed_embedding_models,
 )
-from src.llm import EMBEDDING_MODEL_NAME
+from src.core.llm import EMBEDDING_MODEL_NAME
 
 # --------------------------------------------------------------------------- #
 # In-memory index cache - full-corpus (doc_ids=None) path only

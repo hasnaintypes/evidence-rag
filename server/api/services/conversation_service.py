@@ -6,7 +6,7 @@ from fastapi import HTTPException
 from api.authz import get_owned_conversation
 from api.deps import CurrentUser
 from src.query_pipeline import process_chat_query
-from src.security import generate_source_token
+from src.core.security import generate_source_token
 from src.storage.database import (
     add_document_to_conversation,
     all_documents_accessible,

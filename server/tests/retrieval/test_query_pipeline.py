@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 
 import src.query_pipeline as qp
-from src.config import settings
+from src.core.config import settings
 
 
 def _base_chunk(**overrides):

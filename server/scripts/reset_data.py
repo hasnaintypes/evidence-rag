@@ -13,7 +13,7 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.config import settings
+from src.core.config import settings
 from src.storage.database import get_db_connection
 
 # Order doesn't matter functionally (no FK constraints are declared in

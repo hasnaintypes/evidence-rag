@@ -3,7 +3,7 @@ JWT logic, no DB/network involved."""
 
 import time
 
-from src.security import generate_source_token, verify_source_token
+from src.core.security import generate_source_token, verify_source_token
 
 
 def test_valid_token_returns_the_issuing_user_id():

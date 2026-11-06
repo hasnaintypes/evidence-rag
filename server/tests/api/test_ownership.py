@@ -10,7 +10,7 @@ from src.storage.database import (
     insert_nodes,
     create_conversation,
 )
-from src.security import generate_source_token
+from src.core.security import generate_source_token
 
 OWNER = "owner-user"
 OTHER = "other-user"

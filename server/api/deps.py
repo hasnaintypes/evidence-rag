@@ -1,8 +1,8 @@
 import jwt
 from fastapi import Depends, Header, HTTPException
 
-from src.config import settings
-from src.rate_limiter import enforce_chat_rate_limit, enforce_upload_rate_limit
+from src.core.config import settings
+from src.core.rate_limiter import enforce_chat_rate_limit, enforce_upload_rate_limit
 
 # Cached JWKS client - fetches and caches Supabase's public signing keys
 # from its well-known endpoint, so verification never needs a shared

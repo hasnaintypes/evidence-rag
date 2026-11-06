@@ -22,7 +22,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.config import EVAL_METRICS_PATH, EVAL_BASELINE_PATH
+from src.core.config import EVAL_METRICS_PATH, EVAL_BASELINE_PATH
 
 REGRESSION_THRESHOLD = 0.05  # absolute drop that counts as a regression
 COMMENT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "eval_comment.md")

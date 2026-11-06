@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional
 
-from src.llm import generate_structured_response
+from src.core.llm import generate_structured_response
 
 # --------------------------------------------------------------------------- #
 # Answer faithfulness scoring (LLM-as-judge)

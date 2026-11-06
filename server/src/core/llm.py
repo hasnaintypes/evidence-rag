@@ -2,7 +2,7 @@ import json
 
 from google import genai
 from google.genai import types
-from src.config import settings
+from src.core.config import settings
 from typing import Any, Dict, List, Optional
 
 # Tracked so db.py can flag a change of embedding model, which would

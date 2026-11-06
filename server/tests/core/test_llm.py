@@ -7,8 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import src.llm as llm
-from src.config import settings
+import src.core.llm as llm
+from src.core.config import settings
 
 
 class _FakeResponse:

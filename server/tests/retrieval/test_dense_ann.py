@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.config import settings
+from src.core.config import settings
 from src.storage.database import dense_ann_search
 
 

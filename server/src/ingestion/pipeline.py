@@ -3,7 +3,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any
 
-from src.config import settings
+from src.core.config import settings
 from src.storage.database import (
     insert_chunks_batch,
     insert_nodes,
@@ -17,8 +17,8 @@ from src.storage.database import (
 from src.ingestion.parsers import get_parser
 from src.ingestion.parsers.base import NodeType
 from src.ingestion.chunking import chunk_document, chunk_nodes
-from src.llm import get_embedding, EMBEDDING_MODEL_NAME
-from src.response_cache import invalidate_doc_id
+from src.core.llm import get_embedding, EMBEDDING_MODEL_NAME
+from src.core.response_cache import invalidate_doc_id
 from src.retrieval.hybrid import invalidate_index_cache
 from src.graph import build_document_graph
 

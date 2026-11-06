@@ -5,9 +5,9 @@ import time
 import pytest
 from fastapi import HTTPException
 
-import src.rate_limiter as rate_limiter
-from src.config import settings
-from src.rate_limiter import enforce_chat_rate_limit, enforce_upload_rate_limit
+import src.core.rate_limiter as rate_limiter
+from src.core.config import settings
+from src.core.rate_limiter import enforce_chat_rate_limit, enforce_upload_rate_limit
 
 
 def test_requests_under_the_limit_all_succeed(monkeypatch):

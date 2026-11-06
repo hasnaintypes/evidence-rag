@@ -10,9 +10,9 @@ import uvicorn
 # regardless of the process's working directory
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.config import settings
+from src.core.config import settings
 from src.storage.database import init_db
-from src.telemetry import init_telemetry_table
+from src.core.telemetry import init_telemetry_table
 from api.routers import health, documents, conversations, graph
 
 app = FastAPI(title=settings.app_name)
