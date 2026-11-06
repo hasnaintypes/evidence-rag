@@ -66,7 +66,7 @@ def serve_source_document(filename: str, token: str):
     Intentionally NOT behind get_current_user: the frontend opens this via
     a plain <a href> / new-tab navigation (citation links), which can't
     attach a custom Authorization header. Ownership is instead enforced
-    via a short-lived signed `token` (src/security.py) inside
+    via a short-lived signed `token` (src/core/security.py) inside
     DocumentService.resolve_source_path() - see that method's docstring.
     """
     file_path = DocumentService.resolve_source_path(filename, token)

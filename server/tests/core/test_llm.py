@@ -1,4 +1,4 @@
-"""Tests for src/llm.py's same-provider model fallback (issue #12) -
+"""Tests for src/core/llm.py's same-provider model fallback (issue #12) -
 a simulated primary-model failure must not crash or silently degrade the
 caller; the configured fallback model should be tried instead, and total
 failure across both models must still report honestly rather than raise."""

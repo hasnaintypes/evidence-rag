@@ -1,4 +1,4 @@
-"""Unit tests for src/observability.py's stage tracing."""
+"""Unit tests for src/core/observability.py's stage tracing."""
 
 import logging
 

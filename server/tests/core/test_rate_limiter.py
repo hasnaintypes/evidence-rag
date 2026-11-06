@@ -1,4 +1,4 @@
-"""Unit tests for src/rate_limiter.py's per-user sliding-window limiter."""
+"""Unit tests for src/core/rate_limiter.py's per-user sliding-window limiter."""
 
 import time
 

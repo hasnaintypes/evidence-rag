@@ -552,7 +552,7 @@ def delete_document_record(doc_id: str) -> None:
 def document_filename_accessible(filename: str, user_id: str) -> bool:
     """True if `filename` belongs to a shared/demo document (user_id IS
     NULL) or to one owned by `user_id`. Used by GET /source/{filename},
-    which can't carry an Authorization header - see src/security.py for
+    which can't carry an Authorization header - see src/core/security.py for
     how the caller's identity is established for this route instead."""
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -897,7 +897,7 @@ def dense_ann_search(
 
     The cast is not cosmetic: pgvector's HNSW index has a hard 2000-
     dimension cap for the plain `vector` type, and gemini-embedding-001
-    (EMBEDDING_DIM below, see src/llm.py) produces 3072-dim vectors - an
+    (EMBEDDING_DIM below, see src/core/llm.py) produces 3072-dim vectors - an
     HNSW index directly on `embedding` would fail to create at all
     ("column cannot have more than 2000 dimensions for hnsw index",
     confirmed against a real pgvector 0.8 instance while building this).

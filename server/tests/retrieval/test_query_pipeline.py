@@ -65,7 +65,7 @@ def _run_pipeline(
 
 def test_telemetry_carries_a_request_id_for_log_correlation():
     """request_id ties this run's telemetry/query_log row back to the
-    stage-level log lines src/observability.py emitted for it - see #16."""
+    stage-level log lines src/core/observability.py emitted for it - see #16."""
     result = _run_pipeline(retrieve_return=[_base_chunk()])
     assert result["telemetry"]["request_id"]
 

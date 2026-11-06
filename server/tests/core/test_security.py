@@ -1,4 +1,4 @@
-"""Unit tests for src/security.py's signed source-citation tokens - pure
+"""Unit tests for src/core/security.py's signed source-citation tokens - pure
 JWT logic, no DB/network involved."""
 
 import time

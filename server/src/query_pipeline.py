@@ -58,7 +58,7 @@ def process_chat_query(
     history: prior turns in the conversation, [{"role", "content"}, ...],
     folded into the generation prompt so follow-ups resolve correctly.
     user_id: the caller, used to sign each returned source's citation link
-    (see _build_sources() / src/security.py) - required to produce a
+    (see _build_sources() / src/core/security.py) - required to produce a
     working source_token, but the pipeline still runs without it (token
     omitted) so this isn't a breaking change for any other caller.
     """
@@ -410,7 +410,7 @@ def _refresh_source_tokens_for_cache_hit(sources: list, user_id: str = None) -> 
     """
     A cache hit must never reuse whichever user's request first populated
     the entry - each source carries a short-lived signed source_token
-    scoped to one user (src/security.py), so it's re-signed for the
+    scoped to one user (src/core/security.py), so it's re-signed for the
     current requesting user on every serve, cached or not.
     """
     return [
@@ -465,7 +465,7 @@ def _build_sources(context_chunks: list, user_id: str = None) -> list:
 
     Each source also carries a signed source_token (None if user_id
     wasn't passed in) - GET /source/{filename} requires one; see
-    src/security.py for why that route can't just require a bearer token.
+    src/core/security.py for why that route can't just require a bearer token.
     """
     sources = []
     for idx, chunk in enumerate(context_chunks):
