@@ -128,7 +128,7 @@ Sign-in/sign-up talk directly from the browser to Supabase Auth (`web/lib/auth.t
 
 `documents.user_id` is nullable: `NULL` means a shared/demo document (the `docs/fixtures/sample_docs/` corpus, indexed via `scripts/ingest.py`), visible to every signed-in user; uploads via `POST /upload` are private to the uploader.
 
-> Per-user ownership is enforced on conversations, but not yet on every document/graph route — tracked in the [Roadmap](#roadmap--production-hardening) below.
+> Per-user ownership is enforced on every document/conversation/graph route via a centralized `api/authz.py` (404s for a non-owner, 403 for mutating a shared document) — one newer service method still bypasses this pattern inline ([#54](../../issues/54)).
 
 ---
 
@@ -155,9 +155,31 @@ The retrieval pipeline is evaluated against a naive dense-retrieval baseline on 
 | Naive dense retrieval | 0.857 | 0.857 | 0.857 |
 | **Advanced pipeline** | **0.893** (+4.2%) | **1.000** (+16.7%) | **0.905** (+5.6%) |
 
-Every query is also scored for **answer faithfulness**: a second, cheap Gemini call acts as an LLM-as-judge given the generated answer and its cited chunks, returning a 0–1 support score plus any unsupported claims (`src/evaluation/judge.py`) — this catches the case retrieval metrics can't: the right document was found, but the answer still misstated what it says.
+Every query is also scored for **answer faithfulness**: a second, cheap Gemini call acts as an LLM-as-judge given the generated answer and its cited chunks, returning a 0–1 support score plus any unsupported claims (`src/evaluation/judge.py`) — this catches the case retrieval metrics can't: the right document was found, but the answer still misstated what it says. Below `FAITHFULNESS_GATE_THRESHOLD` (0.7), the generated answer is withheld entirely rather than returned as-is — faithfulness is a hard gate, not just a reported score.
+
+> **Known-stale numbers (tracked in [#57](../../issues/57)):** the table above is from `docs/eval/eval_report.md`, last regenerated against an 8-question `eval_set.json`; the set has since grown to 9 questions with no refreshed run committed yet. A fresh run during a 2026-11-06 review hit [#55](../../issues/55) (a Supabase connection-pool exhaustion, under investigation) before it could complete — so the numbers above are the best available, not current.
 
 Full detail: [`docs/eval/eval_report.md`](./docs/eval/eval_report.md).
+
+### System Numbers
+
+Concrete, source-checked figures rather than vague claims — each one points at where it's enforced or was measured:
+
+| Metric | Value | Where |
+|:--|--:|:--|
+| Automated tests passing | **185 / 185** | `server/tests/` (`pytest`) |
+| Retrieval confidence gate | 0.5 | `RETRIEVAL_CONFIDENCE_THRESHOLD`, `config.py` |
+| Faithfulness hard gate | 0.7 | `FAITHFULNESS_GATE_THRESHOLD`, `config.py` |
+| Max retrieval hops | 2 (initial + 1 bounded follow-up) | `MAX_HOPS`, `query_pipeline.py` |
+| Chunk size / overlap | 200 / 40 tokens | `chunk_size_tokens` / `chunk_overlap_tokens`, `config.py` |
+| Embedding dimensions | 3072 | `gemini-embedding-001` |
+| Embedding concurrency speedup | ~4.6x (6 workers vs. sequential) | `EMBED_CONCURRENCY`, `ingestion/pipeline.py` |
+| Scoped vs. full-corpus retrieval latency | ~2–5ms flat (5–10k+ chunks) vs. ~250ms at 10k chunks | `retrieval/hybrid.py`, [#27](../../issues/27) |
+| pgvector HNSW ANN query latency | ~5ms at 15k rows (Supabase mode) | `idx_chunks_embedding`, [#17](../../issues/17) |
+| Response cache | 0.97 cosine similarity match, 3600s TTL, 200 entries/scope cap | `response_cache.py` |
+| Rate limits | 20 chat msgs / 5 uploads per 60s per user | `rate_limiter.py` |
+| Conversation document cap | 5 documents per conversation | `ConversationCreate` schema |
+| Upload size cap | 50MB per file | `document_service.py` |
 
 ---
 
@@ -251,15 +273,18 @@ Open `http://localhost:3000`, sign up, then start a conversation from the sideba
 
 ## Roadmap & Production Hardening
 
-The retrieval/generation core above is solid, but a from-the-ground-up review surfaced gaps between this and a genuinely production-grade, self-hostable open-source RAG system. That work is tracked as 5 GitHub milestones, sequenced in order:
+An earlier ground-up review (tracked as 5 GitHub milestones: security/authz hardening, faithfulness as a hard gate, a real test suite + CI gate, model routing/guardrails, ops hardening) is now **complete** — per-user ownership is enforced via a centralized `api/authz.py`, the faithfulness score is a hard gate (not just advisory), a 185-test `pytest` suite gates every PR, Gemini calls have fallback-model routing, and prompt-injection flagging/rate limiting/response caching/pgvector HNSW are all live (see the [System Numbers](#system-numbers) table above).
 
-| # | Milestone | Covers |
+A follow-up architecture review (2026-11-06) surfaced the next round of gaps, filed as issues:
+
+| # | Issue | Covers |
 |:--|:--|:--|
-| 1 | **Security & Authz Hardening** | Per-user ownership checks on document/graph routes, query-log redaction, non-root Docker |
-| 2 | **Faithfulness as a Hard Gate** | Make the faithfulness score actually block ungrounded answers, not just report them |
-| 3 | **Real Test Suite & CI Gate** | A `pytest` suite (currently nonexistent) and a CI job that gates merges |
-| 4 | **Model Routing & Guardrails** | Route generation/rewriting/judging across models; layered prompt-injection defenses |
-| 5 | **Ops Hardening & Restructuring** | Semantic caching, rate limiting, observability, pgvector HNSW activation, the `server`/`docs` restructuring, deployment target |
+| [#52](../../issues/52) | Chat-pipeline failures persisted as fake replies | A caught exception returns HTTP 200 with the error text stored as if it were a real answer |
+| [#53](../../issues/53) | Frontend discards backend error detail | `apiFetch()` throws a generic message instead of surfacing the backend's specific `detail` |
+| [#54](../../issues/54) | One service method bypasses the authz pattern | `ConversationService.add_document()` doesn't route through `api/authz.py` like every other mutation |
+| [#55](../../issues/55) | Suspected Supabase connection-pool leak | A sequential 9-question eval run exhausted a 10-connection pool |
+| [#56](../../issues/56) | API convention cleanup | Unused response schemas, wrong status codes, `Optional` typing, deprecated `on_event` |
+| [#57](../../issues/57) | Eval report/baseline are stale | `eval_set.json` grew to 9 questions; no refreshed run committed |
 
 See the repo's [milestones](../../milestones) and [issues](../../issues) for current status.
 
@@ -267,10 +292,9 @@ See the repo's [milestones](../../milestones) and [issues](../../issues) for cur
 
 ## Current Limitations
 
-- Per-user ownership isn't yet enforced on every document/graph route (see Roadmap #1).
-- Faithfulness scoring is advisory only — it doesn't yet block a low-scoring answer (Roadmap #2).
-- No automated test suite yet (Roadmap #3).
+- Chat-pipeline failures are currently returned as a normal 200 response with the raw error text as the reply, rather than a proper error status (#52).
 - The retrieval-confidence abstention gate only applies in advanced mode; naive mode always attempts an answer.
 - Faithfulness scoring is judged by the same model family doing the generation, not an independent/stronger judge model.
 - The entity graph is exploration-only, not a retrieval signal, and costs one LLM call per section.
 - Every data route requires a signed-in Supabase user; there's no anonymous/read-only demo mode.
+- The committed eval numbers above are one eval-set revision stale (#57), and a fresh run is currently blocked on a suspected connection-pool leak (#55).
