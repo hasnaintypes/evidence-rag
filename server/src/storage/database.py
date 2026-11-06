@@ -109,6 +109,13 @@ def init_db() -> None:
         return
 
     conn = get_db_connection()
+    try:
+        _init_db_with(conn)
+    finally:
+        conn.close()
+
+
+def _init_db_with(conn) -> None:
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -265,7 +272,6 @@ def init_db() -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)")
 
     conn.commit()
-    conn.close()
 
 
 def _migrate_missing_columns(cursor, table_name: str, expected_columns: dict) -> None:
@@ -296,12 +302,14 @@ def get_document_hash(doc_id: str) -> Optional[str]:
     short-circuit a retry as "unchanged", since no chunks actually got
     embedded for it."""
     conn = get_db_connection()
-    cursor = conn.cursor()
-    ph = _ph(1)
-    cursor.execute(f"SELECT file_hash FROM documents WHERE doc_id = {ph} AND status = 'ready'", (doc_id,))
-    row = cursor.fetchone()
-    conn.close()
-    return row["file_hash"] if row else None
+    try:
+        cursor = conn.cursor()
+        ph = _ph(1)
+        cursor.execute(f"SELECT file_hash FROM documents WHERE doc_id = {ph} AND status = 'ready'", (doc_id,))
+        row = cursor.fetchone()
+        return row["file_hash"] if row else None
+    finally:
+        conn.close()
 
 
 def upsert_document_record(
@@ -314,6 +322,24 @@ def upsert_document_record(
     user_id: Optional[str] = None,
 ) -> None:
     conn = get_db_connection()
+    try:
+        _upsert_document_record_with(
+            conn, doc_id, filename, file_hash, node_count, chunk_count, embedding_model, user_id
+        )
+    finally:
+        conn.close()
+
+
+def _upsert_document_record_with(
+    conn,
+    doc_id: str,
+    filename: str,
+    file_hash: str,
+    node_count: int,
+    chunk_count: int,
+    embedding_model: Optional[str],
+    user_id: Optional[str],
+) -> None:
     cursor = conn.cursor()
     if settings.storage_mode == "supabase":
         cursor.execute(
@@ -348,7 +374,6 @@ def upsert_document_record(
             (doc_id, filename, file_hash, node_count, chunk_count, embedding_model, user_id),
         )
     conn.commit()
-    conn.close()
 
 
 def mark_document_processing(
@@ -360,6 +385,15 @@ def mark_document_processing(
     and so a page refresh mid-upload can resume polling instead of the doc
     silently not existing yet."""
     conn = get_db_connection()
+    try:
+        _mark_document_processing_with(conn, doc_id, filename, file_hash, user_id, node_count, chunks_total)
+    finally:
+        conn.close()
+
+
+def _mark_document_processing_with(
+    conn, doc_id: str, filename: str, file_hash: str, user_id: Optional[str], node_count: int, chunks_total: int
+) -> None:
     cursor = conn.cursor()
     if settings.storage_mode == "supabase":
         cursor.execute(
@@ -398,7 +432,6 @@ def mark_document_processing(
             (doc_id, filename, file_hash, node_count, user_id, chunks_total),
         )
     conn.commit()
-    conn.close()
 
 
 def set_document_progress(doc_id: str, chunks_indexed: int) -> None:
@@ -408,50 +441,58 @@ def set_document_progress(doc_id: str, chunks_indexed: int) -> None:
     by a single flusher thread reading an in-memory counter, so this is
     a plain SET rather than an increment - no concurrent writers to race."""
     conn = get_db_connection()
-    cursor = conn.cursor()
-    ph = _ph(1)
-    cursor.execute(
-        f"UPDATE documents SET chunks_indexed = {ph} WHERE doc_id = {ph}",
-        (
-            chunks_indexed,
-            doc_id,
-        ),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        ph = _ph(1)
+        cursor.execute(
+            f"UPDATE documents SET chunks_indexed = {ph} WHERE doc_id = {ph}",
+            (
+                chunks_indexed,
+                doc_id,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def mark_document_ready(doc_id: str, chunk_count: int, embedding_model: str) -> None:
     conn = get_db_connection()
-    cursor = conn.cursor()
-    ph = _ph(1)
-    cursor.execute(
-        f"UPDATE documents SET status = 'ready', chunk_count = {ph}, chunks_indexed = {ph}, embedding_model = {ph} WHERE doc_id = {ph}",
-        (chunk_count, chunk_count, embedding_model, doc_id),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        ph = _ph(1)
+        cursor.execute(
+            f"UPDATE documents SET status = 'ready', chunk_count = {ph}, chunks_indexed = {ph}, embedding_model = {ph} WHERE doc_id = {ph}",
+            (chunk_count, chunk_count, embedding_model, doc_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def mark_document_failed(doc_id: str) -> None:
     conn = get_db_connection()
-    cursor = conn.cursor()
-    ph = _ph(1)
-    cursor.execute(f"UPDATE documents SET status = 'failed' WHERE doc_id = {ph}", (doc_id,))
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        ph = _ph(1)
+        cursor.execute(f"UPDATE documents SET status = 'failed' WHERE doc_id = {ph}", (doc_id,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_document_status(doc_id: str) -> Optional[Dict[str, Any]]:
     conn = get_db_connection()
-    cursor = conn.cursor()
-    ph = _ph(1)
-    cursor.execute(
-        f"SELECT status, chunks_indexed, chunks_total, chunk_count FROM documents WHERE doc_id = {ph}", (doc_id,)
-    )
-    row = cursor.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    try:
+        cursor = conn.cursor()
+        ph = _ph(1)
+        cursor.execute(
+            f"SELECT status, chunks_indexed, chunks_total, chunk_count FROM documents WHERE doc_id = {ph}", (doc_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def get_document_record(doc_id: str) -> Optional[Dict[str, Any]]:
@@ -460,12 +501,14 @@ def get_document_record(doc_id: str) -> Optional[Dict[str, Any]]:
     enforce ownership on the document/graph routes - see api/authz.py's
     get_owned_document()."""
     conn = get_db_connection()
-    cursor = conn.cursor()
-    ph = _ph(1)
-    cursor.execute(f"SELECT user_id, filename FROM documents WHERE doc_id = {ph}", (doc_id,))
-    row = cursor.fetchone()
-    conn.close()
-    return dict(row) if row else None
+    try:
+        cursor = conn.cursor()
+        ph = _ph(1)
+        cursor.execute(f"SELECT user_id, filename FROM documents WHERE doc_id = {ph}", (doc_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
 
 
 def filename_in_use_by_other(filename: str, user_id: str) -> bool:
@@ -481,14 +524,16 @@ def filename_in_use_by_other(filename: str, user_id: str) -> bool:
     only a storage-level one).
     """
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        f"SELECT 1 FROM documents WHERE filename = {_ph(1)} AND (user_id IS NULL OR user_id != {_ph(1)}) LIMIT 1",
-        (filename, user_id),
-    )
-    row = cursor.fetchone()
-    conn.close()
-    return row is not None
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT 1 FROM documents WHERE filename = {_ph(1)} AND (user_id IS NULL OR user_id != {_ph(1)}) LIMIT 1",
+            (filename, user_id),
+        )
+        row = cursor.fetchone()
+        return row is not None
+    finally:
+        conn.close()
 
 
 def filename_exists_elsewhere(filename: str, exclude_doc_id: str) -> bool:
@@ -502,14 +547,16 @@ def filename_exists_elsewhere(filename: str, exclude_doc_id: str) -> bool:
     already owned by the same caller.
     """
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        f"SELECT 1 FROM documents WHERE filename = {_ph(1)} AND doc_id != {_ph(1)} LIMIT 1",
-        (filename, exclude_doc_id),
-    )
-    row = cursor.fetchone()
-    conn.close()
-    return row is not None
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT 1 FROM documents WHERE filename = {_ph(1)} AND doc_id != {_ph(1)} LIMIT 1",
+            (filename, exclude_doc_id),
+        )
+        row = cursor.fetchone()
+        return row is not None
+    finally:
+        conn.close()
 
 
 def rename_document(doc_id: str, new_filename: str) -> None:
@@ -528,12 +575,14 @@ def rename_document(doc_id: str, new_filename: str) -> None:
     the pre-rename filename - which GET /source/{filename} would then
     404 on, since no document or stored file is named that anymore."""
     conn = get_db_connection()
-    cursor = conn.cursor()
-    ph = _ph(1)
-    cursor.execute(f"UPDATE documents SET filename = {ph} WHERE doc_id = {ph}", (new_filename, doc_id))
-    cursor.execute(f"UPDATE document_chunks SET source_file = {ph} WHERE doc_id = {ph}", (new_filename, doc_id))
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        ph = _ph(1)
+        cursor.execute(f"UPDATE documents SET filename = {ph} WHERE doc_id = {ph}", (new_filename, doc_id))
+        cursor.execute(f"UPDATE document_chunks SET source_file = {ph} WHERE doc_id = {ph}", (new_filename, doc_id))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def delete_document_record(doc_id: str) -> None:
@@ -542,11 +591,13 @@ def delete_document_record(doc_id: str) -> None:
     entity_edges rows, not the document row, since it's also reused by
     prepare_ingest() for a re-ingest where the row should survive."""
     conn = get_db_connection()
-    cursor = conn.cursor()
-    ph = _ph(1)
-    cursor.execute(f"DELETE FROM documents WHERE doc_id = {ph}", (doc_id,))
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        ph = _ph(1)
+        cursor.execute(f"DELETE FROM documents WHERE doc_id = {ph}", (doc_id,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def document_filename_accessible(filename: str, user_id: str) -> bool:
@@ -555,35 +606,41 @@ def document_filename_accessible(filename: str, user_id: str) -> bool:
     which can't carry an Authorization header - see src/core/security.py for
     how the caller's identity is established for this route instead."""
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        f"SELECT 1 FROM documents WHERE filename = {_ph(1)} AND (user_id IS NULL OR user_id = {_ph(1)}) LIMIT 1",
-        (filename, user_id),
-    )
-    row = cursor.fetchone()
-    conn.close()
-    return row is not None
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT 1 FROM documents WHERE filename = {_ph(1)} AND (user_id IS NULL OR user_id = {_ph(1)}) LIMIT 1",
+            (filename, user_id),
+        )
+        row = cursor.fetchone()
+        return row is not None
+    finally:
+        conn.close()
 
 
 def get_indexed_embedding_models() -> List[str]:
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT embedding_model FROM documents WHERE embedding_model IS NOT NULL")
-    rows = cursor.fetchall()
-    conn.close()
-    return [r["embedding_model"] for r in rows]
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT embedding_model FROM documents WHERE embedding_model IS NOT NULL")
+        rows = cursor.fetchall()
+        return [r["embedding_model"] for r in rows]
+    finally:
+        conn.close()
 
 
 def delete_document_data(doc_id: str) -> None:
     conn = get_db_connection()
-    cursor = conn.cursor()
-    ph = _ph(1)
-    cursor.execute(f"DELETE FROM knowledge_nodes WHERE doc_id = {ph}", (doc_id,))
-    cursor.execute(f"DELETE FROM document_chunks WHERE doc_id = {ph}", (doc_id,))
-    cursor.execute(f"DELETE FROM entities WHERE doc_id = {ph}", (doc_id,))
-    cursor.execute(f"DELETE FROM entity_edges WHERE doc_id = {ph}", (doc_id,))
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        ph = _ph(1)
+        cursor.execute(f"DELETE FROM knowledge_nodes WHERE doc_id = {ph}", (doc_id,))
+        cursor.execute(f"DELETE FROM document_chunks WHERE doc_id = {ph}", (doc_id,))
+        cursor.execute(f"DELETE FROM entities WHERE doc_id = {ph}", (doc_id,))
+        cursor.execute(f"DELETE FROM entity_edges WHERE doc_id = {ph}", (doc_id,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def list_documents(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -594,18 +651,20 @@ def list_documents(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
     internal/non-request-scoped callers only, never by the /documents route.
     """
     conn = get_db_connection()
-    cursor = conn.cursor()
-    if user_id is not None:
-        ph = _ph(1)
-        cursor.execute(
-            f"SELECT * FROM documents WHERE user_id = {ph} OR user_id IS NULL ORDER BY ingested_at DESC",
-            (user_id,),
-        )
-    else:
-        cursor.execute("SELECT * FROM documents ORDER BY ingested_at DESC")
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        cursor = conn.cursor()
+        if user_id is not None:
+            ph = _ph(1)
+            cursor.execute(
+                f"SELECT * FROM documents WHERE user_id = {ph} OR user_id IS NULL ORDER BY ingested_at DESC",
+                (user_id,),
+            )
+        else:
+            cursor.execute("SELECT * FROM documents ORDER BY ingested_at DESC")
+        rows = cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -615,6 +674,13 @@ def list_documents(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
 
 def insert_nodes(nodes: List[Any]) -> None:
     conn = get_db_connection()
+    try:
+        _insert_nodes_with(conn, nodes)
+    finally:
+        conn.close()
+
+
+def _insert_nodes_with(conn, nodes: List[Any]) -> None:
     cursor = conn.cursor()
     is_supabase = settings.storage_mode == "supabase"
     for node in nodes:
@@ -662,7 +728,6 @@ def insert_nodes(nodes: List[Any]) -> None:
                 ),
             )
     conn.commit()
-    conn.close()
 
 
 def insert_chunks_batch(items: List[tuple]) -> None:
@@ -676,6 +741,13 @@ def insert_chunks_batch(items: List[tuple]) -> None:
     if not items:
         return
     conn = get_db_connection()
+    try:
+        _insert_chunks_batch_with(conn, items)
+    finally:
+        conn.close()
+
+
+def _insert_chunks_batch_with(conn, items: List[tuple]) -> None:
     cursor = conn.cursor()
 
     if settings.storage_mode == "supabase":
@@ -742,15 +814,16 @@ def insert_chunks_batch(items: List[tuple]) -> None:
         )
 
     conn.commit()
-    conn.close()
 
 
 def get_node(node_id: str) -> Optional[Dict[str, Any]]:
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(f"SELECT * FROM knowledge_nodes WHERE id = {_ph(1)}", (node_id,))
-    row = cursor.fetchone()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT * FROM knowledge_nodes WHERE id = {_ph(1)}", (node_id,))
+        row = cursor.fetchone()
+    finally:
+        conn.close()
     if not row:
         return None
     d = dict(row)
@@ -764,11 +837,13 @@ def get_node(node_id: str) -> Optional[Dict[str, Any]]:
 
 def get_children(node_id: str) -> List[Dict[str, Any]]:
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(f"SELECT * FROM knowledge_nodes WHERE parent_id = {_ph(1)} ORDER BY node_order", (node_id,))
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT * FROM knowledge_nodes WHERE parent_id = {_ph(1)} ORDER BY node_order", (node_id,))
+        rows = cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -778,6 +853,13 @@ def get_children(node_id: str) -> List[Dict[str, Any]]:
 
 def insert_chunk(chunk: Dict[str, Any], embedding: List[float]) -> None:
     conn = get_db_connection()
+    try:
+        _insert_chunk_with(conn, chunk, embedding)
+    finally:
+        conn.close()
+
+
+def _insert_chunk_with(conn, chunk: Dict[str, Any], embedding: List[float]) -> None:
     cursor = conn.cursor()
     meta = chunk["metadata"]
     bbox = meta.get("bbox")
@@ -831,7 +913,6 @@ def insert_chunk(chunk: Dict[str, Any], embedding: List[float]) -> None:
             ),
         )
     conn.commit()
-    conn.close()
 
 
 def _decode_chunk_rows(rows: List[Any]) -> List[Dict[str, Any]]:
@@ -856,11 +937,13 @@ def _decode_chunk_rows(rows: List[Any]) -> List[Dict[str, Any]]:
 
 def get_all_chunks_for_sparse() -> List[Dict[str, Any]]:
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM document_chunks")
-    rows = cursor.fetchall()
-    conn.close()
-    return _decode_chunk_rows(rows)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM document_chunks")
+        rows = cursor.fetchall()
+        return _decode_chunk_rows(rows)
+    finally:
+        conn.close()
 
 
 def get_chunks_for_sparse_by_doc_ids(doc_ids: List[str]) -> List[Dict[str, Any]]:
@@ -878,11 +961,13 @@ def get_chunks_for_sparse_by_doc_ids(doc_ids: List[str]) -> List[Dict[str, Any]]
     only reach this when doc_ids is truthy.
     """
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(f"SELECT * FROM document_chunks WHERE doc_id IN ({_ph(len(doc_ids))})", tuple(doc_ids))
-    rows = cursor.fetchall()
-    conn.close()
-    return _decode_chunk_rows(rows)
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT * FROM document_chunks WHERE doc_id IN ({_ph(len(doc_ids))})", tuple(doc_ids))
+        rows = cursor.fetchall()
+        return _decode_chunk_rows(rows)
+    finally:
+        conn.close()
 
 
 def dense_ann_search(
@@ -921,6 +1006,15 @@ def dense_ann_search(
         raise RuntimeError("dense_ann_search() requires storage_mode='supabase' (pgvector).")
 
     conn = get_db_connection()
+    try:
+        return _dense_ann_search_with(conn, query_embedding, top_k, doc_ids)
+    finally:
+        conn.close()
+
+
+def _dense_ann_search_with(
+    conn, query_embedding: List[float], top_k: int, doc_ids: Optional[List[str]]
+) -> List[Dict[str, Any]]:
     cursor = conn.cursor()
     # pgvector accepts a bracketed literal ("[0.1,0.2,...]") cast to
     # ::halfvec(3072) - same literal format insert_chunk()/
@@ -946,7 +1040,6 @@ def dense_ann_search(
             (embedding_literal, embedding_literal, top_k),
         )
     rows = cursor.fetchall()
-    conn.close()
     return [dict(r) for r in rows]
 
 
@@ -957,6 +1050,13 @@ def dense_ann_search(
 
 def upsert_entity(doc_id: str, name: str, node_id: str) -> int:
     conn = get_db_connection()
+    try:
+        return _upsert_entity_with(conn, doc_id, name, node_id)
+    finally:
+        conn.close()
+
+
+def _upsert_entity_with(conn, doc_id: str, name: str, node_id: str) -> int:
     cursor = conn.cursor()
     if settings.storage_mode == "supabase":
         cursor.execute(
@@ -980,12 +1080,18 @@ def upsert_entity(doc_id: str, name: str, node_id: str) -> int:
         cursor.execute("SELECT id FROM entities WHERE doc_id = ? AND name = ?", (doc_id, name))
 
     row = cursor.fetchone()
-    conn.close()
     return row["id"]
 
 
 def upsert_edge(doc_id: str, source_entity_id: int, target_entity_id: int) -> None:
     conn = get_db_connection()
+    try:
+        _upsert_edge_with(conn, doc_id, source_entity_id, target_entity_id)
+    finally:
+        conn.close()
+
+
+def _upsert_edge_with(conn, doc_id: str, source_entity_id: int, target_entity_id: int) -> None:
     cursor = conn.cursor()
     if settings.storage_mode == "supabase":
         cursor.execute(
@@ -1008,7 +1114,6 @@ def upsert_edge(doc_id: str, source_entity_id: int, target_entity_id: int) -> No
             (doc_id, source_entity_id, target_entity_id),
         )
     conn.commit()
-    conn.close()
 
 
 def get_graph_data(doc_id: Optional[str] = None, allowed_doc_ids: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -1022,24 +1127,28 @@ def get_graph_data(doc_id: Optional[str] = None, allowed_doc_ids: Optional[List[
         return {"nodes": [], "edges": []}
 
     conn = get_db_connection()
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
 
-    if doc_id:
-        ph = _ph(1)
-        entity_where, entity_params = f"WHERE doc_id = {ph}", (doc_id,)
-    elif allowed_doc_ids is not None:
-        ph = _ph(len(allowed_doc_ids))
-        entity_where, entity_params = f"WHERE doc_id IN ({ph})", tuple(allowed_doc_ids)
-    else:
-        entity_where, entity_params = "", ()
+        if doc_id:
+            ph = _ph(1)
+            entity_where, entity_params = f"WHERE doc_id = {ph}", (doc_id,)
+        elif allowed_doc_ids is not None:
+            ph = _ph(len(allowed_doc_ids))
+            entity_where, entity_params = f"WHERE doc_id IN ({ph})", tuple(allowed_doc_ids)
+        else:
+            entity_where, entity_params = "", ()
 
-    cursor.execute(f"SELECT id, name, doc_id, node_id FROM entities {entity_where}", entity_params)
-    entity_rows = cursor.fetchall()
+        cursor.execute(f"SELECT id, name, doc_id, node_id FROM entities {entity_where}", entity_params)
+        entity_rows = cursor.fetchall()
 
-    cursor.execute(f"SELECT source_entity_id, target_entity_id, weight FROM entity_edges {entity_where}", entity_params)
-    edge_rows = cursor.fetchall()
+        cursor.execute(
+            f"SELECT source_entity_id, target_entity_id, weight FROM entity_edges {entity_where}", entity_params
+        )
+        edge_rows = cursor.fetchall()
+    finally:
+        conn.close()
 
-    conn.close()
     return {
         "nodes": [
             {"id": r["id"], "label": r["name"], "doc_id": r["doc_id"], "node_id": r["node_id"]} for r in entity_rows
@@ -1069,15 +1178,17 @@ def all_documents_accessible(doc_ids: List[str], user_id: str) -> bool:
     if not doc_ids:
         return True
     conn = get_db_connection()
-    cursor = conn.cursor()
-    ph = _ph(len(doc_ids))
-    cursor.execute(
-        f"SELECT doc_id FROM documents WHERE doc_id IN ({ph}) AND (user_id IS NULL OR user_id = {_ph(1)})",
-        tuple(doc_ids) + (user_id,),
-    )
-    accessible_ids = {r["doc_id"] for r in cursor.fetchall()}
-    conn.close()
-    return accessible_ids == set(doc_ids)
+    try:
+        cursor = conn.cursor()
+        ph = _ph(len(doc_ids))
+        cursor.execute(
+            f"SELECT doc_id FROM documents WHERE doc_id IN ({ph}) AND (user_id IS NULL OR user_id = {_ph(1)})",
+            tuple(doc_ids) + (user_id,),
+        )
+        accessible_ids = {r["doc_id"] for r in cursor.fetchall()}
+        return accessible_ids == set(doc_ids)
+    finally:
+        conn.close()
 
 
 def _filenames_for_doc_ids(cursor, doc_ids: List[str]) -> Dict[str, str]:
@@ -1106,21 +1217,23 @@ def create_conversation(conversation_id: str, user_id: str, doc_ids: List[str]) 
     other write paths below used to pay a separate ownership SELECT and/or
     a full re-fetch per call, each a ~300ms+ network round trip."""
     conn = get_db_connection()
-    cursor = conn.cursor()
-    if settings.storage_mode == "supabase":
-        cursor.execute(
-            "INSERT INTO conversations (id, user_id, doc_ids) VALUES (%s, %s, %s) RETURNING created_at, updated_at",
-            (conversation_id, user_id, json.dumps(doc_ids)),
-        )
-    else:
-        cursor.execute(
-            "INSERT INTO conversations (id, user_id, doc_ids) VALUES (?, ?, ?) RETURNING created_at, updated_at",
-            (conversation_id, user_id, json.dumps(doc_ids)),
-        )
-    timestamps = dict(cursor.fetchone())
-    filename_map = _filenames_for_doc_ids(cursor, doc_ids)
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        if settings.storage_mode == "supabase":
+            cursor.execute(
+                "INSERT INTO conversations (id, user_id, doc_ids) VALUES (%s, %s, %s) RETURNING created_at, updated_at",
+                (conversation_id, user_id, json.dumps(doc_ids)),
+            )
+        else:
+            cursor.execute(
+                "INSERT INTO conversations (id, user_id, doc_ids) VALUES (?, ?, ?) RETURNING created_at, updated_at",
+                (conversation_id, user_id, json.dumps(doc_ids)),
+            )
+        timestamps = dict(cursor.fetchone())
+        filename_map = _filenames_for_doc_ids(cursor, doc_ids)
+        conn.commit()
+    finally:
+        conn.close()
     row = {
         "id": conversation_id,
         "doc_ids": json.dumps(doc_ids),
@@ -1137,37 +1250,40 @@ def list_conversations(user_id: str) -> List[Dict[str, Any]]:
     rather than per-conversation (doc_ids is JSON, so it can't be SQL-joined
     like the old single-doc_id column was)."""
     conn = get_db_connection()
-    cursor = conn.cursor()
-    ph = _ph(1)
-    cursor.execute(
-        f"""
-        SELECT id, doc_ids, pinned, title, created_at, updated_at
-        FROM conversations
-        WHERE user_id = {ph}
-        ORDER BY pinned DESC, updated_at DESC
-    """,
-        (user_id,),
-    )
-    rows = [dict(r) for r in cursor.fetchall()]
-    all_doc_ids = {d for r in rows for d in json.loads(r["doc_ids"])}
-    filename_map = _filenames_for_doc_ids(cursor, list(all_doc_ids))
-    conn.close()
-    return [_hydrate_conversation_row(r, filename_map) for r in rows]
+    try:
+        cursor = conn.cursor()
+        ph = _ph(1)
+        cursor.execute(
+            f"""
+            SELECT id, doc_ids, pinned, title, created_at, updated_at
+            FROM conversations
+            WHERE user_id = {ph}
+            ORDER BY pinned DESC, updated_at DESC
+        """,
+            (user_id,),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        all_doc_ids = {d for r in rows for d in json.loads(r["doc_ids"])}
+        filename_map = _filenames_for_doc_ids(cursor, list(all_doc_ids))
+        return [_hydrate_conversation_row(r, filename_map) for r in rows]
+    finally:
+        conn.close()
 
 
 def get_conversation(conversation_id: str) -> Optional[Dict[str, Any]]:
     conn = get_db_connection()
-    cursor = conn.cursor()
-    ph = _ph(1)
-    cursor.execute(f"SELECT * FROM conversations WHERE id = {ph}", (conversation_id,))
-    row = cursor.fetchone()
-    if not row:
+    try:
+        cursor = conn.cursor()
+        ph = _ph(1)
+        cursor.execute(f"SELECT * FROM conversations WHERE id = {ph}", (conversation_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        row = dict(row)
+        filename_map = _filenames_for_doc_ids(cursor, json.loads(row["doc_ids"]))
+        return _hydrate_conversation_row(row, filename_map)
+    finally:
         conn.close()
-        return None
-    row = dict(row)
-    filename_map = _filenames_for_doc_ids(cursor, json.loads(row["doc_ids"]))
-    conn.close()
-    return _hydrate_conversation_row(row, filename_map)
 
 
 def add_document_to_conversation(conversation_id: str, doc_id: str) -> Dict[str, Any]:
@@ -1193,37 +1309,36 @@ def add_document_to_conversation(conversation_id: str, doc_id: str) -> Dict[str,
     The updated conversation is hydrated here (one more query, same
     connection) instead of the caller re-fetching from scratch."""
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute(f"SELECT * FROM conversations WHERE id = {_ph(1)}", (conversation_id,))
-    row = cursor.fetchone()
-    if row is None:
+    try:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT * FROM conversations WHERE id = {_ph(1)}", (conversation_id,))
+        row = cursor.fetchone()
+        if row is None:
+            raise LookupError("Conversation not found.")
+        row = dict(row)
+        doc_ids = json.loads(row["doc_ids"])
+        if doc_id in doc_ids:
+            raise ValueError("Document is already attached to this conversation.")
+        if len(doc_ids) >= MAX_CONVERSATION_DOCS:
+            raise ValueError(f"A conversation can have at most {MAX_CONVERSATION_DOCS} documents.")
+        doc_ids.append(doc_id)
+        if settings.storage_mode == "supabase":
+            cursor.execute(
+                "UPDATE conversations SET doc_ids = %s, updated_at = now() WHERE id = %s RETURNING updated_at",
+                (json.dumps(doc_ids), conversation_id),
+            )
+        else:
+            cursor.execute(
+                "UPDATE conversations SET doc_ids = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? RETURNING updated_at",
+                (json.dumps(doc_ids), conversation_id),
+            )
+        row["updated_at"] = cursor.fetchone()["updated_at"]
+        row["doc_ids"] = json.dumps(doc_ids)
+        filename_map = _filenames_for_doc_ids(cursor, doc_ids)
+        conn.commit()
+        return _hydrate_conversation_row(row, filename_map)
+    finally:
         conn.close()
-        raise LookupError("Conversation not found.")
-    row = dict(row)
-    doc_ids = json.loads(row["doc_ids"])
-    if doc_id in doc_ids:
-        conn.close()
-        raise ValueError("Document is already attached to this conversation.")
-    if len(doc_ids) >= MAX_CONVERSATION_DOCS:
-        conn.close()
-        raise ValueError(f"A conversation can have at most {MAX_CONVERSATION_DOCS} documents.")
-    doc_ids.append(doc_id)
-    if settings.storage_mode == "supabase":
-        cursor.execute(
-            "UPDATE conversations SET doc_ids = %s, updated_at = now() WHERE id = %s RETURNING updated_at",
-            (json.dumps(doc_ids), conversation_id),
-        )
-    else:
-        cursor.execute(
-            "UPDATE conversations SET doc_ids = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? RETURNING updated_at",
-            (json.dumps(doc_ids), conversation_id),
-        )
-    row["updated_at"] = cursor.fetchone()["updated_at"]
-    row["doc_ids"] = json.dumps(doc_ids)
-    filename_map = _filenames_for_doc_ids(cursor, doc_ids)
-    conn.commit()
-    conn.close()
-    return _hydrate_conversation_row(row, filename_map)
 
 
 def update_conversation(
@@ -1239,58 +1354,66 @@ def update_conversation(
     if title is None and pinned is None:
         return True
     conn = get_db_connection()
-    cursor = conn.cursor()
-    ph = _ph(1)
-    sets = []
-    params: List[Any] = []
-    if title is not None:
-        sets.append(f"title = {ph}")
-        params.append(title)
-    if pinned is not None:
-        sets.append(f"pinned = {ph}")
-        params.append(pinned if settings.storage_mode == "supabase" else int(pinned))
-    params.append(conversation_id)
-    params.append(user_id)
-    cursor.execute(f"UPDATE conversations SET {', '.join(sets)} WHERE id = {ph} AND user_id = {ph}", tuple(params))
-    matched = cursor.rowcount > 0
-    conn.commit()
-    conn.close()
-    return matched
+    try:
+        cursor = conn.cursor()
+        ph = _ph(1)
+        sets = []
+        params: List[Any] = []
+        if title is not None:
+            sets.append(f"title = {ph}")
+            params.append(title)
+        if pinned is not None:
+            sets.append(f"pinned = {ph}")
+            params.append(pinned if settings.storage_mode == "supabase" else int(pinned))
+        params.append(conversation_id)
+        params.append(user_id)
+        cursor.execute(f"UPDATE conversations SET {', '.join(sets)} WHERE id = {ph} AND user_id = {ph}", tuple(params))
+        matched = cursor.rowcount > 0
+        conn.commit()
+        return matched
+    finally:
+        conn.close()
 
 
 def delete_conversation(conversation_id: str) -> None:
     conn = get_db_connection()
-    cursor = conn.cursor()
-    ph = _ph(1)
-    cursor.execute(f"DELETE FROM messages WHERE conversation_id = {ph}", (conversation_id,))
-    cursor.execute(f"DELETE FROM conversations WHERE id = {ph}", (conversation_id,))
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        ph = _ph(1)
+        cursor.execute(f"DELETE FROM messages WHERE conversation_id = {ph}", (conversation_id,))
+        cursor.execute(f"DELETE FROM conversations WHERE id = {ph}", (conversation_id,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def touch_conversation(conversation_id: str, title: Optional[str] = None) -> None:
     """Bumps updated_at on every new message, and sets title once (only
     when it's still unset) from the conversation's first user message."""
     conn = get_db_connection()
-    cursor = conn.cursor()
-    if settings.storage_mode == "supabase":
-        if title is not None:
-            cursor.execute(
-                "UPDATE conversations SET updated_at = now(), title = COALESCE(title, %s) WHERE id = %s",
-                (title, conversation_id),
-            )
+    try:
+        cursor = conn.cursor()
+        if settings.storage_mode == "supabase":
+            if title is not None:
+                cursor.execute(
+                    "UPDATE conversations SET updated_at = now(), title = COALESCE(title, %s) WHERE id = %s",
+                    (title, conversation_id),
+                )
+            else:
+                cursor.execute("UPDATE conversations SET updated_at = now() WHERE id = %s", (conversation_id,))
         else:
-            cursor.execute("UPDATE conversations SET updated_at = now() WHERE id = %s", (conversation_id,))
-    else:
-        if title is not None:
-            cursor.execute(
-                "UPDATE conversations SET updated_at = CURRENT_TIMESTAMP, title = COALESCE(title, ?) WHERE id = ?",
-                (title, conversation_id),
-            )
-        else:
-            cursor.execute("UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (conversation_id,))
-    conn.commit()
-    conn.close()
+            if title is not None:
+                cursor.execute(
+                    "UPDATE conversations SET updated_at = CURRENT_TIMESTAMP, title = COALESCE(title, ?) WHERE id = ?",
+                    (title, conversation_id),
+                )
+            else:
+                cursor.execute(
+                    "UPDATE conversations SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (conversation_id,)
+                )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def insert_message(
@@ -1301,6 +1424,29 @@ def insert_message(
     faithfulness_score: Optional[float] = None,
 ) -> Dict[str, Any]:
     conn = get_db_connection()
+    try:
+        row = _insert_message_row(conn, conversation_id, role, content, sources, faithfulness_score)
+    finally:
+        conn.close()
+    return {
+        "id": row["id"],
+        "conversation_id": conversation_id,
+        "role": role,
+        "content": content,
+        "sources": sources or [],
+        "faithfulness_score": faithfulness_score,
+        "created_at": row["created_at"],
+    }
+
+
+def _insert_message_row(
+    conn,
+    conversation_id: str,
+    role: str,
+    content: str,
+    sources: Optional[List[Dict[str, Any]]],
+    faithfulness_score: Optional[float],
+):
     cursor = conn.cursor()
     sources_json = json.dumps(sources) if sources is not None else None
     if settings.storage_mode == "supabase":
@@ -1324,26 +1470,19 @@ def insert_message(
         conn.commit()
         cursor.execute("SELECT id, created_at FROM messages WHERE id = ?", (cursor.lastrowid,))
         row = cursor.fetchone()
-    conn.close()
-    return {
-        "id": row["id"],
-        "conversation_id": conversation_id,
-        "role": role,
-        "content": content,
-        "sources": sources or [],
-        "faithfulness_score": faithfulness_score,
-        "created_at": row["created_at"],
-    }
+    return row
 
 
 def get_conversation_messages(conversation_id: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     conn = get_db_connection()
-    cursor = conn.cursor()
-    ph = _ph(1)
-    query = f"SELECT * FROM messages WHERE conversation_id = {ph} ORDER BY id ASC"
-    cursor.execute(query, (conversation_id,))
-    rows = cursor.fetchall()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        ph = _ph(1)
+        query = f"SELECT * FROM messages WHERE conversation_id = {ph} ORDER BY id ASC"
+        cursor.execute(query, (conversation_id,))
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
 
     messages = []
     for r in rows:
@@ -1363,11 +1502,13 @@ def delete_messages_after(conversation_id: str, after_message_id: int) -> None:
     (but not including) after_message_id, so the user can continue from
     that point instead of the current end of the conversation."""
     conn = get_db_connection()
-    cursor = conn.cursor()
-    p1, p2 = _ph(1), _ph(1)
-    cursor.execute(
-        f"DELETE FROM messages WHERE conversation_id = {p1} AND id > {p2}",
-        (conversation_id, after_message_id),
-    )
-    conn.commit()
-    conn.close()
+    try:
+        cursor = conn.cursor()
+        p1, p2 = _ph(1), _ph(1)
+        cursor.execute(
+            f"DELETE FROM messages WHERE conversation_id = {p1} AND id > {p2}",
+            (conversation_id, after_message_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
