@@ -10,9 +10,12 @@ instead of add_document_to_conversation()'s own inline check.
 
 from unittest.mock import patch
 
+import pytest
+
 from tests.conftest import override_current_user
 from src.storage.database import (
     MAX_CONVERSATION_DOCS,
+    add_document_to_conversation,
     create_conversation,
     get_conversation_messages,
     upsert_document_record,
@@ -121,6 +124,17 @@ def test_add_document_400s_at_the_conversation_document_cap(client, app):
     response = client.post(f"/conversations/{conversation_id}/documents", json={"doc_id": "one-too-many"})
     assert response.status_code == 400
     assert "at most" in response.json()["detail"]
+
+
+def test_add_document_to_conversation_raises_lookup_error_not_a_crash_for_a_vanished_conversation():
+    """Regression for a race caught in code review: add_document_to_conversation()
+    no longer does its own ownership SELECT (that moved to
+    get_owned_conversation(), see #54) - but it must still handle a
+    conversation_id that doesn't exist (e.g. deleted between the
+    service's ownership check and this call) by raising LookupError,
+    not by crashing on dict(None)."""
+    with pytest.raises(LookupError):
+        add_document_to_conversation("does-not-exist", doc_id="doc-1")
 
 
 def test_add_document_succeeds_for_the_owner(client, app):

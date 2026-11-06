@@ -78,12 +78,20 @@ class ConversationService:
         ownership check into this call instead and reported it by raising
         ValueError("Conversation not found.") for the router to string-
         match back into a 404, the one call site that didn't route
-        through api/authz.py like the rest (#54)."""
+        through api/authz.py like the rest (#54).
+
+        add_document_to_conversation() still raises LookupError (not
+        ValueError) if the conversation vanished between the ownership
+        check above and its own SELECT (a concurrent delete) - a distinct
+        type, not another string to match, so that race still 404s
+        instead of surfacing as an unhandled 500."""
         get_owned_conversation(conversation_id, user)
         if not all_documents_accessible([doc_id], user.id):
             raise HTTPException(status_code=404, detail="Document not found.")
         try:
             return add_document_to_conversation(conversation_id, doc_id=doc_id)
+        except LookupError as e:
+            raise HTTPException(status_code=404, detail=str(e))
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 

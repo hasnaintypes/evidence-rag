@@ -1180,14 +1180,26 @@ def add_document_to_conversation(conversation_id: str, doc_id: str) -> Dict[str,
     like everything else (#54). It now only handles the duplicate/cap
     business rules and raises ValueError for either, which the caller
     maps to a 400 - no more string-matching the message to pick a status
-    code, since there's only one exception type to handle now that
-    not-found is ruled out before this runs.
+    code, since not-found is ordinarily ruled out before this runs.
+
+    Still re-checks for a missing row (raising LookupError, not ValueError
+    - a distinct type the caller maps to 404) rather than assuming the
+    caller's earlier existence check still holds: that check and this
+    SELECT are two separate round trips, so a concurrent delete of the
+    same conversation in between would otherwise make `dict(None)` raise
+    an unhandled TypeError here instead of a clean 404 (caught in code
+    review on the PR that introduced this split).
+
     The updated conversation is hydrated here (one more query, same
     connection) instead of the caller re-fetching from scratch."""
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(f"SELECT * FROM conversations WHERE id = {_ph(1)}", (conversation_id,))
-    row = dict(cursor.fetchone())
+    row = cursor.fetchone()
+    if row is None:
+        conn.close()
+        raise LookupError("Conversation not found.")
+    row = dict(row)
     doc_ids = json.loads(row["doc_ids"])
     if doc_id in doc_ids:
         conn.close()
