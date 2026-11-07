@@ -113,42 +113,44 @@ def init_telemetry_table() -> None:
         return
 
     conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS query_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
-            query TEXT NOT NULL,
-            advanced_mode INTEGER DEFAULT 1,
-            hop_count INTEGER,
-            chunk_count INTEGER,
-            top_rerank_score REAL,
-            generation_failed INTEGER DEFAULT 0,
-            telemetry_json TEXT,
-            faithfulness_score REAL,
-            unsupported_claims_json TEXT,
-            user_id TEXT
-        )
-    """)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS query_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+                query TEXT NOT NULL,
+                advanced_mode INTEGER DEFAULT 1,
+                hop_count INTEGER,
+                chunk_count INTEGER,
+                top_rerank_score REAL,
+                generation_failed INTEGER DEFAULT 0,
+                telemetry_json TEXT,
+                faithfulness_score REAL,
+                unsupported_claims_json TEXT,
+                user_id TEXT
+            )
+        """)
 
-    # Migration for query_log tables created before faithfulness scoring /
-    # user_id were added - CREATE TABLE IF NOT EXISTS above is a no-op on
-    # an existing table, so older DBs need these columns added explicitly.
-    existing_columns = {row[1] for row in cursor.execute("PRAGMA table_info(query_log)").fetchall()}
-    if "faithfulness_score" not in existing_columns:
-        cursor.execute("ALTER TABLE query_log ADD COLUMN faithfulness_score REAL")
-    if "unsupported_claims_json" not in existing_columns:
-        cursor.execute("ALTER TABLE query_log ADD COLUMN unsupported_claims_json TEXT")
-    if "user_id" not in existing_columns:
-        cursor.execute("ALTER TABLE query_log ADD COLUMN user_id TEXT")
+        # Migration for query_log tables created before faithfulness scoring /
+        # user_id were added - CREATE TABLE IF NOT EXISTS above is a no-op on
+        # an existing table, so older DBs need these columns added explicitly.
+        existing_columns = {row[1] for row in cursor.execute("PRAGMA table_info(query_log)").fetchall()}
+        if "faithfulness_score" not in existing_columns:
+            cursor.execute("ALTER TABLE query_log ADD COLUMN faithfulness_score REAL")
+        if "unsupported_claims_json" not in existing_columns:
+            cursor.execute("ALTER TABLE query_log ADD COLUMN unsupported_claims_json TEXT")
+        if "user_id" not in existing_columns:
+            cursor.execute("ALTER TABLE query_log ADD COLUMN user_id TEXT")
 
-    # timestamp: scripts/purge_query_log.py's DELETE filters on this column
-    # every run. user_id: for a future per-user export/delete query.
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_query_log_timestamp ON query_log(timestamp)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_query_log_user ON query_log(user_id)")
+        # timestamp: scripts/purge_query_log.py's DELETE filters on this column
+        # every run. user_id: for a future per-user export/delete query.
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_query_log_timestamp ON query_log(timestamp)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_query_log_user ON query_log(user_id)")
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def log_query_event(
