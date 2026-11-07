@@ -33,24 +33,26 @@ TABLES = [
 
 def reset_data() -> None:
     conn = get_db_connection()
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor()
 
-    if settings.storage_mode == "supabase":
-        for table in TABLES:
-            # RESTART IDENTITY resets serial/autoincrement counters too -
-            # a genuine fresh start, not just empty tables with IDs
-            # picking up where they left off.
-            cursor.execute(f"TRUNCATE TABLE public.{table} RESTART IDENTITY CASCADE")
-    else:
-        for table in TABLES:
-            cursor.execute(f"DELETE FROM {table}")
-        cursor.execute(
-            "DELETE FROM sqlite_sequence WHERE name IN ({})".format(", ".join("?" for _ in TABLES)),
-            TABLES,
-        )
+        if settings.storage_mode == "supabase":
+            for table in TABLES:
+                # RESTART IDENTITY resets serial/autoincrement counters too -
+                # a genuine fresh start, not just empty tables with IDs
+                # picking up where they left off.
+                cursor.execute(f"TRUNCATE TABLE public.{table} RESTART IDENTITY CASCADE")
+        else:
+            for table in TABLES:
+                cursor.execute(f"DELETE FROM {table}")
+            cursor.execute(
+                "DELETE FROM sqlite_sequence WHERE name IN ({})".format(", ".join("?" for _ in TABLES)),
+                TABLES,
+            )
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+    finally:
+        conn.close()
 
     # The in-memory BM25/embedding index cache (src/retrieval/hybrid.py)
     # self-invalidates on the next query via a COUNT(*) check against
