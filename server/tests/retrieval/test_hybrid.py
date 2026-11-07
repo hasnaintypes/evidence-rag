@@ -5,6 +5,8 @@ dense_ann_search(), see #17)."""
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import src.retrieval.hybrid as hybrid
 from src.core.config import settings
 from src.storage.database import insert_chunk
@@ -97,3 +99,23 @@ def test_supabase_mode_dense_retrieval_calls_the_ann_search(monkeypatch):
     result_ids = [r["id"] for r in results]
     assert 2 in result_ids
     assert 1 in result_ids
+
+
+def test_current_chunk_count_closes_the_connection_even_when_the_query_raises():
+    """Regression: _current_chunk_count() (called on every _get_index()/
+    _get_scoped_index() staleness check - i.e. every single hybrid_retrieve()
+    call) used to acquire a connection and close it with a bare sequence,
+    no try/finally - any exception mid-query leaked it from the supabase
+    connection pool. Found while re-running the #57 eval harness after
+    #55's database.py-only fix: this call site lives in hybrid.py, outside
+    database.py, and #55 never touched it."""
+    fake_cursor = MagicMock()
+    fake_cursor.execute.side_effect = RuntimeError("simulated query failure")
+    fake_conn = MagicMock()
+    fake_conn.cursor.return_value = fake_cursor
+
+    with patch("src.retrieval.hybrid.get_db_connection", return_value=fake_conn):
+        with pytest.raises(RuntimeError):
+            hybrid._current_chunk_count()
+
+    fake_conn.close.assert_called_once()

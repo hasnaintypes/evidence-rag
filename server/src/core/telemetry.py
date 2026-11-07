@@ -180,68 +180,100 @@ def log_query_event(
     """
     try:
         conn = get_db_connection()
-        cursor = conn.cursor()
-        unsupported_claims_json = json.dumps(unsupported_claims or [])
-        if settings.storage_mode == "supabase":
-            cursor.execute(
-                """
-                INSERT INTO query_log
-                    (query, advanced_mode, hop_count, chunk_count, top_rerank_score, generation_failed,
-                     telemetry_json, faithfulness_score, unsupported_claims_json, user_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-                (
-                    query,
-                    int(advanced_mode),
-                    hop_count,
-                    chunk_count,
-                    top_rerank_score,
-                    int(generation_failed),
-                    json.dumps(telemetry),
-                    faithfulness_score,
-                    unsupported_claims_json,
-                    user_id,
-                ),
+        try:
+            _log_query_event_with(
+                conn,
+                query,
+                telemetry,
+                advanced_mode,
+                hop_count,
+                chunk_count,
+                top_rerank_score,
+                generation_failed,
+                faithfulness_score,
+                unsupported_claims,
+                user_id,
             )
-        else:
-            cursor.execute(
-                """
-                INSERT INTO query_log
-                    (query, advanced_mode, hop_count, chunk_count, top_rerank_score, generation_failed,
-                     telemetry_json, faithfulness_score, unsupported_claims_json, user_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-                (
-                    query,
-                    int(advanced_mode),
-                    hop_count,
-                    chunk_count,
-                    top_rerank_score,
-                    int(generation_failed),
-                    json.dumps(telemetry),
-                    faithfulness_score,
-                    unsupported_claims_json,
-                    user_id,
-                ),
-            )
-        conn.commit()
-        conn.close()
+        finally:
+            conn.close()
     except Exception:
         pass  # telemetry logging must never break the chat response
 
     _maybe_run_retention_sweep()
 
 
+def _log_query_event_with(
+    conn,
+    query: str,
+    telemetry: Dict[str, Any],
+    advanced_mode: bool,
+    hop_count: Optional[int],
+    chunk_count: Optional[int],
+    top_rerank_score: Optional[float],
+    generation_failed: bool,
+    faithfulness_score: Optional[float],
+    unsupported_claims: Optional[list],
+    user_id: Optional[str],
+) -> None:
+    cursor = conn.cursor()
+    unsupported_claims_json = json.dumps(unsupported_claims or [])
+    if settings.storage_mode == "supabase":
+        cursor.execute(
+            """
+            INSERT INTO query_log
+                (query, advanced_mode, hop_count, chunk_count, top_rerank_score, generation_failed,
+                 telemetry_json, faithfulness_score, unsupported_claims_json, user_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+            (
+                query,
+                int(advanced_mode),
+                hop_count,
+                chunk_count,
+                top_rerank_score,
+                int(generation_failed),
+                json.dumps(telemetry),
+                faithfulness_score,
+                unsupported_claims_json,
+                user_id,
+            ),
+        )
+    else:
+        cursor.execute(
+            """
+            INSERT INTO query_log
+                (query, advanced_mode, hop_count, chunk_count, top_rerank_score, generation_failed,
+                 telemetry_json, faithfulness_score, unsupported_claims_json, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+            (
+                query,
+                int(advanced_mode),
+                hop_count,
+                chunk_count,
+                top_rerank_score,
+                int(generation_failed),
+                json.dumps(telemetry),
+                faithfulness_score,
+                unsupported_claims_json,
+                user_id,
+            ),
+        )
+    conn.commit()
+
+
 def get_recent_queries(limit: int = 50) -> list:
     """Returns the most recent logged queries - useful for a future
     admin/debug view or for run_eval.py to compare historical runs."""
     conn = get_db_connection()
-    cursor = conn.cursor()
-    placeholder = "%s" if settings.storage_mode == "supabase" else "?"
-    cursor.execute(f"SELECT * FROM query_log ORDER BY timestamp DESC LIMIT {placeholder}", (limit,))
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    try:
+        cursor = conn.cursor()
+        placeholder = "%s" if settings.storage_mode == "supabase" else "?"
+        cursor.execute(f"SELECT * FROM query_log ORDER BY timestamp DESC LIMIT {placeholder}", (limit,))
+        rows = cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def purge_query_log(retention_days: int, batch_size: int = 1000) -> int:
