@@ -64,16 +64,19 @@ _scoped_cache: "OrderedDict[tuple, Dict[str, Any]]" = OrderedDict()
 
 def _current_chunk_count(doc_ids: Optional[List[str]] = None) -> int:
     conn = get_db_connection()
-    cursor = conn.cursor()
-    if doc_ids:
-        mark = "%s" if settings.storage_mode == "supabase" else "?"
-        placeholders = ", ".join([mark] * len(doc_ids))
-        cursor.execute(f"SELECT COUNT(*) as cnt FROM document_chunks WHERE doc_id IN ({placeholders})", tuple(doc_ids))
-    else:
-        cursor.execute("SELECT COUNT(*) as cnt FROM document_chunks")
-    count = cursor.fetchone()["cnt"]
-    conn.close()
-    return count
+    try:
+        cursor = conn.cursor()
+        if doc_ids:
+            mark = "%s" if settings.storage_mode == "supabase" else "?"
+            placeholders = ", ".join([mark] * len(doc_ids))
+            cursor.execute(
+                f"SELECT COUNT(*) as cnt FROM document_chunks WHERE doc_id IN ({placeholders})", tuple(doc_ids)
+            )
+        else:
+            cursor.execute("SELECT COUNT(*) as cnt FROM document_chunks")
+        return cursor.fetchone()["cnt"]
+    finally:
+        conn.close()
 
 
 def _build_bm25_and_matrix(chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
