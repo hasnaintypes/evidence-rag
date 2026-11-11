@@ -194,7 +194,7 @@ export const Attachment = ({ data, onRemove, className, children, ...props }: At
             "hover:bg-accent/50",
           ],
           variant === "card" && [
-            "flex w-56 flex-col gap-2 rounded-xl bg-muted/50 p-3",
+            "flex w-20 flex-col items-center gap-1.5 rounded-xl bg-muted/50 p-2",
             "hover:bg-muted",
           ],
           className,
@@ -218,6 +218,7 @@ export type AttachmentPreviewProps = HTMLAttributes<HTMLDivElement> & {
 export const AttachmentPreview = ({
   fallbackIcon,
   className,
+  children,
   ...props
 }: AttachmentPreviewProps) => {
   const { data, mediaCategory, variant } = useAttachmentContext();
@@ -244,16 +245,17 @@ export const AttachmentPreview = ({
   return (
     <div
       className={cn(
-        "flex shrink-0 items-center justify-center overflow-hidden",
+        "relative flex shrink-0 items-center justify-center overflow-hidden",
         variant === "grid" && "size-full bg-muted",
         variant === "inline" && "size-5 rounded bg-background",
         variant === "list" && "size-12 rounded bg-muted",
-        variant === "card" && "size-8 rounded-md bg-background",
+        variant === "card" && "size-14 rounded-lg bg-background",
         className,
       )}
       {...props}
     >
       {renderContent()}
+      {children}
     </div>
   );
 };
@@ -280,10 +282,18 @@ export const AttachmentInfo = ({
 
   return (
     <div
-      className={cn(variant === "card" ? "min-w-0 w-full" : "min-w-0 flex-1", className)}
+      className={cn(
+        variant === "card" ? "min-w-0 w-full text-center" : "min-w-0 flex-1",
+        className,
+      )}
       {...props}
     >
-      <span className={cn("block", variant === "card" ? "line-clamp-2 text-sm" : "truncate")}>
+      <span
+        className={cn(
+          "block",
+          variant === "card" ? "line-clamp-2 text-xs break-words" : "truncate",
+        )}
+      >
         {label}
       </span>
       {showMediaType && data.mediaType && (
