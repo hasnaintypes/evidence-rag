@@ -34,7 +34,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { cn } from "@/lib/utils";
 import type { BaseUIEvent } from "@base-ui/react/types";
 import type { ChatStatus, FileUIPart, SourceDocumentUIPart } from "ai";
-import { CornerDownLeftIcon, ImageIcon, Monitor, PlusIcon, SquareIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, ImageIcon, Monitor, PlusIcon, SquareIcon, XIcon } from "lucide-react";
 import { nanoid } from "nanoid";
 import type {
   ChangeEvent,
@@ -800,10 +800,16 @@ export const PromptInput = ({
             return (formData.get("message") as string) || "";
           })();
 
-      // Reset form immediately after capturing text to avoid race condition
-      // where user input during async blob conversion would be lost
+      // Reset the text input immediately - instant feedback (the same
+      // instinct ChatGPT/Gemini follow) rather than waiting for the async
+      // onSubmit below to resolve, which left the typed text sitting in
+      // the box for the whole round trip. Attachments are a separate
+      // concern (see `clear()` below) and still only clear on success, so
+      // a failed submit doesn't make the user re-attach files.
       if (!usingProvider) {
         form.reset();
+      } else {
+        controller.textInput.clear();
       }
 
       try {
@@ -829,21 +835,15 @@ export const PromptInput = ({
           try {
             await result;
             clear();
-            if (usingProvider) {
-              controller.textInput.clear();
-            }
           } catch {
-            // Don't clear on error - user may want to retry
+            // Don't clear attachments on error - user may want to retry
           }
         } else {
-          // Sync function completed without throwing, clear inputs
+          // Sync function completed without throwing, clear attachments
           clear();
-          if (usingProvider) {
-            controller.textInput.clear();
-          }
         }
       } catch {
-        // Don't clear on error - user may want to retry
+        // Don't clear attachments on error - user may want to retry
       }
     },
     [usingProvider, controller, files, onSubmit, clear],
@@ -1128,7 +1128,7 @@ export const PromptInputSubmit = ({
 }: PromptInputSubmitProps) => {
   const isGenerating = status === "submitted" || status === "streaming";
 
-  let Icon = <CornerDownLeftIcon className="size-4" />;
+  let Icon = <ArrowUpIcon className="size-4" />;
 
   if (status === "submitted") {
     Icon = <Spinner />;
@@ -1153,7 +1153,7 @@ export const PromptInputSubmit = ({
   return (
     <InputGroupButton
       aria-label={isGenerating ? "Stop" : "Submit"}
-      className={cn(className)}
+      className={cn("rounded-full", className)}
       onClick={handleClick}
       size={size}
       type={isGenerating && onStop ? "button" : "submit"}
