@@ -131,3 +131,33 @@
     @apply font-sans;
   }
 }
+
+/* A moving highlight band instead of flat opacity pulsing - a translateX
+   sweep on a ::after overlay reads as "loading content", not just "greyed
+   out box", and costs nothing extra in markup since it's self-contained
+   on the one element. */
+@keyframes skeleton-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+.skeleton-shimmer {
+  position: relative;
+  overflow: hidden;
+  background: var(--muted);
+}
+.skeleton-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklch, var(--foreground) 10%, transparent),
+    transparent
+  );
+  animation: skeleton-sweep 1.8s ease-in-out infinite;
+}
