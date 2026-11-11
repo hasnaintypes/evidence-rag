@@ -389,3 +389,42 @@ def test_a_faithfulness_gated_result_is_not_cached():
     # rather than serve the withheld answer from cache.
     _, second_mocks = _run_pipeline_with_fixed_embedding(embedding)
     assert second_mocks["generate_chat_response"].call_count == 1
+
+
+# --- _sanitize_citation_markers (#inline citations) -------------------------
+# Pure function, no mocking needed - the model is instructed to emit [N]
+# inline citation markers (see the generation prompt's instruction 6), and
+# this is the guard against it citing a chunk number that was never shown
+# to it.
+
+
+def test_sanitize_citation_markers_keeps_in_range_markers():
+    text = "The max torque is 40 Nm [1]. Replace the seal every 500 hours [2]."
+    assert qp._sanitize_citation_markers(text, max_index=2) == text
+
+
+def test_sanitize_citation_markers_drops_out_of_range_markers():
+    text = "The max torque is 40 Nm [1]. This part doesn't exist [7]."
+    result = qp._sanitize_citation_markers(text, max_index=1)
+    assert "[1]" in result
+    assert "[7]" not in result
+
+
+def test_sanitize_citation_markers_drops_everything_when_no_chunks_were_shown():
+    text = "Some claim [1] and another [2]."
+    result = qp._sanitize_citation_markers(text, max_index=0)
+    assert "[1]" not in result
+    assert "[2]" not in result
+
+
+def test_sanitize_citation_markers_leaves_non_numeric_brackets_untouched():
+    text = "See the [appendix] for details, not a citation."
+    assert qp._sanitize_citation_markers(text, max_index=3) == text
+
+
+def test_sanitize_citation_markers_handles_multiple_markers_in_one_sentence():
+    text = "Both the torque [1] and clearance [2] specs come from the same page [99]."
+    result = qp._sanitize_citation_markers(text, max_index=2)
+    assert "[1]" in result
+    assert "[2]" in result
+    assert "[99]" not in result
