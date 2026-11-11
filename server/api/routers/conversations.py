@@ -1,3 +1,5 @@
+from typing import Optional
+
 from fastapi import APIRouter, Depends
 
 from api.deps import get_current_user, get_rate_limited_chat_user, CurrentUser
@@ -29,8 +31,10 @@ def create_conversation_endpoint(body: ConversationCreate, user: CurrentUser = D
 
 
 @router.get("/conversations", response_model=ConversationListOut)
-def list_conversations_endpoint(user: CurrentUser = Depends(get_current_user)):
-    return ConversationService.list_for_user(user)
+def list_conversations_endpoint(
+    limit: int = 30, cursor: Optional[str] = None, user: CurrentUser = Depends(get_current_user)
+):
+    return ConversationService.list_for_user(user, limit=limit, cursor=cursor)
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetailOut)

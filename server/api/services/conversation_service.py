@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from api.authz import get_owned_conversation
 from api.deps import CurrentUser
 from src.query_pipeline import process_chat_query
+from src.core.llm import generate_structured_response
 from src.core.security import generate_source_token
 
 # Same "inherits whatever handler the process entry point set up for the
@@ -29,6 +30,40 @@ from src.storage.database import (
 HISTORY_TURNS = 6  # prior turns folded into the generation prompt - bounded so the prompt doesn't grow unbounded over a long conversation
 TITLE_MAX_CHARS = 60
 
+TITLE_RESPONSE_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "title": {
+            "type": "string",
+            "description": "A short, specific chat title, 4-8 words, no quotes or trailing punctuation.",
+        },
+    },
+    "required": ["title"],
+}
+
+TITLE_PROMPT = """Generate a short, specific title (4-8 words, no quotes, no trailing \
+punctuation) for a chat that starts with this question:
+
+{question}"""
+
+
+def _generate_title(user_message: str) -> Optional[str]:
+    """LLM-generated short chat title from the first user turn. Best-
+    effort, same defensive isinstance-checked-before-use posture as
+    evaluation/judge.py's score_faithfulness() - returns None on any
+    failure (bad/missing API response, wrong type) so the caller falls
+    back to the existing message[:TITLE_MAX_CHARS] truncation; never
+    raises, never blocks the real reply on this."""
+    result = generate_structured_response(
+        TITLE_PROMPT.format(question=user_message), response_schema=TITLE_RESPONSE_SCHEMA, max_tokens=50
+    )
+    if not isinstance(result, dict):
+        return None
+    title = result.get("title")
+    if not isinstance(title, str) or not title.strip():
+        return None
+    return title.strip()[:TITLE_MAX_CHARS]
+
 
 class ConversationService:
     """
@@ -46,10 +81,12 @@ class ConversationService:
         return create_conversation(conversation_id, user_id=user.id, doc_ids=doc_ids)
 
     @staticmethod
-    def list_for_user(user: CurrentUser) -> Dict[str, Any]:
-        """Sidebar conversation list, newest-first, each with its
-        document's filename attached."""
-        return {"conversations": list_conversations(user.id)}
+    def list_for_user(user: CurrentUser, limit: int = 30, cursor: Optional[str] = None) -> Dict[str, Any]:
+        """Lightweight, paginated sidebar conversation list - no doc_ids/
+        filenames, see get_with_messages()/create() for the full shape a
+        single conversation needs. Clamps limit so a caller can't request
+        an unbounded page."""
+        return list_conversations(user.id, limit=max(1, min(limit, 100)), cursor=cursor)
 
     @staticmethod
     def get_with_messages(conversation_id: str, user: CurrentUser) -> Dict[str, Any]:
@@ -150,15 +187,25 @@ class ConversationService:
             faithfulness_score=(result.get("faithfulness") or {}).get("score"),
         )
 
-        # touch_conversation only sets the title if it's still unset (COALESCE),
-        # so it's safe to pass a candidate title on every message, not just the first.
-        touch_conversation(conversation_id, title=message[:TITLE_MAX_CHARS])
+        # First turn only (history was fetched above, before this message's
+        # own insert_message() call, so an empty history means nothing came
+        # before this one): ask the model for a real title instead of just
+        # truncating the raw question. touch_conversation only sets the
+        # title if it's still unset (COALESCE) either way, so later turns
+        # keep passing the truncated fallback safely, same as before.
+        is_first_turn = len(history) == 0
+        generated_title = _generate_title(message) if is_first_turn else None
+        touch_conversation(
+            conversation_id,
+            title=generated_title if generated_title else message[:TITLE_MAX_CHARS],
+        )
 
         return {
             **assistant_message,
             "telemetry": result.get("telemetry", {}),
             "chunks_matrix": result.get("chunks_matrix", []),
             "thinking": result.get("thinking", ""),
+            "title": generated_title if is_first_turn else None,
         }
 
     @staticmethod

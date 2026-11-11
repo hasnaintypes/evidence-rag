@@ -1,3 +1,4 @@
+import base64
 import sqlite3
 import json
 import os
@@ -340,6 +341,9 @@ def _init_db_with(conn) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_doc ON entities(doc_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_edges_doc ON entity_edges(doc_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id)")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conversations_user_list ON conversations(user_id, pinned, updated_at, id)"
+    )
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)")
 
     conn.commit()
@@ -1347,28 +1351,62 @@ def create_conversation(conversation_id: str, user_id: str, doc_ids: List[str]) 
     return _hydrate_conversation_row(row, filename_map)
 
 
-def list_conversations(user_id: str) -> List[Dict[str, Any]]:
-    """Pinned conversations first, then most-recently-updated. Document
-    filenames are resolved with one batched query across all conversations
-    rather than per-conversation (doc_ids is JSON, so it can't be SQL-joined
-    like the old single-doc_id column was)."""
+def _encode_conversation_cursor(row: Dict[str, Any]) -> str:
+    """Opaque keyset-pagination cursor: the sort key of the last row on a
+    page, so the next page's query can resume with a stable
+    `WHERE (...) < (that row's key)` predicate even if another conversation
+    gets pinned/renamed/bumped between page fetches - unlike offset/limit,
+    which would skip or duplicate rows under that churn."""
+    payload = json.dumps([row["pinned"], str(row["updated_at"]), row["id"]])
+    return base64.urlsafe_b64encode(payload.encode()).decode()
+
+
+def _decode_conversation_cursor(cursor: str) -> tuple:
+    payload = base64.urlsafe_b64decode(cursor.encode()).decode()
+    pinned, updated_at, last_id = json.loads(payload)
+    return bool(pinned), updated_at, last_id
+
+
+def list_conversations(user_id: str, limit: int = 30, cursor: Optional[str] = None) -> Dict[str, Any]:
+    """Lightweight, paginated sidebar conversation list - pinned first,
+    then most-recently-updated, keyset-paginated on (pinned, updated_at,
+    id) rather than OFFSET/LIMIT (see _encode_conversation_cursor's
+    docstring for why). No doc_ids/filenames here - see get_conversation()
+    for the full shape a single opened conversation needs; resolving
+    filenames for every conversation on every list call was the thing this
+    endpoint didn't need to pay for just to render the sidebar."""
     conn = get_db_connection()
     try:
-        cursor = conn.cursor()
+        cursor_obj = conn.cursor()
         ph = _ph(1)
-        cursor.execute(
+        where_extra = ""
+        params: List[Any] = [user_id]
+        if cursor:
+            pinned, updated_at, last_id = _decode_conversation_cursor(cursor)
+            where_extra = f"""AND (
+                pinned < {ph} OR
+                (pinned = {ph} AND updated_at < {ph}) OR
+                (pinned = {ph} AND updated_at = {ph} AND id < {ph})
+            )"""
+            params += [pinned, pinned, updated_at, pinned, updated_at, last_id]
+        params.append(limit + 1)  # fetch one extra row to know has_more without a second query
+        cursor_obj.execute(
             f"""
-            SELECT id, doc_ids, pinned, title, created_at, updated_at
+            SELECT id, pinned, title, created_at, updated_at
             FROM conversations
-            WHERE user_id = {ph}
-            ORDER BY pinned DESC, updated_at DESC
+            WHERE user_id = {ph} {where_extra}
+            ORDER BY pinned DESC, updated_at DESC, id DESC
+            LIMIT {ph}
         """,
-            (user_id,),
+            params,
         )
-        rows = [dict(r) for r in cursor.fetchall()]
-        all_doc_ids = {d for r in rows for d in json.loads(r["doc_ids"])}
-        filename_map = _filenames_for_doc_ids(cursor, list(all_doc_ids))
-        return [_hydrate_conversation_row(r, filename_map) for r in rows]
+        rows = [dict(r) for r in cursor_obj.fetchall()]
+        for row in rows:
+            row["pinned"] = bool(row["pinned"])
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        next_cursor = _encode_conversation_cursor(rows[-1]) if has_more and rows else None
+        return {"conversations": rows, "next_cursor": next_cursor, "has_more": has_more}
     finally:
         conn.close()
 

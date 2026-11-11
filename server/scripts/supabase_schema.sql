@@ -143,6 +143,11 @@ create index if not exists idx_chunks_doc on document_chunks(doc_id);
 create index if not exists idx_entities_doc on entities(doc_id);
 create index if not exists idx_edges_doc on entity_edges(doc_id);
 create index if not exists idx_conversations_user on conversations(user_id);
+-- Covers list_conversations()'s keyset pagination (ORDER BY pinned DESC,
+-- updated_at DESC, id DESC WHERE user_id = ...) - apply manually, this repo
+-- has no migration framework (see CLAUDE.md).
+create index if not exists idx_conversations_user_list
+    on conversations(user_id, pinned desc, updated_at desc, id desc);
 create index if not exists idx_messages_conversation on messages(conversation_id);
 -- timestamp: scripts/purge_query_log.py's DELETE filters on this column
 -- every run. user_id: for a future per-user export/delete query.

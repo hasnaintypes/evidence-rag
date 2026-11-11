@@ -34,6 +34,20 @@ class ConversationOut(BaseModel):
     updated_at: Any
 
 
+class ConversationListItemOut(BaseModel):
+    """GET /conversations's per-row shape - deliberately lighter than
+    ConversationOut (no doc_ids/filenames, which need a second batched
+    query to resolve): the sidebar only needs id/title/pinned/timestamps
+    to render its list, and fetches the full ConversationOut shape only
+    once a conversation is actually opened (GET /conversations/{id})."""
+
+    id: str
+    title: Optional[str] = None
+    pinned: bool = False
+    created_at: Any
+    updated_at: Any
+
+
 class MessageOut(BaseModel):
     id: int
     conversation_id: str
@@ -50,7 +64,9 @@ class ConversationDetailOut(BaseModel):
 
 
 class ConversationListOut(BaseModel):
-    conversations: list[ConversationOut]
+    conversations: list[ConversationListItemOut]
+    next_cursor: Optional[str] = None
+    has_more: bool = False
 
 
 class ChatReplyOut(MessageOut):
@@ -64,3 +80,4 @@ class ChatReplyOut(MessageOut):
     telemetry: dict = {}
     chunks_matrix: list = []
     thinking: str = ""
+    title: Optional[str] = None
