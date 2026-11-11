@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
-import { toast } from "sonner";
+import { toast } from "@/hooks/use-toast";
 import {
   Conversation,
   ConversationContent,
@@ -10,6 +10,7 @@ import {
 } from "@/components/ai-elements/conversation";
 import {
   PromptInput,
+  PromptInputProvider,
   PromptInputBody,
   PromptInputTextarea,
   PromptInputFooter,
@@ -20,6 +21,13 @@ import {
 import { Checkpoint, CheckpointIcon, CheckpointTrigger } from "@/components/ai-elements/checkpoint";
 import { ChatMessageBubble } from "@/components/chat/chat-message";
 import { AttachmentChips } from "@/components/chat/attachment-chips";
+import {
+  EvidenceMark,
+  ChatGreeting,
+  ComposerSuggestions,
+} from "@/components/chat/chat-empty-state";
+import { ChatHeader } from "@/components/chat/chat-header";
+import { SourceCountBadge } from "@/components/chat/source-count-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   addDocumentToConversation,
@@ -32,6 +40,8 @@ import {
   type DocumentStatus,
 } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
+import { useAdvancedMode } from "@/hooks/use-advanced-mode";
+import { useConversationsStore } from "@/stores/conversations-store";
 import { MAX_CONVERSATION_DOCS } from "@/lib/types";
 import type {
   ChatMessage,
@@ -75,13 +85,6 @@ function MessageSkeleton({ align }: { align: "start" | "end" }) {
   );
 }
 
-function timeOfDayGreeting(): string {
-  const hour = new Date().getHours();
-  if (hour < 12) return "Morning";
-  if (hour < 18) return "Afternoon";
-  return "Evening";
-}
-
 function displayName(
   user: { email?: string; user_metadata?: { full_name?: string } } | null | undefined,
 ): string {
@@ -105,6 +108,7 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
   >([]);
   const [docStatuses, setDocStatuses] = useState<Record<string, DocumentStatus["status"]>>({});
   const statusUnsubscribes = useRef<Record<string, () => void>>({});
+  const [advancedMode, setAdvancedMode] = useAdvancedMode();
 
   useEffect(() => {
     getConversation(conversationId)
@@ -172,10 +176,14 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
     setIsSending(true);
 
     try {
-      const result = await sendMessage(conversationId, trimmed, true);
+      const result = await sendMessage(conversationId, trimmed, advancedMode);
       setMessages((prev) =>
         prev.map((m) => (m.id === pendingId ? { ...fromServerMessage(result), id: pendingId } : m)),
       );
+      if (result.title) {
+        setConversation((prev) => (prev ? { ...prev, title: result.title! } : prev));
+        useConversationsStore.getState().patch(conversationId, { title: result.title });
+      }
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "Something went wrong reaching the server.";
@@ -230,7 +238,8 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
     }
   }
 
-  const atDocCap = (conversation?.doc_ids.length ?? 0) >= MAX_CONVERSATION_DOCS;
+  const docCount = conversation?.doc_ids.length ?? 0;
+  const atDocCap = docCount >= MAX_CONVERSATION_DOCS;
 
   const promptInput = (
     <PromptInput onSubmit={handleSubmit}>
@@ -265,6 +274,7 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
             className="hidden"
             onChange={handleAttachFile}
           />
+          <SourceCountBadge count={docCount} max={MAX_CONVERSATION_DOCS} />
         </PromptInputTools>
         <PromptInputSubmit status={isSending ? "submitted" : undefined} disabled={isSending} />
       </PromptInputFooter>
@@ -274,57 +284,98 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
   // Empty conversation: centered greeting + prompt input, like a fresh
   // chat landing screen. Once the first message goes out, the layout
   // below takes over - scrollable history with the input pinned to the bottom.
+  // Only this branch wraps promptInput in PromptInputProvider, lifting its
+  // textInput state so a suggestion-card click can prefill it (see
+  // ai-elements/prompt-input.tsx's controller) - the active-conversation
+  // branch below renders the same promptInput element uncontrolled.
+  const headerTitle = conversation?.title ?? conversation?.filenames[0] ?? "Chat";
+
   if (!isLoadingHistory && messages.length === 0) {
     return (
-      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center gap-6 px-4">
-        <div className="flex items-center gap-2 text-3xl font-semibold tracking-tight text-foreground">
-          Good {timeOfDayGreeting()}, {displayName(user)}
+      <div className="flex h-full min-h-0 flex-1 flex-col">
+        <ChatHeader
+          title={headerTitle}
+          advancedMode={advancedMode}
+          onAdvancedModeChange={setAdvancedMode}
+        />
+        <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center gap-7 px-4">
+          <EvidenceMark />
+          <ChatGreeting name={displayName(user)} />
+          <PromptInputProvider>
+            <div className="flex w-full flex-col gap-4">
+              {promptInput}
+              <ComposerSuggestions />
+            </div>
+          </PromptInputProvider>
         </div>
-        <div className="w-full">{promptInput}</div>
       </div>
     );
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col">
-      <Conversation>
-        <ConversationContent>
-          {isLoadingHistory ? (
-            <>
-              <MessageSkeleton align="end" />
-              <MessageSkeleton align="start" />
-              <MessageSkeleton align="end" />
-              <MessageSkeleton align="start" />
-            </>
-          ) : (
-            messages.map((message, index) => {
-              const isLastAssistantTurn =
-                message.role === "assistant" && !message.pending && message.serverId !== undefined;
-              const isFinalMessage = index === messages.length - 1;
+    <div className="flex h-full min-h-0 flex-1 flex-col">
+      <ChatHeader
+        title={headerTitle}
+        subtitle={
+          docCount > 0 ? `${docCount} document${docCount === 1 ? "" : "s"} attached` : undefined
+        }
+        advancedMode={advancedMode}
+        onAdvancedModeChange={setAdvancedMode}
+      />
+      <div className="mx-auto flex w-full max-w-3xl min-h-0 flex-1 flex-col">
+        <Conversation>
+          <ConversationContent>
+            {isLoadingHistory ? (
+              <>
+                <MessageSkeleton align="end" />
+                <MessageSkeleton align="start" />
+                <MessageSkeleton align="end" />
+                <MessageSkeleton align="start" />
+              </>
+            ) : (
+              messages.map((message, index) => {
+                const isLastAssistantTurn =
+                  message.role === "assistant" &&
+                  !message.pending &&
+                  message.serverId !== undefined;
+                const isFinalMessage = index === messages.length - 1;
 
-              return (
-                <div key={message.id} className="flex flex-col gap-2">
-                  <ChatMessageBubble message={message} docStatuses={docStatuses} />
-                  {isLastAssistantTurn && !isFinalMessage && (
-                    <Checkpoint>
-                      <CheckpointIcon />
-                      <CheckpointTrigger
-                        tooltip="Restore conversation to this point"
-                        onClick={() => handleRestore(message.serverId!)}
-                      >
-                        Restore here
-                      </CheckpointTrigger>
-                    </Checkpoint>
-                  )}
-                </div>
-              );
-            })
-          )}
-        </ConversationContent>
-        <ConversationScrollButton />
-      </Conversation>
+                // Narrowed to just this message's own attachments so a
+                // docStatuses update only changes the prop reference (and
+                // defeats ChatMessageBubble's memo) for the message that
+                // actually cares, not every bubble in the list.
+                const relevantStatuses = message.attachments
+                  ? Object.fromEntries(
+                      message.attachments
+                        .filter((a) => a.docId in docStatuses)
+                        .map((a) => [a.docId, docStatuses[a.docId]]),
+                    )
+                  : undefined;
 
-      <div className="p-4">{promptInput}</div>
+                return (
+                  <div key={message.id} className="flex flex-col gap-2">
+                    <ChatMessageBubble message={message} docStatuses={relevantStatuses} />
+                    {isLastAssistantTurn && !isFinalMessage && (
+                      <Checkpoint>
+                        <CheckpointIcon />
+                        <CheckpointTrigger
+                          tooltip="Restore conversation to this point"
+                          onClick={() => handleRestore(message.serverId!)}
+                        >
+                          Restore here
+                        </CheckpointTrigger>
+                      </Checkpoint>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </ConversationContent>
+          <ConversationScrollButton />
+        </Conversation>
+
+        <div className="p-4">{promptInput}</div>
+      </div>
     </div>
   );
 }

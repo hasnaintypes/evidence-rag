@@ -1,5 +1,7 @@
 "use client";
 
+import { memo } from "react";
+import type { ReactNode } from "react";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { AttachmentChips } from "@/components/chat/attachment-chips";
 import { Reasoning, ReasoningTrigger, ReasoningContent } from "@/components/ai-elements/reasoning";
@@ -26,7 +28,73 @@ function sourceHref(document: string, page: number | null, token: string | null)
   return page ? `${url}#page=${page}` : url;
 }
 
-export function ChatMessageBubble({
+const CITATION_MARKER_RE = /\[(\d+)\]/g;
+
+// The model is instructed (see query_pipeline.py's generation prompt
+// instruction 6) to inline [N] markers citing a numbered source - turns
+// each in-range one into a markdown link Streamdown already knows how to
+// parse as an anchor, which `CiteLink` below then intercepts instead of
+// letting it navigate. Bounds-checked here too (not just server-side,
+// see _sanitize_citation_markers) since a document's own text could
+// coincidentally contain a bracketed number that isn't really a citation.
+function linkifyCitations(content: string, maxIndex: number): string {
+  return content.replace(CITATION_MARKER_RE, (match, n) =>
+    Number(n) >= 1 && Number(n) <= maxIndex ? `[[${n}]](#cite-${n})` : match,
+  );
+}
+
+function CiteLink({
+  href,
+  children,
+  sources,
+}: {
+  href?: string;
+  children?: ReactNode;
+  sources: ChatMessage["sources"];
+}) {
+  const match = /^#cite-(\d+)$/.exec(href ?? "");
+  if (!match) {
+    // Not a citation link - a real markdown link in the answer text,
+    // render it normally.
+    return (
+      <a href={href} target="_blank" rel="noreferrer">
+        {children}
+      </a>
+    );
+  }
+  const index = Number(match[1]);
+  const source = sources?.find((s) => s.index === index);
+  if (!source) return <>{children}</>; // out-of-range already sanitized server-side, but guard anyway
+
+  return (
+    <InlineCitation>
+      <InlineCitationCard>
+        <HoverCardTrigger
+          render={
+            <a
+              href={sourceHref(source.document, source.page, source.source_token)}
+              target="_blank"
+              rel="noreferrer"
+              className="citation-marker"
+            />
+          }
+        >
+          <Badge variant="secondary" className="mx-0.5 rounded-full px-1.5 text-[10px]">
+            {index}
+          </Badge>
+        </HoverCardTrigger>
+        <InlineCitationCardBody>
+          <p className="mb-1 truncate text-sm font-medium leading-tight">{source.section}</p>
+          <p className="line-clamp-4 text-sm leading-relaxed text-muted-foreground">
+            {source.snippet}
+          </p>
+        </InlineCitationCardBody>
+      </InlineCitationCard>
+    </InlineCitation>
+  );
+}
+
+function ChatMessageBubbleImpl({
   message,
   docStatuses = {},
 }: {
@@ -52,7 +120,11 @@ export function ChatMessageBubble({
       )}
 
       <MessageContent className={cn(message.error && "bg-destructive/10 text-destructive")}>
-        <MessageResponse>{message.content}</MessageResponse>
+        <MessageResponse
+          components={{ a: (props) => <CiteLink {...props} sources={message.sources} /> }}
+        >
+          {linkifyCitations(message.content, message.sources?.length ?? 0)}
+        </MessageResponse>
       </MessageContent>
 
       {!isUser && message.thinking && (
@@ -104,3 +176,5 @@ export function ChatMessageBubble({
     </Message>
   );
 }
+
+export const ChatMessageBubble = memo(ChatMessageBubbleImpl);

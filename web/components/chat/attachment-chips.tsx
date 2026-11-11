@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2, AlertCircle } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import {
   Attachments,
   Attachment,
@@ -9,6 +9,10 @@ import {
 } from "@/components/ai-elements/attachments";
 import type { DocumentStatus } from "@/lib/api";
 
+// Indexing happens silently in the background (see subscribeToDocumentStatus
+// callers) - a document reads as "attached" the instant it's uploaded, with
+// no processing/spinner treatment, so the only thing surfaced here is the
+// rare terminal failure case.
 export function AttachmentChips({
   attachments,
   statuses,
@@ -21,7 +25,7 @@ export function AttachmentChips({
   return (
     <Attachments variant="card">
       {attachments.map((attachment) => {
-        const status = statuses[attachment.docId];
+        const failed = statuses[attachment.docId] === "failed";
         return (
           <Attachment
             key={attachment.docId}
@@ -35,20 +39,11 @@ export function AttachmentChips({
           >
             <AttachmentPreview
               fallbackIcon={
-                status === "processing" ? (
-                  <Loader2 className="size-4 animate-spin text-muted-foreground" />
-                ) : status === "failed" ? (
-                  <AlertCircle className="size-4 text-destructive" />
-                ) : undefined
+                failed ? <AlertCircle className="size-4 text-destructive" /> : undefined
               }
             />
             <AttachmentInfo />
-            {status === "processing" && (
-              <span className="text-xs text-muted-foreground">Indexing…</span>
-            )}
-            {status === "failed" && (
-              <span className="text-xs text-destructive">Couldn&apos;t index</span>
-            )}
+            {failed && <span className="text-xs text-destructive">Couldn&apos;t index</span>}
           </Attachment>
         );
       })}
