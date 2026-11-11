@@ -248,11 +248,13 @@ export async function sendMessage(
   conversationId: string,
   message: string,
   advancedMode: boolean,
+  signal?: AbortSignal,
 ): Promise<ConversationMessage> {
   const response = await apiFetch(`/conversations/${encodeURIComponent(conversationId)}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message, advanced_mode: advancedMode }),
+    signal,
   });
   return response.json() as Promise<ConversationMessage>;
 }

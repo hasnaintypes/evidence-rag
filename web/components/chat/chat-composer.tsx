@@ -29,23 +29,27 @@ import {
 } from "@/components/chat/chat-empty-state";
 import { ChatHeader } from "@/components/chat/chat-header";
 import { SourceCountBadge } from "@/components/chat/source-count-badge";
-import {
-  createConversation,
-  sendMessage,
-  subscribeToDocumentStatus,
-  uploadDocument,
-} from "@/lib/api";
+import { AttachmentProgressRing } from "@/components/chat/attachment-progress-ring";
+import { AttachExistingDocumentPicker } from "@/components/chat/attach-existing-document-picker";
+import { createConversation, subscribeToDocumentStatus, uploadDocument } from "@/lib/api";
+import { stashPendingFirstMessage } from "@/lib/pending-first-message";
 import { useAuth } from "@/hooks/use-auth";
 import { useAdvancedMode } from "@/hooks/use-advanced-mode";
 import { useConversationsStore } from "@/stores/conversations-store";
-import { ACCEPTED_DOCUMENT_EXTENSIONS, MAX_CONVERSATION_DOCS } from "@/lib/types";
+import {
+  ACCEPTED_DOCUMENT_EXTENSIONS,
+  MAX_CONVERSATION_DOCS,
+  type DocumentRecord,
+} from "@/lib/types";
 import { Paperclip } from "lucide-react";
 
 type PendingAttachment = {
   localId: string;
-  file: File;
+  filename: string;
+  mediaType: string;
   docId: string | null;
   isUploading: boolean;
+  progress: { indexed: number; total: number } | null;
 };
 
 function displayName(
@@ -86,7 +90,17 @@ export function ChatComposer() {
 
   async function startUpload(file: File) {
     const localId = crypto.randomUUID();
-    setAttachments((prev) => [...prev, { localId, file, docId: null, isUploading: true }]);
+    setAttachments((prev) => [
+      ...prev,
+      {
+        localId,
+        filename: file.name,
+        mediaType: file.type,
+        docId: null,
+        isUploading: true,
+        progress: null,
+      },
+    ]);
     try {
       // Upload only - returns right away. A document that still needs
       // embedding keeps isUploading true (so the chip keeps its spinner),
@@ -110,13 +124,26 @@ export function ChatComposer() {
         }
         if (docStatus.status === "ready") {
           setAttachments((prev) =>
-            prev.map((a) => (a.localId === localId ? { ...a, docId, isUploading: false } : a)),
+            prev.map((a) =>
+              a.localId === localId ? { ...a, docId, isUploading: false, progress: null } : a,
+            ),
           );
           delete statusUnsubscribes.current[docId];
         } else if (docStatus.status === "failed") {
           toast.error(`Couldn't index "${file.name}".`);
           setAttachments((prev) => prev.filter((a) => a.localId !== localId));
           delete statusUnsubscribes.current[docId];
+        } else {
+          setAttachments((prev) =>
+            prev.map((a) =>
+              a.localId === localId
+                ? {
+                    ...a,
+                    progress: { indexed: docStatus.chunks_indexed, total: docStatus.chunks_total },
+                  }
+                : a,
+            ),
+          );
         }
       });
     } catch {
@@ -139,6 +166,27 @@ export function ChatComposer() {
   function handleRemoveAttachment(localId: string) {
     removedIds.current.add(localId);
     setAttachments((prev) => prev.filter((a) => a.localId !== localId));
+  }
+
+  function handleAttachExisting(doc: DocumentRecord) {
+    if (attachments.length >= MAX_CONVERSATION_DOCS) {
+      toast.error(`You can attach at most ${MAX_CONVERSATION_DOCS} documents per chat.`);
+      return;
+    }
+    // Already indexed (that's what made it selectable in the picker in
+    // the first place) - attaches straight in as "ready", no upload or
+    // status watch needed.
+    setAttachments((prev) => [
+      ...prev,
+      {
+        localId: doc.doc_id,
+        filename: doc.filename,
+        mediaType: "",
+        docId: doc.doc_id,
+        isUploading: false,
+        progress: null,
+      },
+    ]);
   }
 
   async function handleSubmit({ text }: { text: string }) {
@@ -168,7 +216,13 @@ export function ChatComposer() {
         created_at: conversation.created_at,
         updated_at: conversation.updated_at,
       });
-      await sendMessage(conversation.id, trimmed, advancedMode);
+      // Navigate the instant the conversation exists, rather than blocking
+      // here on the full reply - ChatPanel picks the message back up via
+      // takePendingFirstMessage() and sends it itself, so the user sees
+      // the real conversation (their message + the thinking state) right
+      // away instead of staring at this same screen through the whole
+      // first response.
+      stashPendingFirstMessage(conversation.id, trimmed);
       router.push(`/chat/${conversation.id}`);
     } catch {
       toast.error("Couldn't start the chat.");
@@ -199,13 +253,20 @@ export function ChatComposer() {
                         data={{
                           type: "file",
                           id: a.docId ?? a.localId,
-                          filename: a.file.name,
-                          mediaType: a.file.type,
+                          filename: a.filename,
+                          mediaType: a.mediaType,
                           url: "",
                         }}
                         onRemove={() => handleRemoveAttachment(a.localId)}
                       >
-                        <AttachmentPreview />
+                        <AttachmentPreview>
+                          {a.isUploading && a.progress && (
+                            <AttachmentProgressRing
+                              indexed={a.progress.indexed}
+                              total={a.progress.total}
+                            />
+                          )}
+                        </AttachmentPreview>
                         <AttachmentInfo />
                         <AttachmentRemove />
                       </Attachment>
@@ -233,6 +294,11 @@ export function ChatComposer() {
                   >
                     <Paperclip className="size-4" />
                   </PromptInputButton>
+                  <AttachExistingDocumentPicker
+                    excludeDocIds={attachments.map((a) => a.docId).filter((id) => id !== null)}
+                    disabled={isSubmitting || attachments.length >= MAX_CONVERSATION_DOCS}
+                    onSelect={handleAttachExisting}
+                  />
                   <input
                     ref={fileInputRef}
                     type="file"
