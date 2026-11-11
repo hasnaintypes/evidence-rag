@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "@/hooks/use-toast";
 import { Network, Share2 } from "lucide-react";
@@ -125,9 +124,6 @@ export default function GraphPage() {
               ))}
             </SelectContent>
           </Select>
-          <Link href="/" className="text-xs text-muted-foreground hover:text-foreground">
-            Back to chat
-          </Link>
         </div>
       </header>
 
