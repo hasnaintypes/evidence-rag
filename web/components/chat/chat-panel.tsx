@@ -126,8 +126,20 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
   const statusUnsubscribes = useRef<Record<string, () => void>>({});
   const [advancedMode, setAdvancedMode] = useAdvancedMode();
   const sendAbortRef = useRef<AbortController | null>(null);
+  // Guards against React Strict Mode's dev-only double-invoke of this
+  // effect: without it, a second getConversation() call for the same
+  // conversationId would overwrite the first call's optimistic
+  // setMessages([...user, pending]) back to the fetched (still-empty)
+  // history, right as the first call's sendMessage() was in flight - the
+  // reply would then have nothing to patch its pendingId into, and the
+  // conversation would look stuck on the empty-state screen even though
+  // a title eventually lands (see takePendingFirstMessage's handoff below).
+  const handledConversationRef = useRef<string | null>(null);
 
   useEffect(() => {
+    if (handledConversationRef.current === conversationId) return;
+    handledConversationRef.current = conversationId;
+
     getConversation(conversationId)
       .then(({ conversation: conv, messages: history }) => {
         setConversation(conv);
