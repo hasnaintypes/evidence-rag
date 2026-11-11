@@ -46,12 +46,12 @@ Unrelated paragraph content, also long enough to survive chunking as a block.
     return _write_md(tmp_path, content=content)
 
 
-def _fake_embedding():
-    return [0.0] * 8
+def _fake_embedding_batch(texts):
+    return [[0.0] * 8 for _ in texts]
 
 
 def _ingest(file_path, filename="doc.md", force=False):
-    with patch("src.ingestion.pipeline.get_embedding", return_value=_fake_embedding()):
+    with patch("src.ingestion.pipeline.get_embeddings_batch", side_effect=_fake_embedding_batch):
         prep = prepare_ingest(file_path, filename, force=force)
         assert prep["status"] == "ready_to_index"
         result = finish_ingest(
@@ -72,7 +72,7 @@ def test_failed_reembedding_preserves_previous_chunks(tmp_path):
     # Re-ingest the same (unchanged) content with force=True, as the
     # "re-ingest" button does - but this time the embedding call fails
     # partway through the chunk list.
-    with patch("src.ingestion.pipeline.get_embedding", side_effect=RuntimeError("quota exceeded")):
+    with patch("src.ingestion.pipeline.get_embeddings_batch", side_effect=RuntimeError("quota exceeded")):
         prep2 = prepare_ingest(file_path, "doc.md", force=True)
         assert prep2["status"] == "ready_to_index"
         assert prep2["is_replace"] is True

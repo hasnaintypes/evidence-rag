@@ -159,6 +159,47 @@ def test_get_embedding_still_raises_if_both_attempts_fail():
             llm.get_embedding("some text")
 
 
+def test_get_embeddings_batch_sends_one_call_for_every_text():
+    captured = {}
+
+    def fake_embed_content(model, contents):
+        captured["contents"] = contents
+        result = MagicMock()
+        result.embeddings = [MagicMock(values=[i, i + 1]) for i in range(len(contents))]
+        return result
+
+    with patch.object(llm.client.models, "embed_content", side_effect=fake_embed_content) as mock:
+        result = llm.get_embeddings_batch(["a", "b", "c"])
+
+    assert mock.call_count == 1
+    assert captured["contents"] == ["a", "b", "c"]
+    assert result == [[0, 1], [1, 2], [2, 3]]
+
+
+def test_get_embeddings_batch_retries_once_on_the_same_model_before_raising():
+    call_count = {"n": 0}
+
+    def fake_embed_content(model, contents):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("transient failure")
+        result = MagicMock()
+        result.embeddings = [MagicMock(values=[0.1, 0.2]), MagicMock(values=[0.3, 0.4])]
+        return result
+
+    with patch.object(llm.client.models, "embed_content", side_effect=fake_embed_content):
+        result = llm.get_embeddings_batch(["x", "y"])
+
+    assert result == [[0.1, 0.2], [0.3, 0.4]]
+    assert call_count["n"] == 2
+
+
+def test_get_embeddings_batch_still_raises_if_both_attempts_fail():
+    with patch.object(llm.client.models, "embed_content", side_effect=RuntimeError("down")):
+        with pytest.raises(RuntimeError):
+            llm.get_embeddings_batch(["x", "y"])
+
+
 # --- Configurable chat model chain (GEMINI_CHAT_MODEL_CHAIN) ---------------
 
 

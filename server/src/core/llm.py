@@ -95,6 +95,10 @@ def get_embedding(text: str) -> List[float]:
     api/routers/conversations.py's blanket exception handler) already
     treat an uncaught embedding failure as a pipeline failure to report
     honestly, not something to swallow here.
+
+    Single-text only - a query embedding at chat time is always exactly
+    one string. Bulk document ingestion uses get_embeddings_batch() below
+    instead, which is the one that actually matters for throughput.
     """
     clean_text = text.replace("\n", " ")
     try:
@@ -102,6 +106,37 @@ def get_embedding(text: str) -> List[float]:
     except Exception:
         result = client.models.embed_content(model=settings.gemini_embedding_model, contents=clean_text)
     return result.embeddings[0].values
+
+
+def get_embeddings_batch(texts: List[str]) -> List[List[float]]:
+    """
+    Embeds many chunks in ONE Gemini API call instead of one call per
+    chunk - see ingestion/pipeline.py's finish_ingest() docstring for why
+    this is the actual indexing bottleneck (network round-trip latency per
+    chunk, not embedding compute time): embed_content's `contents` accepts
+    a list directly (confirmed against the installed google-genai SDK -
+    the Vertex AI backend caps this at one text per call for this model,
+    but this project talks to the plain Gemini Developer API via an API
+    key, which doesn't have that restriction and routes a list through
+    batchEmbedContents).
+
+    Returns embeddings in the same order as `texts` - the Gemini API's
+    documented ordering contract for a batch request - so callers can zip
+    the result back against their own item list positionally.
+
+    Retries the whole batch once on the same model, same policy as
+    get_embedding() above. A batch that's too large (e.g. an oversized
+    payload) will fail both attempts the same way - handled by the
+    caller choosing a conservative EMBED_BATCH_SIZE, not by a runtime
+    fallback to smaller batches here, so a persistent failure surfaces
+    immediately instead of silently degrading to one-at-a-time.
+    """
+    clean_texts = [t.replace("\n", " ") for t in texts]
+    try:
+        result = client.models.embed_content(model=settings.gemini_embedding_model, contents=clean_texts)
+    except Exception:
+        result = client.models.embed_content(model=settings.gemini_embedding_model, contents=clean_texts)
+    return [e.values for e in result.embeddings]
 
 
 def generate_chat_response(prompt: str, max_tokens: Optional[int] = None) -> str:
