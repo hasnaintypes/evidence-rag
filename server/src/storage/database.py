@@ -1006,12 +1006,44 @@ def _decode_chunk_rows(rows: List[Any]) -> List[Dict[str, Any]]:
     return chunks
 
 
+# Keyset-pagination page size for get_all_chunks_for_sparse()'s supabase-mode
+# fetch (run_eval.py's full-corpus eval search, the one remaining caller of
+# the unfiltered query - see #27/#57). Fetching the embedding column over
+# the Supabase pooler has been observed to run well under a second per row
+# for a small batch but to take 70-100s (and get dropped with
+# "SSL connection has been closed unexpectedly") once the full ~280-row
+# corpus is pulled in a single statement - keeping each page's row count
+# bounded keeps every individual query comfortably inside that window
+# regardless of per-row transfer cost, rather than depending on the corpus
+# staying small forever.
+_SPARSE_FETCH_PAGE_SIZE = 50
+
+
 def get_all_chunks_for_sparse() -> List[Dict[str, Any]]:
+    if settings.storage_mode != "supabase":
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM document_chunks")
+            return _decode_chunk_rows(cursor.fetchall())
+        finally:
+            conn.close()
+
     conn = get_db_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM document_chunks")
-        rows = cursor.fetchall()
+        rows: List[Any] = []
+        last_id = 0
+        while True:
+            cursor.execute(
+                "SELECT * FROM document_chunks WHERE id > %s ORDER BY id LIMIT %s",
+                (last_id, _SPARSE_FETCH_PAGE_SIZE),
+            )
+            page = cursor.fetchall()
+            if not page:
+                break
+            rows.extend(page)
+            last_id = page[-1]["id"]
         return _decode_chunk_rows(rows)
     finally:
         conn.close()
