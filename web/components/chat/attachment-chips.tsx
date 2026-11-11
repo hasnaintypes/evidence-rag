@@ -7,25 +7,28 @@ import {
   AttachmentPreview,
   AttachmentInfo,
 } from "@/components/ai-elements/attachments";
+import { AttachmentProgressRing } from "@/components/chat/attachment-progress-ring";
 import type { DocumentStatus } from "@/lib/api";
 
-// Indexing happens silently in the background (see subscribeToDocumentStatus
-// callers) - a document reads as "attached" the instant it's uploaded, with
-// no processing/spinner treatment, so the only thing surfaced here is the
-// rare terminal failure case.
+// A document reads as "attached" the instant it's uploaded - indexing then
+// runs in the background, surfaced here as a progress ring over the file
+// icon (chunks_indexed/chunks_total, live over SSE) rather than a plain
+// spinner, so the wait actually looks like it's going somewhere.
 export function AttachmentChips({
   attachments,
   statuses,
 }: {
   attachments: { docId: string; filename: string }[];
-  statuses: Record<string, DocumentStatus["status"]>;
+  statuses: Record<string, DocumentStatus>;
 }) {
   if (attachments.length === 0) return null;
 
   return (
     <Attachments variant="card">
       {attachments.map((attachment) => {
-        const failed = statuses[attachment.docId] === "failed";
+        const docStatus = statuses[attachment.docId];
+        const failed = docStatus?.status === "failed";
+        const processing = docStatus?.status === "processing";
         return (
           <Attachment
             key={attachment.docId}
@@ -41,7 +44,14 @@ export function AttachmentChips({
               fallbackIcon={
                 failed ? <AlertCircle className="size-4 text-destructive" /> : undefined
               }
-            />
+            >
+              {processing && (
+                <AttachmentProgressRing
+                  indexed={docStatus.chunks_indexed}
+                  total={docStatus.chunks_total}
+                />
+              )}
+            </AttachmentPreview>
             <AttachmentInfo />
             {failed && <span className="text-xs text-destructive">Couldn&apos;t index</span>}
           </Attachment>
