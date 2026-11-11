@@ -1,15 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
-import { toast } from "sonner";
+import { toast } from "@/hooks/use-toast";
 import {
   Network,
   MessagesSquare,
   Plus,
   FileText,
+  Search,
   Settings,
+  LogOut,
   MoreHorizontal,
   Pin,
   PinOff,
@@ -24,6 +26,7 @@ import {
   SidebarGroupLabel,
   SidebarHeader,
   SidebarFooter,
+  SidebarSeparator,
   SidebarMenu,
   SidebarMenuAction,
   SidebarMenuButton,
@@ -47,17 +50,20 @@ import {
   DropdownMenuTrigger,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { SettingsDialog } from "@/components/settings/settings-dialog";
+import { signOut } from "@/lib/auth";
 import { deleteConversation, updateConversation } from "@/lib/api";
-import { avatarUrl } from "@/lib/utils";
+import { avatarUrl, cn, groupConversationsByDate } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
-import { useConversations } from "@/hooks/use-conversations";
-import type { Conversation } from "@/lib/types";
+import { useFadeText } from "@/hooks/use-fade-text";
+import { useConversationsStore } from "@/stores/conversations-store";
+import type { ConversationListItem } from "@/lib/types";
 
 const NAV_LINKS = [
-  { href: "/documents", label: "Documents", icon: FileText },
-  { href: "/graph", label: "Entity graph", icon: Network },
+  { href: "/documents", label: "Library", icon: FileText },
+  { href: "/graph", label: "Knowledge Graph", icon: Network },
 ];
 
 function displayName(email: string | undefined, fullName: string | undefined): string {
@@ -66,35 +72,77 @@ function displayName(email: string | undefined, fullName: string | undefined): s
   return email.split("@")[0];
 }
 
+// A conversation's title can change under an already-rendered row (e.g.
+// the LLM-generated title arriving after the first reply, see
+// chat-header.tsx's matching fade) - a separate component so each row's
+// fade state is its own, rather than hooks called inside a directly-
+// invoked renderConversationItem() for every item in a .map().
+function ConversationTitle({ title }: { title: string }) {
+  const { displayText, fading, fadeMs } = useFadeText(title);
+  return (
+    <span
+      className={cn("truncate transition-opacity", fading ? "opacity-0" : "opacity-100")}
+      style={{ transitionDuration: `${fadeMs}ms` }}
+    >
+      {displayText}
+    </span>
+  );
+}
+
 export function AppSidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const params = useParams<{ conversationId?: string }>();
 
-  const { user } = useAuth();
-  const { conversations, isLoading, refresh, update, remove } = useConversations();
-  const [renameTarget, setRenameTarget] = useState<Conversation | null>(null);
+  const { user, session } = useAuth();
+  const { conversations, isLoading, hasMore, fetchInitial, loadMore, patch, remove } =
+    useConversationsStore();
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  // ChatLayout no longer gates its render on auth resolving (see the
+  // removed skeleton-flash gate), so AppSidebar can mount before `session`
+  // is populated - the conversations fetch would otherwise run once with
+  // no bearer token and nothing would ever retry it.
+  useEffect(() => {
+    if (session) fetchInitial();
+  }, [session, fetchInitial]);
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) loadMore();
+      },
+      { root: sentinel.closest("[data-sidebar=content]") },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [loadMore]);
+
+  const [renameTarget, setRenameTarget] = useState<ConversationListItem | null>(null);
   const [renameValue, setRenameValue] = useState("");
-  const [deleteTarget, setDeleteTarget] = useState<Conversation | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ConversationListItem | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [search, setSearch] = useState("");
 
   const metadata = user?.user_metadata as { full_name?: string; avatar_seed?: string } | undefined;
   const fullName = metadata?.full_name;
   const name = displayName(user?.email, fullName);
   const avatarSeed = metadata?.avatar_seed ?? fullName ?? user?.email;
 
-  async function handleTogglePin(conversation: Conversation) {
+  async function handleTogglePin(conversation: ConversationListItem) {
     const wasPinned = conversation.pinned;
-    update(conversation.id, { pinned: !wasPinned });
+    patch(conversation.id, { pinned: !wasPinned });
     try {
       await updateConversation(conversation.id, { pinned: !wasPinned });
     } catch {
-      update(conversation.id, { pinned: wasPinned });
+      patch(conversation.id, { pinned: wasPinned });
       toast.error("Couldn't update this chat.");
     }
   }
 
-  function openRename(conversation: Conversation) {
+  function openRename(conversation: ConversationListItem) {
     setRenameTarget(conversation);
     setRenameValue(conversation.title ?? "");
   }
@@ -104,12 +152,12 @@ export function AppSidebar() {
     const title = renameValue.trim();
     if (!title) return;
     const previousTitle = renameTarget.title;
-    update(renameTarget.id, { title });
+    patch(renameTarget.id, { title });
     setRenameTarget(null);
     try {
       await updateConversation(renameTarget.id, { title });
     } catch {
-      update(renameTarget.id, { title: previousTitle });
+      patch(renameTarget.id, { title: previousTitle });
       toast.error("Couldn't rename this chat.");
     }
   }
@@ -125,25 +173,40 @@ export function AppSidebar() {
       await deleteConversation(target.id);
     } catch {
       toast.error("Couldn't delete this chat.");
-      refresh(); // simplest correct rollback - resync the list from the server
+      useConversationsStore.getState().fetchInitial(); // simplest correct rollback - resync from the server
     }
   }
 
-  const pinnedConversations = conversations.filter((c) => c.pinned);
-  const unpinnedConversations = conversations.filter((c) => !c.pinned);
+  const filteredConversations = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    if (!query) return conversations;
+    return conversations.filter((c) => (c.title ?? "New chat").toLowerCase().includes(query));
+  }, [conversations, search]);
 
-  function renderConversationItem(conversation: Conversation) {
+  const sortedConversations = useMemo(
+    () =>
+      [...filteredConversations].sort(
+        (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+      ),
+    [filteredConversations],
+  );
+
+  const pinnedConversations = sortedConversations.filter((c) => c.pinned);
+  const unpinnedGroups = useMemo(
+    () => groupConversationsByDate(sortedConversations.filter((c) => !c.pinned)),
+    [sortedConversations],
+  );
+
+  function renderConversationItem(conversation: ConversationListItem) {
     return (
       <SidebarMenuItem key={conversation.id}>
         <SidebarMenuButton
           isActive={params.conversationId === conversation.id}
-          tooltip={conversation.title ?? conversation.filenames[0] ?? undefined}
+          tooltip={conversation.title ?? "New chat"}
           render={<Link href={`/chat/${conversation.id}`} />}
         >
           <MessagesSquare />
-          <span className="truncate">
-            {conversation.title ?? conversation.filenames[0] ?? "New chat"}
-          </span>
+          <ConversationTitle title={conversation.title ?? "New chat"} />
         </SidebarMenuButton>
         <DropdownMenu>
           <DropdownMenuTrigger render={<SidebarMenuAction showOnHover />}>
@@ -169,21 +232,8 @@ export function AppSidebar() {
     );
   }
 
-  const userSummary = (
-    <>
-      <Avatar>
-        <AvatarImage src={avatarUrl(avatarSeed)} alt={name} />
-        <AvatarFallback>{name.charAt(0).toUpperCase()}</AvatarFallback>
-      </Avatar>
-      <div className="grid flex-1 text-left text-sm leading-tight group-data-[collapsible=icon]:hidden">
-        <span className="truncate font-medium">{name}</span>
-        <span className="truncate text-xs text-muted-foreground">{user?.email}</span>
-      </div>
-    </>
-  );
-
   return (
-    <Sidebar collapsible="icon">
+    <Sidebar collapsible="icon" variant="inset">
       <SidebarHeader>
         <div className="flex items-center justify-between px-1 py-1">
           <Link
@@ -197,19 +247,32 @@ export function AppSidebar() {
       </SidebarHeader>
 
       <SidebarContent>
+        <SidebarGroup className="gap-2">
+          <SidebarGroupContent className="flex flex-col gap-2">
+            <Button
+              render={<Link href="/chat/new" />}
+              nativeButton={false}
+              className="w-full justify-start group-data-[collapsible=icon]:w-8 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0"
+            >
+              <Plus />
+              <span className="group-data-[collapsible=icon]:hidden">New chat</span>
+            </Button>
+            <div className="relative group-data-[collapsible=icon]:hidden">
+              <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search conversations"
+                aria-label="Search conversations"
+                className="h-8 pl-8"
+              />
+            </div>
+          </SidebarGroupContent>
+        </SidebarGroup>
+
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu className="gap-1.5">
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  isActive={pathname === "/chat/new"}
-                  tooltip="New chat"
-                  render={<Link href="/chat/new" />}
-                >
-                  <Plus />
-                  <span>New chat</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
               {NAV_LINKS.map((link) => (
                 <SidebarMenuItem key={link.href}>
                   <SidebarMenuButton
@@ -239,12 +302,12 @@ export function AppSidebar() {
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
-        ) : conversations.length === 0 ? (
+        ) : sortedConversations.length === 0 ? (
           <SidebarGroup>
             <SidebarGroupLabel>Conversations</SidebarGroupLabel>
             <SidebarGroupContent>
               <p className="px-2 py-1.5 text-xs text-muted-foreground group-data-[collapsible=icon]:hidden">
-                No conversations yet.
+                {search.trim() ? "No conversations match." : "No conversations yet."}
               </p>
             </SidebarGroupContent>
           </SidebarGroup>
@@ -258,28 +321,55 @@ export function AppSidebar() {
                 </SidebarGroupContent>
               </SidebarGroup>
             )}
-            <SidebarGroup>
-              <SidebarGroupLabel>Conversations</SidebarGroupLabel>
-              <SidebarGroupContent>
-                <SidebarMenu>{unpinnedConversations.map(renderConversationItem)}</SidebarMenu>
-              </SidebarGroupContent>
-            </SidebarGroup>
+            {unpinnedGroups.map((group) => (
+              <SidebarGroup key={group.label}>
+                <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
+                <SidebarGroupContent>
+                  <SidebarMenu>{group.items.map(renderConversationItem)}</SidebarMenu>
+                </SidebarGroupContent>
+              </SidebarGroup>
+            ))}
           </>
         )}
+        {hasMore && <div ref={sentinelRef} className="h-px shrink-0" aria-hidden="true" />}
       </SidebarContent>
 
+      <SidebarSeparator className="mx-0" />
       <SidebarFooter>
         <div className="flex items-center gap-2 px-1 py-1">
-          {userSummary}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden"
-            onClick={() => setSettingsOpen(true)}
-          >
-            <Settings className="size-4" />
-            <span className="sr-only">Settings</span>
-          </Button>
+          <Avatar>
+            <AvatarImage src={avatarUrl(avatarSeed)} alt={name} />
+            <AvatarFallback>{name.charAt(0).toUpperCase()}</AvatarFallback>
+          </Avatar>
+          <div className="grid flex-1 text-left text-sm leading-tight group-data-[collapsible=icon]:hidden">
+            <span className="truncate font-medium">{name}</span>
+            <span className="truncate text-xs text-muted-foreground">{user?.email}</span>
+          </div>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden"
+                />
+              }
+            >
+              <Settings className="size-4" />
+              <span className="sr-only">Account menu</span>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" side="top" sideOffset={8} className="w-48">
+              <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
+                <Settings />
+                Settings
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem variant="destructive" onClick={() => signOut()}>
+                <LogOut />
+                Log out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
       </SidebarFooter>
 
@@ -309,7 +399,7 @@ export function AppSidebar() {
             <DialogTitle>Delete this chat?</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            {`"${deleteTarget?.title ?? deleteTarget?.filenames[0] ?? "This chat"}" and all its messages will be permanently deleted.`}
+            {`"${deleteTarget?.title ?? "This chat"}" and all its messages will be permanently deleted.`}
           </p>
           <DialogFooter>
             <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>

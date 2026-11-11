@@ -1,5 +1,6 @@
 import type {
   Conversation,
+  ConversationListPage,
   ConversationMessage,
   DocumentRecord,
   GraphData,
@@ -190,10 +191,10 @@ export async function getGraphSection(nodeId: string): Promise<GraphSection> {
   return response.json() as Promise<GraphSection>;
 }
 
-export async function listConversations(): Promise<Conversation[]> {
-  const response = await apiFetch("/conversations");
-  const data = (await response.json()) as { conversations: Conversation[] };
-  return data.conversations;
+export async function listConversations(cursor?: string): Promise<ConversationListPage> {
+  const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+  const response = await apiFetch(`/conversations${qs}`);
+  return response.json() as Promise<ConversationListPage>;
 }
 
 export async function createConversation(docIds: string[]): Promise<Conversation> {
