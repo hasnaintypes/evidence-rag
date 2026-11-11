@@ -26,7 +26,7 @@ export function LoginForm({ className, ...props }: React.ComponentProps<"div">) 
     try {
       await signInWithPassword(email, password);
       toast.success("Signed in.");
-      router.push("/chat");
+      router.push("/chat/new");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
