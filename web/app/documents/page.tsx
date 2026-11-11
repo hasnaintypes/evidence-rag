@@ -1,21 +1,20 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "@/hooks/use-toast";
 import {
   AlertCircle,
+  FileCode,
   FileSpreadsheet,
   FileText,
+  FileType,
   FolderOpen,
   MoreHorizontal,
   Pencil,
   RefreshCw,
   Search,
   Trash2,
-  Upload,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,22 +40,28 @@ import {
   reingestDocument,
   renameDocument,
   subscribeToDocumentStatus,
-  uploadDocument,
 } from "@/lib/api";
-import { ACCEPTED_DOCUMENT_EXTENSIONS } from "@/lib/types";
 import type { DocumentRecord } from "@/lib/types";
 import { useAuth } from "@/hooks/use-auth";
 import { useDocuments } from "@/hooks/use-documents";
 
-const SPREADSHEET_EXTENSIONS = new Set(["xlsx", "xls", "csv"]);
+// One icon per supported format (ACCEPTED_DOCUMENT_EXTENSIONS) rather than
+// lumping everything under a single generic document icon - lucide has no
+// brand-specific PDF/Word glyphs, so these are the closest shape match per
+// format instead of an arbitrary pick.
+const FORMAT_ICONS: Record<string, typeof FileText> = {
+  md: FileCode,
+  pdf: FileText,
+  docx: FileType,
+  xlsx: FileSpreadsheet,
+  xls: FileSpreadsheet,
+  csv: FileSpreadsheet,
+};
 
 function fileIcon(filename: string, className: string) {
   const ext = filename.split(".").pop()?.toLowerCase() ?? "";
-  return SPREADSHEET_EXTENSIONS.has(ext) ? (
-    <FileSpreadsheet className={className} />
-  ) : (
-    <FileText className={className} />
-  );
+  const Icon = FORMAT_ICONS[ext] ?? FileText;
+  return <Icon className={className} />;
 }
 
 function DocumentCard({
@@ -170,8 +175,7 @@ function DocumentCardSkeleton() {
 export default function DocumentsPage() {
   const router = useRouter();
   const { session, isLoading: isAuthLoading } = useAuth();
-  const { documents, isLoading, refresh, update, remove, add } = useDocuments();
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const { documents, isLoading, refresh, update, remove } = useDocuments();
   const statusUnsubscribes = useRef<Record<string, () => void>>({});
 
   const [query, setQuery] = useState("");
@@ -197,11 +201,11 @@ export default function DocumentsPage() {
     };
   }, []);
 
-  // Shared by both the upload button and re-ingest: watches a doc_id's
-  // status over SSE (same stream the chat composer's attachment chips
-  // use) and re-syncs the whole list from the server once it reaches a
-  // terminal state - simpler and more robust than hand-patching every
-  // field a fresh ingest can change (chunk_count, embedding_model, etc.).
+  // Used by re-ingest: watches a doc_id's status over SSE (same stream the
+  // chat composer's attachment chips use) and re-syncs the whole list from
+  // the server once it reaches a terminal state - simpler and more robust
+  // than hand-patching every field a fresh ingest can change (chunk_count,
+  // embedding_model, etc.).
   function watchUntilTerminal(docId: string, onFailed: () => void) {
     statusUnsubscribes.current[docId] = subscribeToDocumentStatus(docId, (status) => {
       if (status.status === "ready") {
@@ -215,36 +219,6 @@ export default function DocumentsPage() {
         update(docId, { chunks_indexed: status.chunks_indexed, chunks_total: status.chunks_total });
       }
     });
-  }
-
-  async function handleFileSelected(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-
-    try {
-      const { docId, status } = await uploadDocument(file);
-      if (status === "ready") {
-        toast.success(`"${file.name}" is already indexed - nothing to do.`);
-        return;
-      }
-      add({
-        doc_id: docId,
-        filename: file.name,
-        file_hash: "",
-        ingested_at: new Date().toISOString(),
-        node_count: 0,
-        chunk_count: 0,
-        embedding_model: null,
-        user_id: session?.user.id ?? null,
-        status: "processing",
-        chunks_indexed: 0,
-        chunks_total: 0,
-      });
-      watchUntilTerminal(docId, () => toast.error(`Couldn't index "${file.name}".`));
-    } catch {
-      toast.error(`Couldn't upload "${file.name}".`);
-    }
   }
 
   function openRename(document: DocumentRecord) {
@@ -310,22 +284,6 @@ export default function DocumentsPage() {
             Your uploads plus the shared demo corpus, available to every signed-in user.
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-3">
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept={ACCEPTED_DOCUMENT_EXTENSIONS}
-            className="hidden"
-            onChange={handleFileSelected}
-          />
-          <Button size="sm" onClick={() => fileInputRef.current?.click()}>
-            <Upload />
-            Upload
-          </Button>
-          <Link href="/" className="text-xs text-muted-foreground hover:text-foreground">
-            Back to chat
-          </Link>
-        </div>
       </header>
 
       <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-4 overflow-y-auto p-4">
@@ -355,7 +313,7 @@ export default function DocumentsPage() {
             <div>
               <p className="text-sm font-medium">No documents yet</p>
               <p className="mt-1 text-xs text-muted-foreground">
-                Upload one to start chatting about it.
+                Attach a document from a chat to get started.
               </p>
             </div>
           </div>
