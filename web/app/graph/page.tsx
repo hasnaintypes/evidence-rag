@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { toast } from "sonner";
+import { toast } from "@/hooks/use-toast";
 import { GraphView } from "@/components/graph/graph-view";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getDocuments, getGraphData, getGraphSection } from "@/lib/api";
@@ -77,15 +77,6 @@ export default function GraphPage() {
   const selectedDoc = selectedSection
     ? documents.find((doc) => doc.doc_id === selectedSection.doc_id)
     : undefined;
-
-  if (isAuthLoading || !session) {
-    return (
-      <div className="flex flex-1 flex-col gap-4 p-6">
-        <Skeleton className="h-8 w-64" />
-        <Skeleton className="h-full w-full" />
-      </div>
-    );
-  }
 
   return (
     <div className="flex h-full flex-1 flex-col">

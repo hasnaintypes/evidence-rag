@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { toast } from "sonner";
+import { toast } from "@/hooks/use-toast";
 import { FileText, MoreHorizontal, Pencil, RefreshCw, Trash2, Upload } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -167,15 +167,6 @@ export default function DocumentsPage() {
     }
   }
 
-  if (isAuthLoading || !session) {
-    return (
-      <div className="flex flex-1 flex-col gap-4 p-6">
-        <Skeleton className="h-8 w-64" />
-        <Skeleton className="h-full w-full" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex h-full flex-1 flex-col">
       <header className="flex items-center justify-between border-b border-border px-4 py-3">
@@ -212,7 +203,7 @@ export default function DocumentsPage() {
           </p>
         ) : (
           documents.map((document) => {
-            const isOwnDocument = document.user_id === session.user.id;
+            const isOwnDocument = document.user_id === session?.user.id;
             const isBusy = document.status === "processing";
             return (
               <div
