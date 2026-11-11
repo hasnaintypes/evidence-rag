@@ -9,10 +9,14 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-space-grotesk);
+  --font-sans: var(--font-geist);
   --font-mono: var(--font-geist-mono);
-  --font-display: var(--font-space-grotesk);
+  --font-display: var(--font-geist);
   --font-heading: var(--font-sans);
+  /* Long-form answers read better in a plain reading face than the
+     display font used for the app's own UI chrome - headings inside an
+     answer still fall back to --font-heading via .chat-prose below. */
+  --font-body: Arial, Helvetica, sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -160,4 +164,20 @@
     transparent
   );
   animation: skeleton-sweep 1.8s ease-in-out infinite;
+}
+
+/* Assistant answer text only - keeps the app's own UI chrome (headers,
+   labels, buttons, sidebar) on --font-sans while the reading experience
+   gets a plainer face; markdown headings inside an answer still use the
+   app's heading font so they read as structure, not body copy. */
+.chat-prose,
+.chat-prose :where(p, li, span, a, strong, em, blockquote, td, th) {
+  font-family: var(--font-body) !important;
+}
+.chat-prose {
+  line-height: 1.7;
+  font-size: 0.95rem;
+}
+.chat-prose :where(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--font-heading) !important;
 }
