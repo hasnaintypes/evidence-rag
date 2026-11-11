@@ -1,15 +1,27 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "@/hooks/use-toast";
-import { FileText, MoreHorizontal, Pencil, RefreshCw, Trash2, Upload } from "lucide-react";
+import {
+  AlertCircle,
+  FileSpreadsheet,
+  FileText,
+  FolderOpen,
+  MoreHorizontal,
+  Pencil,
+  RefreshCw,
+  Search,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AttachmentProgressRing } from "@/components/chat/attachment-progress-ring";
 import {
   Dialog,
   DialogContent,
@@ -36,10 +48,123 @@ import type { DocumentRecord } from "@/lib/types";
 import { useAuth } from "@/hooks/use-auth";
 import { useDocuments } from "@/hooks/use-documents";
 
-function statusBadge(status: DocumentRecord["status"]) {
-  if (status === "processing") return <Badge variant="secondary">Processing…</Badge>;
-  if (status === "failed") return <Badge variant="destructive">Failed</Badge>;
-  return null;
+const SPREADSHEET_EXTENSIONS = new Set(["xlsx", "xls", "csv"]);
+
+function fileIcon(filename: string, className: string) {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  return SPREADSHEET_EXTENSIONS.has(ext) ? (
+    <FileSpreadsheet className={className} />
+  ) : (
+    <FileText className={className} />
+  );
+}
+
+function DocumentCard({
+  document,
+  isOwnDocument,
+  onRename,
+  onDelete,
+  onReingest,
+}: {
+  document: DocumentRecord;
+  isOwnDocument: boolean;
+  onRename: () => void;
+  onDelete: () => void;
+  onReingest: () => void;
+}) {
+  const isProcessing = document.status === "processing";
+  const isFailed = document.status === "failed";
+
+  return (
+    <div className="group flex flex-col gap-3 rounded-xl border border-border bg-card/40 p-4 transition-colors hover:border-input hover:bg-accent/40">
+      <div className="flex items-start justify-between gap-2">
+        <div className="relative flex size-11 shrink-0 items-center justify-center rounded-lg bg-background">
+          {fileIcon(
+            document.filename,
+            `size-5 ${isFailed ? "text-destructive" : "text-muted-foreground"}`,
+          )}
+          {isProcessing && (
+            <AttachmentProgressRing
+              indexed={document.chunks_indexed}
+              total={document.chunks_total}
+            />
+          )}
+        </div>
+        {isOwnDocument && (
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="opacity-0 transition-opacity group-hover:opacity-100"
+                />
+              }
+            >
+              <MoreHorizontal />
+              <span className="sr-only">Document options</span>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem disabled={isProcessing} onClick={onReingest}>
+                <RefreshCw />
+                Re-ingest
+              </DropdownMenuItem>
+              <DropdownMenuItem disabled={isProcessing} onClick={onRename}>
+                <Pencil />
+                Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem variant="destructive" disabled={isProcessing} onClick={onDelete}>
+                <Trash2 />
+                Delete
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </div>
+
+      <div className="min-w-0">
+        <p className="line-clamp-2 text-sm font-medium leading-snug">{document.filename}</p>
+        <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+          {isFailed ? (
+            <span className="flex items-center gap-1 text-destructive">
+              <AlertCircle className="size-3" />
+              Couldn&apos;t index
+            </span>
+          ) : isProcessing ? (
+            <span>
+              Indexing {document.chunks_indexed}/{document.chunks_total || "…"}
+            </span>
+          ) : (
+            <span>{document.chunk_count} chunks</span>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-auto flex items-center gap-1.5">
+        {!isOwnDocument && (
+          <Badge variant="outline" className="text-[10px]">
+            Shared
+          </Badge>
+        )}
+        <span className="text-[11px] text-muted-foreground">
+          {new Date(document.ingested_at).toLocaleDateString()}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function DocumentCardSkeleton() {
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-border bg-card/40 p-4">
+      <Skeleton className="size-11 rounded-lg" />
+      <div className="flex flex-col gap-1.5">
+        <Skeleton className="h-3.5 w-4/5 rounded-full" />
+        <Skeleton className="h-3 w-1/2 rounded-full" />
+      </div>
+      <Skeleton className="h-3 w-16 rounded-full" />
+    </div>
+  );
 }
 
 export default function DocumentsPage() {
@@ -49,6 +174,7 @@ export default function DocumentsPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const statusUnsubscribes = useRef<Record<string, () => void>>({});
 
+  const [query, setQuery] = useState("");
   const [renameTarget, setRenameTarget] = useState<DocumentRecord | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<DocumentRecord | null>(null);
@@ -85,6 +211,8 @@ export default function DocumentsPage() {
         delete statusUnsubscribes.current[docId];
         onFailed();
         refresh();
+      } else {
+        update(docId, { chunks_indexed: status.chunks_indexed, chunks_total: status.chunks_total });
       }
     });
   }
@@ -167,16 +295,22 @@ export default function DocumentsPage() {
     }
   }
 
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return documents;
+    return documents.filter((d) => d.filename.toLowerCase().includes(q));
+  }, [documents, query]);
+
   return (
     <div className="flex h-full flex-1 flex-col">
-      <header className="flex items-center justify-between border-b border-border px-4 py-3">
-        <div>
-          <h1 className="text-sm font-semibold">Documents</h1>
-          <p className="text-xs text-muted-foreground">
+      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="min-w-0">
+          <h1 className="font-heading text-sm font-semibold">Library</h1>
+          <p className="truncate text-xs text-muted-foreground">
             Your uploads plus the shared demo corpus, available to every signed-in user.
           </p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex shrink-0 items-center gap-3">
           <input
             ref={fileInputRef}
             type="file"
@@ -194,63 +328,54 @@ export default function DocumentsPage() {
         </div>
       </header>
 
-      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-2 overflow-y-auto p-4">
+      <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-4 overflow-y-auto p-4">
+        {documents.length > 0 && (
+          <div className="relative">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search your documents…"
+              className="pl-8"
+            />
+          </div>
+        )}
+
         {isLoading ? (
-          Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-14 w-full" />)
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            {Array.from({ length: 8 }).map((_, i) => (
+              <DocumentCardSkeleton key={i} />
+            ))}
+          </div>
         ) : documents.length === 0 ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 py-10 text-center">
+            <div className="flex size-12 items-center justify-center rounded-xl bg-muted">
+              <FolderOpen className="size-5 text-muted-foreground" />
+            </div>
+            <div>
+              <p className="text-sm font-medium">No documents yet</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Upload one to start chatting about it.
+              </p>
+            </div>
+          </div>
+        ) : filtered.length === 0 ? (
           <p className="py-10 text-center text-sm text-muted-foreground">
-            No documents yet - upload one to get started.
+            No documents match &quot;{query}&quot;.
           </p>
         ) : (
-          documents.map((document) => {
-            const isOwnDocument = document.user_id === session?.user.id;
-            const isBusy = document.status === "processing";
-            return (
-              <div
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            {filtered.map((document) => (
+              <DocumentCard
                 key={document.doc_id}
-                className="flex items-center gap-3 rounded-lg border border-border px-3 py-2.5"
-              >
-                <FileText className="size-4 shrink-0 text-muted-foreground" />
-                <div className="flex-1 overflow-hidden">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate text-sm font-medium">{document.filename}</span>
-                    {statusBadge(document.status)}
-                    {!isOwnDocument && <Badge variant="outline">Shared</Badge>}
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {document.chunk_count} chunks ·{" "}
-                    {new Date(document.ingested_at).toLocaleDateString()}
-                  </p>
-                </div>
-                {isOwnDocument && (
-                  <DropdownMenu>
-                    <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" />}>
-                      <MoreHorizontal />
-                      <span className="sr-only">Document options</span>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem disabled={isBusy} onClick={() => handleReingest(document)}>
-                        <RefreshCw />
-                        Re-ingest
-                      </DropdownMenuItem>
-                      <DropdownMenuItem disabled={isBusy} onClick={() => openRename(document)}>
-                        <Pencil />
-                        Rename
-                      </DropdownMenuItem>
-                      <DropdownMenuItem
-                        variant="destructive"
-                        disabled={isBusy}
-                        onClick={() => setDeleteTarget(document)}
-                      >
-                        <Trash2 />
-                        Delete
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                )}
-              </div>
-            );
-          })
+                document={document}
+                isOwnDocument={document.user_id === session?.user.id}
+                onRename={() => openRename(document)}
+                onDelete={() => setDeleteTarget(document)}
+                onReingest={() => handleReingest(document)}
+              />
+            ))}
+          </div>
         )}
       </div>
 
