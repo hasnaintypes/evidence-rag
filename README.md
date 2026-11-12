@@ -128,7 +128,7 @@ Sign-in/sign-up talk directly from the browser to Supabase Auth (`web/lib/auth.t
 
 `documents.user_id` is nullable: `NULL` means a shared/demo document (the `docs/fixtures/sample_docs/` corpus, indexed via `scripts/ingest.py`), visible to every signed-in user; uploads via `POST /upload` are private to the uploader.
 
-> Per-user ownership is enforced on every document/conversation/graph route via a centralized `api/authz.py` (404s for a non-owner, 403 for mutating a shared document) — one newer service method still bypasses this pattern inline ([#54](../../issues/54)).
+> Per-user ownership is enforced on every document/conversation/graph route, including every service method, via a centralized `api/authz.py` (404s for a non-owner, 403 for mutating a shared document).
 
 ---
 
@@ -167,7 +167,7 @@ Concrete, source-checked figures rather than vague claims — each one points at
 
 | Metric | Value | Where |
 |:--|--:|:--|
-| Automated tests passing | **185 / 185** | `server/tests/` (`pytest`) |
+| Automated tests passing | **216 / 216** | `server/tests/` (`pytest`) |
 | Retrieval confidence gate | 0.5 | `RETRIEVAL_CONFIDENCE_THRESHOLD`, `config.py` |
 | Faithfulness hard gate | 0.7 | `FAITHFULNESS_GATE_THRESHOLD`, `config.py` |
 | Max retrieval hops | 2 (initial + 1 bounded follow-up) | `MAX_HOPS`, `query_pipeline.py` |
@@ -276,26 +276,14 @@ Open `http://localhost:3000`, sign up, then start a conversation from the sideba
 
 ## Roadmap & Production Hardening
 
-An earlier ground-up review (tracked as 5 GitHub milestones: security/authz hardening, faithfulness as a hard gate, a real test suite + CI gate, model routing/guardrails, ops hardening) is now **complete** — per-user ownership is enforced via a centralized `api/authz.py`, the faithfulness score is a hard gate (not just advisory), a 185-test `pytest` suite gates every PR, Gemini calls have fallback-model routing, and prompt-injection flagging/rate limiting/response caching/pgvector HNSW are all live (see the [System Numbers](#system-numbers) table above).
+An earlier ground-up review (tracked as 5 GitHub milestones: security/authz hardening, faithfulness as a hard gate, a real test suite + CI gate, model routing/guardrails, ops hardening) is now **complete** — per-user ownership is enforced via a centralized `api/authz.py`, the faithfulness score is a hard gate (not just advisory), a 216-test `pytest` suite gates every PR, Gemini calls have fallback-model routing, and prompt-injection flagging/rate limiting/response caching/pgvector HNSW are all live (see the [System Numbers](#system-numbers) table above).
 
-A follow-up architecture review (2026-11-06) surfaced the next round of gaps, filed as issues:
-
-| # | Issue | Covers |
-|:--|:--|:--|
-| [#52](../../issues/52) | Chat-pipeline failures persisted as fake replies | A caught exception returns HTTP 200 with the error text stored as if it were a real answer |
-| [#53](../../issues/53) | Frontend discards backend error detail | `apiFetch()` throws a generic message instead of surfacing the backend's specific `detail` |
-| [#54](../../issues/54) | One service method bypasses the authz pattern | `ConversationService.add_document()` doesn't route through `api/authz.py` like every other mutation |
-| [#55](../../issues/55) | Suspected Supabase connection-pool leak | A sequential 9-question eval run exhausted a 10-connection pool |
-| [#56](../../issues/56) | API convention cleanup | Unused response schemas, wrong status codes, `Optional` typing, deprecated `on_event` |
-| [#57](../../issues/57) | Eval report/baseline are stale | `eval_set.json` grew to 9 questions; no refreshed run committed |
-
-See the repo's [milestones](../../milestones) and [issues](../../issues) for current status.
+A follow-up architecture review (2026-11-06) surfaced a further round of gaps — chat-pipeline failures persisted as fake 200 replies, the frontend discarding backend error detail, a service method bypassing the authz pattern, a Supabase connection-pool leak, assorted API convention cleanup, and a stale eval baseline — all filed as issues (#52-#57) and since resolved and closed. See the repo's [milestones](../../milestones) and [issues](../../issues) for current status.
 
 ---
 
 ## Current Limitations
 
-- Chat-pipeline failures are currently returned as a normal 200 response with the raw error text as the reply, rather than a proper error status (#52).
 - The retrieval-confidence abstention gate only applies in advanced mode; naive mode always attempts an answer.
 - Faithfulness scoring is judged by the same model family doing the generation, not an independent/stronger judge model.
 - The entity graph is exploration-only, not a retrieval signal, and costs one LLM call per section.
