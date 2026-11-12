@@ -30,6 +30,11 @@ class Settings(BaseSettings):
 
     # --- App Settings ---
     app_name: str = "EvidenceRAG"
+    # Level for the "evidence_rag" logger tree (pipeline/llm/telemetry/api -
+    # see src/core/logging_config.py). Third-party loggers stay at root's
+    # WARNING default regardless of this value, so raising this to DEBUG
+    # won't flood the logs with e.g. httpx/google-genai request noise.
+    log_level: str = "INFO"
     top_k: int = 3
     chunk_size_tokens: int = 200
     chunk_overlap_tokens: int = 40
@@ -45,10 +50,11 @@ class Settings(BaseSettings):
     generation_max_tokens: int = 1000
     generation_temperature: float = 0.3
 
-    # --- Gemini (chat generation + embeddings) ---
+    # --- Gemini (query rewriting, reranking, faithfulness judging, entity-graph
+    # extraction, conversation titling - NOT the final RAG answer anymore,
+    # see cloudflare_* below, and NOT embeddings, which are Voyage AI) ---
     gemini_api_key: str
     gemini_chat_model: str = "gemini-2.5-flash"
-    gemini_embedding_model: str = "gemini-embedding-001"
     # Same-provider fallback used by generate_chat_response()/
     # generate_structured_response() (src/core/llm.py) when the primary chat
     # model's call fails or rate-limits - a different model is often on a
@@ -56,11 +62,10 @@ class Settings(BaseSettings):
     # failure this session hit while tuning #10's faithfulness threshold
     # (20-requests/day free-tier exhaustion), not just a theoretical one.
     # Not applied to embeddings - document_chunks.embedding is a fixed-
-    # width pgvector column (vector(3072), matching gemini-embedding-001's
-    # output dimension - see supabase_schema.sql's comment), so swapping
-    # embedding models mid-request would produce a vector of the wrong
-    # width for the already-indexed corpus. get_embedding() retries the
-    # same model instead.
+    # width pgvector column (vector(voyage_embedding_dimension) below,
+    # see supabase_schema.sql's comment), so swapping embedding models
+    # mid-request would produce a vector of the wrong width for the
+    # already-indexed corpus. get_embedding() retries the same model instead.
     gemini_fallback_chat_model: str = "gemini-2.5-flash-lite"
     # Optional longer chain, comma-separated (e.g.
     # "gemini-2.5-flash,gemini-2.5-flash-lite,gemini-2.0-flash,gemini-2.0-flash-lite"),
@@ -73,6 +78,34 @@ class Settings(BaseSettings):
     # own - see scripts/list_available_models.py for discovering which
     # model ids this API key can actually call before putting them here.
     gemini_chat_model_chain: str = ""
+
+    # --- Cloudflare Workers AI (final RAG answer generation only - see
+    # src/core/llm.py's Cloudflare section docstring for why this moved off
+    # Gemini, and generate_cloudflare_chat()/generate_cloudflare_chat_stream() for the
+    # actual calls). No default for account_id/api_token (unlike
+    # gemini_api_key/voyage_api_key above) - these are allowed to be unset
+    # at startup so the rest of the app (including every test in this repo)
+    # still boots without them; only an actual generate_cloudflare_chat() call
+    # raises, with a specific "not configured" error, if they're missing.
+    cloudflare_account_id: str = ""
+    cloudflare_api_token: str = ""
+    # Verified against Cloudflare's models catalog (developers.cloudflare.com/
+    # workers-ai/models/) - Google's Gemma, OpenAI-compatible Chat Completions.
+    cloudflare_model: str = "@cf/google/gemma-4-26b-a4b-it"
+
+    # --- Voyage AI (embeddings) ---
+    voyage_api_key: str
+    voyage_embedding_model: str = "voyage-3.5"
+    # Output vector width - must match document_chunks.embedding's pgvector
+    # column width and its HNSW index's halfvec cast exactly
+    # (scripts/supabase_schema.sql). voyage-3.5 defaults to 1024; Voyage's
+    # embed() also accepts 256/512/2048 via this same output_dimension
+    # parameter if you want to trade recall for storage/index size - either
+    # way, changing it requires re-running supabase_schema.sql's migration
+    # and a full reingest of every document (see get_indexed_embedding_models()
+    # in src/storage/database.py, which exists to catch exactly this kind of
+    # embedding-model mismatch).
+    voyage_embedding_dimension: int = 1024
 
     # --- Entity graph (opt-in, adds one LLM call per document section) ---
     enable_entity_graph: bool = False

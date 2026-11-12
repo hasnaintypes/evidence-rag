@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
-import { toast } from "sonner";
+import { toast } from "@/hooks/use-toast";
 import {
   Conversation,
   ConversationContent,
@@ -10,6 +10,7 @@ import {
 } from "@/components/ai-elements/conversation";
 import {
   PromptInput,
+  PromptInputProvider,
   PromptInputBody,
   PromptInputTextarea,
   PromptInputFooter,
@@ -20,18 +21,30 @@ import {
 import { Checkpoint, CheckpointIcon, CheckpointTrigger } from "@/components/ai-elements/checkpoint";
 import { ChatMessageBubble } from "@/components/chat/chat-message";
 import { AttachmentChips } from "@/components/chat/attachment-chips";
+import { ComposerExpand } from "@/components/chat/composer-expand";
+import { cn } from "@/lib/utils";
+import { takePendingFirstMessage } from "@/lib/pending-first-message";
+import {
+  EvidenceMark,
+  ChatGreeting,
+  ComposerSuggestions,
+} from "@/components/chat/chat-empty-state";
+import { ChatHeader } from "@/components/chat/chat-header";
+import { SourceCountBadge } from "@/components/chat/source-count-badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   addDocumentToConversation,
   getConversation,
   getDocumentStatus,
   restoreCheckpoint,
-  sendMessage,
+  sendMessageStream,
   subscribeToDocumentStatus,
   uploadDocument,
   type DocumentStatus,
 } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
+import { useAdvancedMode } from "@/hooks/use-advanced-mode";
+import { useConversationsStore } from "@/stores/conversations-store";
 import { MAX_CONVERSATION_DOCS } from "@/lib/types";
 import type {
   ChatMessage,
@@ -63,23 +76,29 @@ function fromServerMessage(m: ConversationMessage): ChatMessage {
   };
 }
 
+// Shaped like the real message it's standing in for - a rounded bubble for
+// a user turn, bare paragraph-width lines for an assistant turn - rather
+// than identical plain bars for both, so the loading state doesn't look
+// like a different UI than the one it's about to become.
 function MessageSkeleton({ align }: { align: "start" | "end" }) {
-  return (
-    <div className={`flex w-full ${align === "end" ? "justify-end" : "justify-start"}`}>
-      <div className="flex flex-col gap-2">
-        <Skeleton className="h-4 w-64" />
-        <Skeleton className="h-4 w-52" />
-        <Skeleton className="h-4 w-36" />
+  if (align === "end") {
+    return (
+      <div className="flex w-full justify-end">
+        <div className="flex max-w-[70%] flex-col gap-2 rounded-lg bg-secondary/60 px-4 py-3">
+          <Skeleton className="h-3.5 w-44 rounded-full" />
+          <Skeleton className="h-3.5 w-28 rounded-full" />
+        </div>
       </div>
+    );
+  }
+  return (
+    <div className="flex w-full max-w-[85%] flex-col gap-2.5">
+      <Skeleton className="h-3.5 w-4/5 rounded-full" />
+      <Skeleton className="h-3.5 w-full rounded-full" />
+      <Skeleton className="h-3.5 w-11/12 rounded-full" />
+      <Skeleton className="h-3.5 w-2/3 rounded-full" />
     </div>
   );
-}
-
-function timeOfDayGreeting(): string {
-  const hour = new Date().getHours();
-  if (hour < 12) return "Morning";
-  if (hour < 18) return "Afternoon";
-  return "Evening";
 }
 
 function displayName(
@@ -103,10 +122,24 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
   const [pendingAttachments, setPendingAttachments] = useState<
     { docId: string; filename: string }[]
   >([]);
-  const [docStatuses, setDocStatuses] = useState<Record<string, DocumentStatus["status"]>>({});
+  const [docStatuses, setDocStatuses] = useState<Record<string, DocumentStatus>>({});
   const statusUnsubscribes = useRef<Record<string, () => void>>({});
+  const [advancedMode, setAdvancedMode] = useAdvancedMode();
+  const sendAbortRef = useRef<AbortController | null>(null);
+  // Guards against React Strict Mode's dev-only double-invoke of this
+  // effect: without it, a second getConversation() call for the same
+  // conversationId would overwrite the first call's optimistic
+  // setMessages([...user, pending]) back to the fetched (still-empty)
+  // history, right as the first call's sendMessage() was in flight - the
+  // reply would then have nothing to patch its pendingId into, and the
+  // conversation would look stuck on the empty-state screen even though
+  // a title eventually lands (see takePendingFirstMessage's handoff below).
+  const handledConversationRef = useRef<string | null>(null);
 
   useEffect(() => {
+    if (handledConversationRef.current === conversationId) return;
+    handledConversationRef.current = conversationId;
+
     getConversation(conversationId)
       .then(({ conversation: conv, messages: history }) => {
         setConversation(conv);
@@ -120,14 +153,28 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
           getDocumentStatus(docId)
             .then((docStatus) => {
               if (docStatus.status !== "processing") return;
-              setDocStatuses((prev) => ({ ...prev, [docId]: "processing" }));
+              setDocStatuses((prev) => ({ ...prev, [docId]: docStatus }));
               watchDocumentStatus(docId, conv.filenames[index] ?? docId);
             })
             .catch(() => {});
         });
+
+        // chat-composer.tsx navigates here right after creating the
+        // conversation, before its first message has actually been sent
+        // (see stashPendingFirstMessage's docstring) - send it now so the
+        // user lands on the real conversation with their message and the
+        // thinking state showing immediately, instead of the composer
+        // blocking on the full reply before ever navigating.
+        const firstMessage = takePendingFirstMessage(conversationId);
+        if (firstMessage) {
+          handleSubmit({ text: firstMessage });
+        }
       })
       .catch(() => toast.error("Couldn't load this conversation."))
       .finally(() => setIsLoadingHistory(false));
+    // handleSubmit is intentionally omitted - it's recreated every render,
+    // and this only needs the one defined when conversationId first mounts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
 
   useEffect(() => {
@@ -140,7 +187,7 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
   function watchDocumentStatus(docId: string, filename: string) {
     statusUnsubscribes.current[docId]?.();
     statusUnsubscribes.current[docId] = subscribeToDocumentStatus(docId, (status) => {
-      setDocStatuses((prev) => ({ ...prev, [docId]: status.status }));
+      setDocStatuses((prev) => ({ ...prev, [docId]: status }));
       if (status.status === "ready") {
         toast.success(`"${filename}" finished indexing - ready to search.`);
         delete statusUnsubscribes.current[docId];
@@ -171,12 +218,41 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
     setPendingAttachments([]);
     setIsSending(true);
 
+    const controller = new AbortController();
+    sendAbortRef.current = controller;
+
     try {
-      const result = await sendMessage(conversationId, trimmed, true);
+      const result = await sendMessageStream(
+        conversationId,
+        trimmed,
+        advancedMode,
+        (text) => {
+          // First token flips the bubble from the ThinkingIndicator
+          // spinner (shown while pending) to the real streamed text -
+          // see chat-message.tsx's `if (message.pending)` branch, which
+          // ignores content entirely while still pending.
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === pendingId ? { ...m, content: m.content + text, pending: false } : m,
+            ),
+          );
+        },
+        controller.signal,
+      );
       setMessages((prev) =>
         prev.map((m) => (m.id === pendingId ? { ...fromServerMessage(result), id: pendingId } : m)),
       );
+      if (result.title) {
+        setConversation((prev) => (prev ? { ...prev, title: result.title! } : prev));
+        useConversationsStore.getState().patch(conversationId, { title: result.title });
+      }
     } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        // User-initiated cancel (see handleCancelSend) - drop the pending
+        // placeholder entirely rather than show it as a failure.
+        setMessages((prev) => prev.filter((m) => m.id !== pendingId));
+        return;
+      }
       const message =
         error instanceof Error ? error.message : "Something went wrong reaching the server.";
       toast.error(message);
@@ -186,8 +262,13 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
         ),
       );
     } finally {
+      sendAbortRef.current = null;
       setIsSending(false);
     }
+  }
+
+  function handleCancelSend() {
+    sendAbortRef.current?.abort();
   }
 
   async function handleAttachFile(event: ChangeEvent<HTMLInputElement>) {
@@ -209,7 +290,10 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
       toast.success(`"${file.name}" attached.`);
 
       if (status === "processing") {
-        setDocStatuses((prev) => ({ ...prev, [docId]: "processing" }));
+        setDocStatuses((prev) => ({
+          ...prev,
+          [docId]: { status: "processing", chunks_indexed: 0, chunks_total: 0, chunk_count: 0 },
+        }));
         watchDocumentStatus(docId, file.name);
       }
     } catch (error) {
@@ -230,101 +314,180 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
     }
   }
 
-  const atDocCap = (conversation?.doc_ids.length ?? 0) >= MAX_CONVERSATION_DOCS;
+  const docCount = conversation?.doc_ids.length ?? 0;
+  const atDocCap = docCount >= MAX_CONVERSATION_DOCS;
+
+  // Empty conversation: centered greeting + prompt input, like a fresh
+  // chat landing screen - there's no content yet, so the composer never
+  // offers to expand here (see ComposerExpand's `enabled` prop below).
+  // Once the first message goes out, the layout below takes over -
+  // scrollable history with the input pinned to the bottom.
+  const isEmptyConversation = !isLoadingHistory && messages.length === 0;
+  const headerTitle = conversation?.title ?? conversation?.filenames[0] ?? "Chat";
 
   const promptInput = (
     <PromptInput onSubmit={handleSubmit}>
-      {pendingAttachments.length > 0 && (
-        <div className="px-3 pt-3">
-          <AttachmentChips attachments={pendingAttachments} statuses={docStatuses} />
-        </div>
-      )}
-      <PromptInputBody>
-        <PromptInputTextarea placeholder="Ask a question…" disabled={isSending} />
-      </PromptInputBody>
-      <PromptInputFooter>
-        <PromptInputTools>
-          <PromptInputButton
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isSending || isAttaching || atDocCap}
-            tooltip={
-              atDocCap ? `Max ${MAX_CONVERSATION_DOCS} documents per chat` : "Attach a document"
-            }
-          >
-            {isAttaching ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Paperclip className="size-4" />
+      <ComposerExpand enabled={!isEmptyConversation}>
+        {({ expanded }) => (
+          <>
+            {pendingAttachments.length > 0 && (
+              <div className="px-3 pt-3">
+                <AttachmentChips attachments={pendingAttachments} statuses={docStatuses} />
+              </div>
             )}
-          </PromptInputButton>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept={ACCEPTED_EXTENSIONS}
-            className="hidden"
-            onChange={handleAttachFile}
-          />
-        </PromptInputTools>
-        <PromptInputSubmit status={isSending ? "submitted" : undefined} disabled={isSending} />
-      </PromptInputFooter>
+            <PromptInputBody>
+              <PromptInputTextarea
+                placeholder="Ask a question…"
+                disabled={isSending}
+                className={cn("pr-9", expanded && "max-h-[50vh]")}
+              />
+            </PromptInputBody>
+            <PromptInputFooter>
+              <PromptInputTools>
+                <PromptInputButton
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isSending || isAttaching || atDocCap}
+                  tooltip={
+                    atDocCap
+                      ? `Max ${MAX_CONVERSATION_DOCS} documents per chat`
+                      : "Attach a document"
+                  }
+                >
+                  {isAttaching ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Paperclip className="size-4" />
+                  )}
+                </PromptInputButton>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={ACCEPTED_EXTENSIONS}
+                  className="hidden"
+                  onChange={handleAttachFile}
+                />
+                <SourceCountBadge count={docCount} max={MAX_CONVERSATION_DOCS} />
+              </PromptInputTools>
+              <PromptInputSubmit
+                status={isSending ? "streaming" : undefined}
+                onStop={handleCancelSend}
+              />
+            </PromptInputFooter>
+          </>
+        )}
+      </ComposerExpand>
     </PromptInput>
   );
 
-  // Empty conversation: centered greeting + prompt input, like a fresh
-  // chat landing screen. Once the first message goes out, the layout
-  // below takes over - scrollable history with the input pinned to the bottom.
-  if (!isLoadingHistory && messages.length === 0) {
+  if (isEmptyConversation) {
     return (
-      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col items-center justify-center gap-6 px-4">
-        <div className="flex items-center gap-2 text-3xl font-semibold tracking-tight text-foreground">
-          Good {timeOfDayGreeting()}, {displayName(user)}
+      <div className="flex h-full min-h-0 flex-1 flex-col">
+        <ChatHeader
+          title={headerTitle}
+          advancedMode={advancedMode}
+          onAdvancedModeChange={setAdvancedMode}
+        />
+        <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center gap-7 px-4">
+          <EvidenceMark />
+          <ChatGreeting name={displayName(user)} />
+          <PromptInputProvider>
+            <div className="flex w-full flex-col gap-4">
+              {promptInput}
+              <ComposerSuggestions />
+            </div>
+          </PromptInputProvider>
         </div>
-        <div className="w-full">{promptInput}</div>
       </div>
     );
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col">
-      <Conversation>
-        <ConversationContent>
-          {isLoadingHistory ? (
-            <>
-              <MessageSkeleton align="end" />
-              <MessageSkeleton align="start" />
-              <MessageSkeleton align="end" />
-              <MessageSkeleton align="start" />
-            </>
-          ) : (
-            messages.map((message, index) => {
-              const isLastAssistantTurn =
-                message.role === "assistant" && !message.pending && message.serverId !== undefined;
-              const isFinalMessage = index === messages.length - 1;
+    <div className="flex h-full min-h-0 flex-1 flex-col">
+      <ChatHeader
+        title={headerTitle}
+        subtitle={
+          docCount > 0 ? `${docCount} document${docCount === 1 ? "" : "s"} attached` : undefined
+        }
+        advancedMode={advancedMode}
+        onAdvancedModeChange={setAdvancedMode}
+      />
+      {/* Lifts the composer's text into a shared controller so ComposerExpand
+          (rendered inside promptInput below) can read its length and grow
+          the same textarea in place. */}
+      <PromptInputProvider>
+        <div className="flex min-h-0 flex-1 flex-col">
+          {/* Conversation (StickToBottom) owns the scrollbar at the full
+            workspace width - max-w-3xl is applied to its inner content and
+            to the composer below, not to this scrolling wrapper, so the
+            scrollbar sits at the workspace edge instead of beside the
+            centered text column. */}
+          <Conversation className="min-h-0">
+            <ConversationContent className="mx-auto w-full max-w-3xl">
+              {isLoadingHistory ? (
+                <>
+                  <MessageSkeleton align="end" />
+                  <MessageSkeleton align="start" />
+                  <MessageSkeleton align="end" />
+                  <MessageSkeleton align="start" />
+                </>
+              ) : (
+                messages.map((message, index) => {
+                  const isLastAssistantTurn =
+                    message.role === "assistant" &&
+                    !message.pending &&
+                    message.serverId !== undefined;
+                  const isFinalMessage = index === messages.length - 1;
 
-              return (
-                <div key={message.id} className="flex flex-col gap-2">
-                  <ChatMessageBubble message={message} docStatuses={docStatuses} />
-                  {isLastAssistantTurn && !isFinalMessage && (
-                    <Checkpoint>
-                      <CheckpointIcon />
-                      <CheckpointTrigger
-                        tooltip="Restore conversation to this point"
-                        onClick={() => handleRestore(message.serverId!)}
-                      >
-                        Restore here
-                      </CheckpointTrigger>
-                    </Checkpoint>
-                  )}
-                </div>
-              );
-            })
-          )}
-        </ConversationContent>
-        <ConversationScrollButton />
-      </Conversation>
+                  // Narrowed to just this message's own attachments so a
+                  // docStatuses update only changes the prop reference (and
+                  // defeats ChatMessageBubble's memo) for the message that
+                  // actually cares, not every bubble in the list.
+                  const relevantStatuses = message.attachments
+                    ? Object.fromEntries(
+                        message.attachments
+                          .filter((a) => a.docId in docStatuses)
+                          .map((a) => [a.docId, docStatuses[a.docId]]),
+                      )
+                    : undefined;
 
-      <div className="p-4">{promptInput}</div>
+                  const precedingUserMessage =
+                    message.role === "assistant" ? messages[index - 1] : undefined;
+
+                  return (
+                    <div key={message.id} className="flex flex-col gap-2">
+                      <ChatMessageBubble
+                        message={message}
+                        docStatuses={relevantStatuses}
+                        advancedMode={advancedMode}
+                        onRetry={
+                          precedingUserMessage
+                            ? () => handleSubmit({ text: precedingUserMessage.content })
+                            : undefined
+                        }
+                      />
+                      {isLastAssistantTurn && !isFinalMessage && (
+                        <Checkpoint>
+                          <CheckpointIcon />
+                          <CheckpointTrigger
+                            tooltip="Restore conversation to this point"
+                            onClick={() => handleRestore(message.serverId!)}
+                          >
+                            Restore here
+                          </CheckpointTrigger>
+                        </Checkpoint>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </ConversationContent>
+            <ConversationScrollButton />
+          </Conversation>
+
+          <div className="mx-auto w-full max-w-3xl p-4">{promptInput}</div>
+        </div>
+      </PromptInputProvider>
     </div>
   );
 }

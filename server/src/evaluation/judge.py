@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Optional
 
-from src.core.llm import generate_structured_response
+from src.core.llm import generate_cloudflare_json
 
 # --------------------------------------------------------------------------- #
 # Answer faithfulness scoring (LLM-as-judge)
@@ -9,29 +9,13 @@ from src.core.llm import generate_structured_response
 # say whether the right chunks were *retrieved* - they say nothing about
 # whether the *generated answer* actually sticks to what those chunks say.
 # A system can retrieve the correct source and still hallucinate or
-# misstate it. This module runs a second, cheap Gemini call as a judge:
+# misstate it. This module runs a second, cheap Cloudflare call as a judge:
 # given the generated answer and the exact chunks it was allowed to use,
-# score whether every claim in the answer is supported by them.
+# score whether every claim in the answer is supported by them. No server-
+# enforced JSON schema here (see src/core/llm.py's generate_cloudflare_json()
+# docstring) - the prompt below asks for the exact {score, unsupported_claims}
+# shape in text instead.
 # --------------------------------------------------------------------------- #
-
-# 0.0 = answer is entirely unsupported by the provided chunks (pure
-# hallucination), 1.0 = every claim is directly supported. Judge is
-# instructed to score fractionally when only some claims are unsupported.
-FAITHFULNESS_RESPONSE_SCHEMA: Dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "score": {
-            "type": "number",
-            "description": "0.0-1.0 fraction of the answer's claims that are supported by the provided chunks.",
-        },
-        "unsupported_claims": {
-            "type": "array",
-            "items": {"type": "string"},
-            "description": "Short quotes/paraphrases of claims in the answer that are NOT supported by the chunks. Empty if the answer is fully supported.",
-        },
-    },
-    "required": ["score", "unsupported_claims"],
-}
 
 FAITHFULNESS_JUDGE_PROMPT = """You are a strict fact-checking judge. You will be given a set of \
 document chunks and an answer that was generated from them. Your job is to \
@@ -55,7 +39,9 @@ DOCUMENT CHUNKS:
 GENERATED ANSWER:
 {answer}
 
-Score the answer now."""
+Score the answer now. Output ONLY a JSON object of this exact shape, no \
+other text before or after it:
+{{"score": <0.0-1.0>, "unsupported_claims": [<short quotes/paraphrases of unsupported claims, empty list if fully supported>]}}"""
 
 
 def _format_chunks_for_judge(context_chunks: List[Dict[str, Any]]) -> str:
@@ -71,8 +57,8 @@ def _format_chunks_for_judge(context_chunks: List[Dict[str, Any]]) -> str:
 def score_faithfulness(answer: str, context_chunks: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """
     Judges whether `answer` is faithful to `context_chunks` using a second,
-    cheap Gemini call with a structured JSON schema output (so the score
-    is reliably parseable, not free text that needs regex-scraping).
+    cheap Cloudflare call, with the JSON shape asked for in the prompt and
+    parsed defensively (see generate_cloudflare_json()'s docstring).
 
     Returns {"faithfulness_score": float, "unsupported_claims": List[str]},
     or None if the judge call fails/returns something unusable - callers
@@ -89,7 +75,7 @@ def score_faithfulness(answer: str, context_chunks: List[Dict[str, Any]]) -> Opt
     context_text = _format_chunks_for_judge(context_chunks)
     prompt = FAITHFULNESS_JUDGE_PROMPT.format(context=context_text, answer=answer.strip())
 
-    result = generate_structured_response(prompt, response_schema=FAITHFULNESS_RESPONSE_SCHEMA, max_tokens=500)
+    result = generate_cloudflare_json(prompt, max_tokens=500)
     if not isinstance(result, dict):
         return None
 

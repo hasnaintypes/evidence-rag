@@ -2,12 +2,15 @@
 -- Mirrors the SQLite schema in src/db.py's local-mode init_db(), so both
 -- backends store the same shape of data.
 --
--- vector(3072) matches gemini-embedding-001's output dimension (the
--- embedding model set via GEMINI_EMBEDDING_MODEL). If you ever swap
--- embedding models, this column width has to change too, and existing
--- rows would need re-embedding (see EMBEDDING_MODEL_NAME /
--- get_indexed_embedding_models in src/storage/database.py, which exists
--- specifically to catch that mismatch).
+-- vector(1024) matches voyage-3.5's default output dimension (the
+-- embedding model set via VOYAGE_EMBEDDING_MODEL/VOYAGE_EMBEDDING_DIMENSION
+-- in src/core/config.py). If you ever swap embedding models/dimensions,
+-- this column width has to change too (the "alter table ... alter column"
+-- below, and idx_chunks_embedding's halfvec cast further down, both need
+-- the new number), and every existing row needs re-embedding from
+-- scratch - see EMBEDDING_MODEL_NAME / get_indexed_embedding_models in
+-- src/storage/database.py, which exists specifically to catch that
+-- mismatch.
 
 create extension if not exists vector;
 
@@ -85,13 +88,21 @@ create table if not exists document_chunks (
     page_number integer default 1,
     chunk_index integer not null,
     chunk_text text not null,
-    embedding vector(3072) not null,
+    embedding vector(1024) not null,
     node_type text default 'paragraph',
     heading_path text,
     node_ids jsonb,
     parent_id text,
     bbox jsonb
 );
+
+-- Migration for a document_chunks table created under a previous
+-- embedding model's dimension (e.g. gemini-embedding-001's 3072) - only
+-- succeeds on an empty table (changing a populated vector column's width
+-- isn't a value-preserving operation; every existing row needs
+-- re-embedding from scratch anyway, see this file's top comment), so run
+-- scripts/reset_data.py (or truncate document_chunks yourself) first.
+alter table document_chunks alter column embedding type vector(1024);
 
 create table if not exists entities (
     id serial primary key,
@@ -143,6 +154,11 @@ create index if not exists idx_chunks_doc on document_chunks(doc_id);
 create index if not exists idx_entities_doc on entities(doc_id);
 create index if not exists idx_edges_doc on entity_edges(doc_id);
 create index if not exists idx_conversations_user on conversations(user_id);
+-- Covers list_conversations()'s keyset pagination (ORDER BY pinned DESC,
+-- updated_at DESC, id DESC WHERE user_id = ...) - apply manually, this repo
+-- has no migration framework (see CLAUDE.md).
+create index if not exists idx_conversations_user_list
+    on conversations(user_id, pinned desc, updated_at desc, id desc);
 create index if not exists idx_messages_conversation on messages(conversation_id);
 -- timestamp: scripts/purge_query_log.py's DELETE filters on this column
 -- every run. user_id: for a future per-user export/delete query.
@@ -154,19 +170,27 @@ create index if not exists idx_query_log_user on query_log(user_id);
 -- retrieval/hybrid.py's dense-retrieval layer issues in supabase mode
 -- (see #17).
 --
--- Built on (embedding::halfvec(3072)), not embedding directly: pgvector's
--- HNSW index has a hard 2000-dimension cap for the plain `vector` type,
--- and embedding is vector(3072) (gemini-embedding-001's output width, see
--- this file's comment above) - `create index ... using hnsw (embedding
--- vector_cosine_ops)` fails outright ("column cannot have more than 2000
--- dimensions for hnsw index"), confirmed against a real pgvector 0.8
--- instance while building this. halfvec (half-precision) raises that cap
--- to 4000, so the index is built on an expression cast to halfvec(3072)
--- instead - every query against this index, including dense_ann_search(),
--- must apply the identical cast on both sides of `<=>` (not plain
--- `embedding <=> ...`) or the planner has no matching expression to use
--- the index for, and silently falls back to a full sequential scan.
--- halfvec_cosine_ops specifically, since `<=>` is cosine distance, not
--- `<->` (L2) or `<#>` (inner product).
-create index if not exists idx_chunks_embedding on document_chunks
-    using hnsw ((embedding::halfvec(3072)) halfvec_cosine_ops);
+-- Built on (embedding::halfvec(1024)), not embedding directly: pgvector's
+-- HNSW index has a hard 2000-dimension cap for the plain `vector` type -
+-- 1024 is already under that cap, but this project always goes through
+-- halfvec regardless of dimension for consistency (and so a later switch
+-- to a >2000-dim model, e.g. voyage-3-large at 2048, doesn't also need
+-- this expression changed back) - `create index ... using hnsw (embedding
+-- vector_cosine_ops)` on a >2000-dim column fails outright ("column
+-- cannot have more than 2000 dimensions for hnsw index"), confirmed
+-- against a real pgvector 0.8 instance while building this. halfvec
+-- (half-precision) raises that cap to 4000. Every query against this
+-- index, including dense_ann_search(), must apply the identical cast
+-- (same dimension) on both sides of `<=>` (not plain `embedding <=>
+-- ...`) or the planner has no matching expression to use the index for,
+-- and silently falls back to a full sequential scan. halfvec_cosine_ops
+-- specifically, since `<=>` is cosine distance, not `<->` (L2) or `<#>`
+-- (inner product).
+--
+-- DROP+CREATE (not "if not exists" alone) because an index with this
+-- name may already exist built on the old dimension's halfvec cast - "if
+-- not exists" only checks the index's name, not its expression, so it
+-- would silently skip re-creating a stale index after a dimension change.
+drop index if exists idx_chunks_embedding;
+create index idx_chunks_embedding on document_chunks
+    using hnsw ((embedding::halfvec(1024)) halfvec_cosine_ops);

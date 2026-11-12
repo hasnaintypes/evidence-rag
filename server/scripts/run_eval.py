@@ -4,8 +4,11 @@ import json
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.core.logging_config import configure_logging
 from src.query_pipeline import process_chat_query
 from src.core.config import EVAL_SET_PATH, EVAL_REPORT_PATH, EVAL_METRICS_PATH
+
+configure_logging()
 
 
 def compute_metrics(retrieved_sources: list, expected_source, k: int) -> dict:

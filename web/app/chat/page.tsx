@@ -2,12 +2,12 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { useConversations } from "@/hooks/use-conversations";
+import { useConversationsStore } from "@/stores/conversations-store";
 import { Skeleton } from "@/components/ui/skeleton";
 
 export default function ChatIndexPage() {
   const router = useRouter();
-  const { conversations, isLoading } = useConversations();
+  const { conversations, isLoading } = useConversationsStore();
 
   useEffect(() => {
     if (isLoading) return;

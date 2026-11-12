@@ -1,27 +1,46 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { toast } from "sonner";
+import { toast } from "@/hooks/use-toast";
+import { FileText, Network, Share2 } from "lucide-react";
 import { GraphView } from "@/components/graph/graph-view";
+import { MessageResponse } from "@/components/ai-elements/message";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
 import { getDocuments, getGraphData, getGraphSection } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import type { DocumentRecord, GraphData, GraphSection } from "@/lib/types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
+const ALL_DOCS = "all";
 
 export default function GraphPage() {
   const router = useRouter();
   const { session, isLoading: isAuthLoading } = useAuth();
 
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
-  const [selectedDocId, setSelectedDocId] = useState<string>("");
+  const [selectedDocId, setSelectedDocId] = useState<string>(ALL_DOCS);
   const [graphData, setGraphData] = useState<GraphData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  const [panelOpen, setPanelOpen] = useState(false);
   const [selectedSection, setSelectedSection] = useState<GraphSection | null>(null);
   const [selectedLabel, setSelectedLabel] = useState<string>("");
 
@@ -51,8 +70,9 @@ export default function GraphPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsLoading(true);
     setError(null);
-    setSelectedSection(null);
-    getGraphData(selectedDocId || undefined)
+    setPanelOpen(false);
+    const docId = selectedDocId === ALL_DOCS ? undefined : selectedDocId;
+    getGraphData(docId)
       .then(setGraphData)
       .catch(() => {
         setError("Couldn't load the entity graph.");
@@ -66,6 +86,7 @@ export default function GraphPage() {
     if (!node) return;
     setSelectedLabel(node.label);
     setSelectedSection(null);
+    setPanelOpen(true);
     try {
       const section = await getGraphSection(node.node_id);
       setSelectedSection(section);
@@ -78,115 +99,130 @@ export default function GraphPage() {
     ? documents.find((doc) => doc.doc_id === selectedSection.doc_id)
     : undefined;
 
-  if (isAuthLoading || !session) {
-    return (
-      <div className="flex flex-1 flex-col gap-4 p-6">
-        <Skeleton className="h-8 w-64" />
-        <Skeleton className="h-full w-full" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex h-full flex-1 flex-col">
-      <header className="flex items-center justify-between border-b border-border px-4 py-3">
-        <div>
-          <h1 className="text-sm font-semibold">Entity Graph</h1>
-          <p className="text-xs text-muted-foreground">
+      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-3">
+        <div className="min-w-0">
+          <h1 className="font-heading text-sm font-semibold">Entity Graph</h1>
+          <p className="truncate text-xs text-muted-foreground">
             Co-occurring technical entities extracted from indexed documents.
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <select
+        <div className="flex shrink-0 items-center gap-3">
+          <Select
             value={selectedDocId}
-            onChange={(event) => setSelectedDocId(event.target.value)}
-            className="h-8 rounded-lg border border-input bg-background px-2 text-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+            onValueChange={(value) => setSelectedDocId(value ?? ALL_DOCS)}
           >
-            <option value="">All documents</option>
-            {documents.map((doc) => (
-              <option key={doc.doc_id} value={doc.doc_id}>
-                {doc.filename}
-              </option>
-            ))}
-          </select>
-          <Link href="/" className="text-xs text-muted-foreground hover:text-foreground">
-            Back to chat
-          </Link>
+            <SelectTrigger size="sm" className="w-44">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_DOCS}>All documents</SelectItem>
+              {documents.map((doc) => (
+                <SelectItem key={doc.doc_id} value={doc.doc_id}>
+                  {doc.filename}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </header>
 
-      <div className="relative flex flex-1 overflow-hidden">
-        <div className="flex-1">
-          {isLoading ? (
-            <div className="flex h-full flex-col gap-3 p-6">
-              <Skeleton className="h-full w-full" />
+      <div className="relative flex-1 overflow-hidden">
+        {isLoading ? (
+          <div className="flex h-full items-center justify-center">
+            <div className="flex flex-col items-center gap-3">
+              <Share2 className="size-6 animate-pulse text-muted-foreground" />
+              <p className="text-xs text-muted-foreground">Loading the entity graph…</p>
             </div>
-          ) : error ? (
-            <p className="p-6 text-sm text-destructive">{error}</p>
-          ) : !graphData || graphData.nodes.length === 0 ? (
-            <p className="p-6 text-sm text-muted-foreground">
-              No entities indexed yet. Enable{" "}
-              <code className="rounded bg-muted px-1 py-0.5">ENABLE_ENTITY_GRAPH</code> in the
-              server and re-ingest documents to populate this graph.
-            </p>
-          ) : (
-            <GraphView data={graphData} onNodeClick={handleNodeClick} />
-          )}
-        </div>
-
-        {selectedLabel && (
-          <aside className="w-80 shrink-0 overflow-y-auto border-l border-border p-4">
-            <div className="flex items-start justify-between gap-2">
-              <h2 className="text-sm font-semibold">{selectedLabel}</h2>
-              <button
-                onClick={() => setSelectedLabel("")}
-                className="text-xs text-muted-foreground hover:text-foreground"
-              >
-                Close
-              </button>
+          </div>
+        ) : error ? (
+          <div className="flex h-full items-center justify-center p-6">
+            <p className="text-sm text-destructive">{error}</p>
+          </div>
+        ) : !graphData || graphData.nodes.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+            <div className="flex size-12 items-center justify-center rounded-xl bg-muted">
+              <Network className="size-5 text-muted-foreground" />
             </div>
+            <div>
+              <p className="text-sm font-medium">No entities indexed yet</p>
+              <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+                Enable <code className="rounded bg-muted px-1 py-0.5">ENABLE_ENTITY_GRAPH</code> on
+                the server and re-ingest documents to populate this graph.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="h-full w-full p-4">
+            <div className="h-full w-full overflow-hidden rounded-xl border border-border bg-card/30">
+              <GraphView data={graphData} onNodeClick={handleNodeClick} />
+            </div>
+          </div>
+        )}
+      </div>
 
+      <Sheet open={panelOpen} onOpenChange={setPanelOpen}>
+        <SheetContent className="flex flex-col gap-0 p-0 sm:max-w-md">
+          <SheetHeader className="border-b border-border">
+            <SheetTitle>{selectedLabel}</SheetTitle>
+            <SheetDescription>Where this entity appears in your documents</SheetDescription>
+          </SheetHeader>
+          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
             {!selectedSection ? (
-              <div className="mt-3 flex flex-col gap-2">
-                <Skeleton className="h-4 w-1/2" />
-                <Skeleton className="h-4 w-full" />
-                <Skeleton className="h-16 w-full" />
+              <div className="flex flex-col gap-2 rounded-lg border border-border bg-card/40 p-3">
+                <Skeleton className="h-3.5 w-3/4 rounded-full" />
+                <Skeleton className="h-3.5 w-full rounded-full" />
+                <Skeleton className="h-3.5 w-5/6 rounded-full" />
+                <Skeleton className="h-3.5 w-2/3 rounded-full" />
               </div>
             ) : (
-              <div className="mt-3 flex flex-col gap-2 text-xs">
+              <div className="flex flex-col gap-2 rounded-lg border border-border bg-card/40 p-3">
                 {selectedDoc && (
-                  <p className="text-muted-foreground">
-                    Document: <span className="text-foreground">{selectedDoc.filename}</span>
-                  </p>
+                  <span className="flex min-w-0 items-center gap-2 text-sm font-medium">
+                    <Badge variant="secondary" className="shrink-0 rounded-full">
+                      <FileText className="size-3" />
+                    </Badge>
+                    <span className="truncate">
+                      {selectedDoc.filename}
+                      {selectedSection.page != null ? ` · p.${selectedSection.page}` : ""}
+                    </span>
+                  </span>
                 )}
                 {selectedSection.heading_path && (
-                  <p className="text-muted-foreground">
-                    Section: <span className="text-foreground">{selectedSection.heading_path}</span>
+                  <p className="truncate text-xs font-medium text-muted-foreground">
+                    {selectedSection.heading_path}
                   </p>
                 )}
                 {selectedSection.content && (
-                  <p className="mt-1 whitespace-pre-wrap rounded-lg border border-border bg-muted/30 p-2 text-foreground">
-                    {selectedSection.content}
-                  </p>
+                  <blockquote className="border-l-2 border-muted pl-3 text-xs leading-relaxed text-muted-foreground [&_*]:my-0">
+                    <MessageResponse>{selectedSection.content}</MessageResponse>
+                  </blockquote>
                 )}
                 {selectedDoc && (
-                  <a
-                    href={`${API_BASE_URL}/source/${encodeURIComponent(selectedDoc.filename)}?token=${encodeURIComponent(
-                      selectedSection.source_token,
-                    )}${selectedSection.page ? `#page=${selectedSection.page}` : ""}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-1 text-primary hover:underline"
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-fit"
+                    nativeButton={false}
+                    render={
+                      <a
+                        href={`${API_BASE_URL}/source/${encodeURIComponent(selectedDoc.filename)}?token=${encodeURIComponent(
+                          selectedSection.source_token,
+                        )}${selectedSection.page ? `#page=${selectedSection.page}` : ""}`}
+                        target="_blank"
+                        rel="noreferrer"
+                      />
+                    }
                   >
                     Open source document
-                    {selectedSection.page ? ` (page ${selectedSection.page})` : ""}
-                  </a>
+                  </Button>
                 )}
               </div>
             )}
-          </aside>
-        )}
-      </div>
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

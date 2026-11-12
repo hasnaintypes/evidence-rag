@@ -17,19 +17,31 @@ from src.storage.database import (
 from src.ingestion.parsers import get_parser
 from src.ingestion.parsers.base import NodeType
 from src.ingestion.chunking import chunk_document, chunk_nodes
-from src.core.llm import get_embedding, EMBEDDING_MODEL_NAME
+from src.core.llm import get_embeddings_batch, EMBEDDING_MODEL_NAME
 from src.core.response_cache import invalidate_doc_id
 from src.retrieval.hybrid import invalidate_index_cache
 from src.graph import build_document_graph
 
-# Each chunk's embedding is one blocking Gemini API call - sequential was
-# the single biggest cost on large documents (hundreds of chunks x one
-# network round trip each, serially). Concurrent via a thread pool since
-# the Gemini SDK call is synchronous I/O (releases the GIL while waiting
-# on the socket) - no async client rewrite needed for this.
-# ponytail: fixed worker count, raise if Gemini's per-minute rate limit
-# allows more headroom than this leaves on the table.
+# Batched (EMBED_BATCH_SIZE chunks per Voyage call) AND concurrent
+# (EMBED_CONCURRENCY batches in flight at once) - one call per chunk was
+# the single biggest cost on large documents: hundreds of chunks meant
+# hundreds of network round trips, and that per-request latency, not
+# embedding compute time, was what dominated. Concurrent via a thread
+# pool since the Voyage SDK call is synchronous I/O (releases the GIL
+# while waiting on the socket) - no async client rewrite needed for this.
+# ponytail: fixed worker count - Voyage's Tier 1 (a payment method added)
+# RPM/TPM is comfortably above what this leaves on the table, but without
+# one, Voyage's default limit (around 3 RPM) is well under 6 concurrent
+# requests - lower this (or add a wait/backoff in get_embeddings_batch())
+# if ingesting without a payment method on file.
 EMBED_CONCURRENCY = 6
+
+# Voyage's embed() documents both a max text count AND a per-request
+# token budget per call (see docs.voyageai.com/docs/rate-limits) - this
+# starts conservative rather than guessing a batch size that might exceed
+# either for longer chunks. ponytail: raise this once a larger batch size
+# has been confirmed to succeed in practice.
+EMBED_BATCH_SIZE = 20
 
 SUPPORTED_EXTENSIONS = [".md", ".pdf", ".docx", ".xlsx", ".xls", ".csv"]
 
@@ -190,19 +202,21 @@ def finish_ingest(
     is_replace: bool = False,
 ) -> dict:
     """
-    Slow phase: embeds every chunk concurrently (EMBED_CONCURRENCY workers -
-    measured ~4.6x faster than sequential for Gemini's embedding API, which
-    isn't itself rate-limited tightly enough to negate client-side
-    concurrency), then writes every chunk in a single batched INSERT
-    instead of one round trip per chunk - N individual INSERTs under
-    concurrent load didn't speed up much (connection-pool contention +
-    GIL-bound vector-literal formatting dominated), so batching sidesteps
-    that entirely instead of fighting it.
+    Slow phase: embeds every chunk in batches of EMBED_BATCH_SIZE, with
+    EMBED_CONCURRENCY batches in flight at once (measured ~4.6x faster
+    than fully sequential one-chunk-per-call for Gemini's embedding API,
+    which isn't itself rate-limited tightly enough to negate client-side
+    concurrency - batching on top of that cuts total API round trips by
+    ~EMBED_BATCH_SIZE x on its own), then writes every chunk in a single
+    batched INSERT instead of one round trip per chunk - N individual
+    INSERTs under concurrent load didn't speed up much (connection-pool
+    contention + GIL-bound vector-literal formatting dominated), so
+    batching sidesteps that entirely instead of fighting it.
 
     Progress (documents.chunks_indexed) is tracked in memory and flushed
     to the DB by a single background thread every
-    PROGRESS_FLUSH_INTERVAL_SECONDS, rather than once per chunk - a DB
-    round trip per embedding completion was itself slow enough to measurably
+    PROGRESS_FLUSH_INTERVAL_SECONDS, rather than once per embedding batch -
+    a DB round trip per batch completion was itself slow enough to measurably
     undercut the concurrency gain it was meant to just observe.
 
     On any failure the document is marked "failed" rather than left stuck
@@ -234,12 +248,14 @@ def finish_ingest(
                 set_document_progress(doc_id, current)
                 last_flushed = current
 
-    def _embed(item: Dict[str, Any]):
+    batches = [chunks_data[i : i + EMBED_BATCH_SIZE] for i in range(0, len(chunks_data), EMBED_BATCH_SIZE)]
+
+    def _embed_batch(batch: List[Dict[str, Any]]) -> List[tuple]:
         nonlocal indexed_count
-        embedding = get_embedding(item["chunk_text"])
+        embeddings = get_embeddings_batch([item["chunk_text"] for item in batch])
         with count_lock:
-            indexed_count += 1
-        return (item, embedding)
+            indexed_count += len(batch)
+        return list(zip(batch, embeddings))
 
     flusher = threading.Thread(target=_flush_progress_periodically, daemon=True)
     flusher.start()
@@ -247,7 +263,7 @@ def finish_ingest(
         with ThreadPoolExecutor(max_workers=EMBED_CONCURRENCY) as executor:
             # list(...) forces iteration so the first worker exception
             # propagates here instead of being silently swallowed.
-            embedded = list(executor.map(_embed, chunks_data))
+            embedded = [pair for batch_result in executor.map(_embed_batch, batches) for pair in batch_result]
     except Exception:
         stop_flushing.set()
         mark_document_failed(doc_id)

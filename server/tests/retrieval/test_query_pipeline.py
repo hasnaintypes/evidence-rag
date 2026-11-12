@@ -56,7 +56,7 @@ def _run_pipeline(
             side_effect=(lambda query, chunks: compress_return if compress_return is not None else chunks),
         ),
         patch("src.query_pipeline.decompose_into_subqueries", return_value=[]),
-        patch("src.query_pipeline.generate_chat_response", return_value=generate_return),
+        patch("src.query_pipeline.generate_cloudflare_chat", return_value=generate_return),
         patch("src.query_pipeline.score_faithfulness", return_value=faithfulness_return),
         patch("src.query_pipeline.log_query_event"),
     ):
@@ -85,7 +85,7 @@ def test_a_stage_failure_is_logged_distinctly_before_propagating(caplog):
             patch("src.query_pipeline.grade_retrieved_chunks", side_effect=lambda query, chunks: chunks),
             patch("src.query_pipeline.compress_context_chunks", side_effect=lambda query, chunks: chunks),
             patch("src.query_pipeline.decompose_into_subqueries", return_value=[]),
-            patch("src.query_pipeline.generate_chat_response", side_effect=RuntimeError("gemini is down")),
+            patch("src.query_pipeline.generate_cloudflare_chat", side_effect=RuntimeError("cloudflare is down")),
         ):
             with pytest.raises(RuntimeError):
                 qp.process_chat_query("What grease should I use?", advanced_mode=True)
@@ -276,7 +276,7 @@ def test_generation_prompt_frames_chunks_as_untrusted_data():
         patch("src.query_pipeline.compress_context_chunks", side_effect=lambda query, chunks: chunks),
         patch("src.query_pipeline.decompose_into_subqueries", return_value=[]),
         patch(
-            "src.query_pipeline.generate_chat_response", return_value="Apply lithium-based grease every 600 hours."
+            "src.query_pipeline.generate_cloudflare_chat", return_value="Apply lithium-based grease every 600 hours."
         ) as mock_generate,
         patch("src.query_pipeline.score_faithfulness", return_value=None),
         patch("src.query_pipeline.log_query_event"),
@@ -301,7 +301,9 @@ def _run_pipeline_with_fixed_embedding(embedding, history=None):
         patch("src.query_pipeline.grade_retrieved_chunks", side_effect=lambda query, chunks: chunks),
         patch("src.query_pipeline.compress_context_chunks", side_effect=lambda query, chunks: chunks),
         patch("src.query_pipeline.decompose_into_subqueries", return_value=[]),
-        patch("src.query_pipeline.generate_chat_response", return_value="Apply lithium-based grease every 600 hours."),
+        patch(
+            "src.query_pipeline.generate_cloudflare_chat", return_value="Apply lithium-based grease every 600 hours."
+        ),
         patch(
             "src.query_pipeline.score_faithfulness", return_value={"faithfulness_score": 1.0, "unsupported_claims": []}
         ),
@@ -322,7 +324,7 @@ def test_a_repeated_query_hits_the_cache_and_skips_the_pipeline():
     embedding = [1.0, 0.0, 0.0]
 
     first_result, first_mocks = _run_pipeline_with_fixed_embedding(embedding)
-    assert first_mocks["generate_chat_response"].call_count == 1
+    assert first_mocks["generate_cloudflare_chat"].call_count == 1
     assert first_result["telemetry"]["cache_hit"] is False
 
     second_result, second_mocks = _run_pipeline_with_fixed_embedding(embedding)
@@ -330,7 +332,7 @@ def test_a_repeated_query_hits_the_cache_and_skips_the_pipeline():
     # miss - asserting 0 here is what actually proves the cache hit
     # skipped generation/rewriting/judging entirely, not just that the
     # answer happened to match.
-    assert second_mocks["generate_chat_response"].call_count == 0
+    assert second_mocks["generate_cloudflare_chat"].call_count == 0
     assert second_mocks["rewrite_query"].call_count == 0
     assert second_mocks["score_faithfulness"].call_count == 0
     assert second_result["telemetry"]["cache_hit"] is True
@@ -341,7 +343,7 @@ def test_a_dissimilar_query_does_not_hit_the_cache():
     _run_pipeline_with_fixed_embedding([1.0, 0.0, 0.0])
 
     _, second_mocks = _run_pipeline_with_fixed_embedding([0.0, 1.0, 0.0])
-    assert second_mocks["generate_chat_response"].call_count == 1
+    assert second_mocks["generate_cloudflare_chat"].call_count == 1
 
 
 def test_a_followup_turn_with_history_never_consults_the_cache():
@@ -354,7 +356,7 @@ def test_a_followup_turn_with_history_never_consults_the_cache():
 
     history = [{"role": "user", "content": "earlier turn"}, {"role": "assistant", "content": "earlier reply"}]
     result, second_mocks = _run_pipeline_with_fixed_embedding(embedding, history=history)
-    assert second_mocks["generate_chat_response"].call_count == 1
+    assert second_mocks["generate_cloudflare_chat"].call_count == 1
     assert "cache_hit" not in result["telemetry"]
 
 
@@ -369,7 +371,7 @@ def test_a_faithfulness_gated_result_is_not_cached():
         patch("src.query_pipeline.grade_retrieved_chunks", side_effect=lambda query, chunks: chunks),
         patch("src.query_pipeline.compress_context_chunks", side_effect=lambda query, chunks: chunks),
         patch("src.query_pipeline.decompose_into_subqueries", return_value=[]),
-        patch("src.query_pipeline.generate_chat_response", return_value="Apply ceramic grease every 2000 hours."),
+        patch("src.query_pipeline.generate_cloudflare_chat", return_value="Apply ceramic grease every 2000 hours."),
         patch(
             "src.query_pipeline.score_faithfulness",
             return_value={"faithfulness_score": 0.3, "unsupported_claims": ["x"]},
@@ -388,4 +390,111 @@ def test_a_faithfulness_gated_result_is_not_cached():
     # A second, identical-embedding call must still run the real pipeline
     # rather than serve the withheld answer from cache.
     _, second_mocks = _run_pipeline_with_fixed_embedding(embedding)
-    assert second_mocks["generate_chat_response"].call_count == 1
+    assert second_mocks["generate_cloudflare_chat"].call_count == 1
+
+
+# --- _sanitize_citation_markers (#inline citations) -------------------------
+# Pure function, no mocking needed - the model is instructed to emit [N]
+# inline citation markers (see the generation prompt's instruction 6), and
+# this is the guard against it citing a chunk number that was never shown
+# to it.
+
+
+def test_sanitize_citation_markers_keeps_in_range_markers():
+    text = "The max torque is 40 Nm [1]. Replace the seal every 500 hours [2]."
+    assert qp._sanitize_citation_markers(text, max_index=2) == text
+
+
+def test_sanitize_citation_markers_drops_out_of_range_markers():
+    text = "The max torque is 40 Nm [1]. This part doesn't exist [7]."
+    result = qp._sanitize_citation_markers(text, max_index=1)
+    assert "[1]" in result
+    assert "[7]" not in result
+
+
+def test_sanitize_citation_markers_drops_everything_when_no_chunks_were_shown():
+    text = "Some claim [1] and another [2]."
+    result = qp._sanitize_citation_markers(text, max_index=0)
+    assert "[1]" not in result
+    assert "[2]" not in result
+
+
+def test_sanitize_citation_markers_leaves_non_numeric_brackets_untouched():
+    text = "See the [appendix] for details, not a citation."
+    assert qp._sanitize_citation_markers(text, max_index=3) == text
+
+
+def test_sanitize_citation_markers_handles_multiple_markers_in_one_sentence():
+    text = "Both the torque [1] and clearance [2] specs come from the same page [99]."
+    result = qp._sanitize_citation_markers(text, max_index=2)
+    assert "[1]" in result
+    assert "[2]" in result
+    assert "[99]" not in result
+
+
+# --- process_chat_query_stream (SSE path) ------------------------------------
+# Shares _prepare_generation()/_finalize_generation() with process_chat_query()
+# above - these tests only need to confirm the streaming-specific contract
+# (token events as text arrives, exactly one final "done" event carrying the
+# same result shape), not re-prove every branch already covered above.
+
+
+def _run_pipeline_stream(
+    retrieve_return,
+    generate_stream_return=("Apply lithium-based ", "grease every 600 hours."),
+    faithfulness_return=None,
+    advanced_mode=True,
+):
+    with (
+        patch("src.query_pipeline.rewrite_query", return_value=["q"]),
+        patch("src.query_pipeline.get_embedding", return_value=[0.0] * 8),
+        patch("src.query_pipeline._retrieve", return_value=retrieve_return),
+        patch("src.query_pipeline.rerank_chunks", side_effect=lambda query, chunks, top_n: chunks),
+        patch("src.query_pipeline.grade_retrieved_chunks", side_effect=lambda query, chunks: chunks),
+        patch("src.query_pipeline.compress_context_chunks", side_effect=lambda query, chunks: chunks),
+        patch("src.query_pipeline.decompose_into_subqueries", return_value=[]),
+        patch("src.query_pipeline.generate_cloudflare_chat_stream", return_value=iter(generate_stream_return)),
+        patch("src.query_pipeline.score_faithfulness", return_value=faithfulness_return),
+        patch("src.query_pipeline.log_query_event"),
+    ):
+        return list(qp.process_chat_query_stream("What grease should I use?", advanced_mode=advanced_mode))
+
+
+def test_stream_yields_a_token_event_per_chunk_then_one_done_event():
+    events = _run_pipeline_stream(retrieve_return=[_base_chunk()])
+    assert [e["type"] for e in events] == ["token", "token", "done"]
+    assert events[0]["text"] == "Apply lithium-based "
+    assert events[1]["text"] == "grease every 600 hours."
+    assert events[-1]["result"]["reply"] == "Apply lithium-based grease every 600 hours."
+
+
+def test_stream_concatenates_chunks_before_post_processing():
+    """Citation sanitization/repetition detection run on the joined text,
+    not per-chunk - a marker split across two streamed pieces must still
+    resolve correctly."""
+    events = _run_pipeline_stream(
+        retrieve_return=[_base_chunk()],
+        generate_stream_return=("The max torque is 40 Nm [", "1]."),
+    )
+    assert events[-1]["result"]["reply"] == "The max torque is 40 Nm [1]."
+
+
+def test_stream_emits_only_a_done_event_for_an_early_result():
+    """Empty retrieval is an early-return path - there's no partial text to
+    stream, so generate_cloudflare_chat_stream() must never be called."""
+    with patch("src.query_pipeline.generate_cloudflare_chat_stream") as mock_stream:
+        events = _run_pipeline_stream(retrieve_return=[])
+    mock_stream.assert_not_called()
+    assert [e["type"] for e in events] == ["done"]
+    assert "no relevant content" in events[0]["result"]["reply"].lower()
+
+
+def test_stream_applies_the_faithfulness_gate_to_the_done_event(monkeypatch):
+    monkeypatch.setattr(settings, "faithfulness_gate_threshold", 0.7)
+    chunk = _base_chunk(rerank_score=2.0)
+    events = _run_pipeline_stream(
+        retrieve_return=[chunk],
+        generate_stream_return=("Apply ceramic grease every 2000 hours.",),
+        faithfulness_return={"faithfulness_score": 0.3, "unsupported_claims": ["x"]},
+    )
+    assert "did not pass the faithfulness check" in events[-1]["result"]["reply"].lower()

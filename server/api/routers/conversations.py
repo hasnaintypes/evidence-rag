@@ -1,4 +1,7 @@
+from typing import Optional
+
 from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
 
 from api.deps import get_current_user, get_rate_limited_chat_user, CurrentUser
 from api.schemas import (
@@ -29,8 +32,10 @@ def create_conversation_endpoint(body: ConversationCreate, user: CurrentUser = D
 
 
 @router.get("/conversations", response_model=ConversationListOut)
-def list_conversations_endpoint(user: CurrentUser = Depends(get_current_user)):
-    return ConversationService.list_for_user(user)
+def list_conversations_endpoint(
+    limit: int = 30, cursor: Optional[str] = None, user: CurrentUser = Depends(get_current_user)
+):
+    return ConversationService.list_for_user(user, limit=limit, cursor=cursor)
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetailOut)
@@ -66,4 +71,22 @@ def restore_checkpoint_endpoint(conversation_id: str, message_id: int, user: Cur
 def send_message_endpoint(
     conversation_id: str, body: ChatMessageIn, user: CurrentUser = Depends(get_rate_limited_chat_user)
 ):
+    """Non-streaming JSON reply - kept alongside the SSE route below for
+    any caller that just wants the final answer in one response (the
+    interactive API docs, scripts, other integrations). The web UI itself
+    calls /messages/stream instead, for the perceived-latency win of
+    showing tokens as they're generated."""
     return ConversationService.send_message(conversation_id, body.message, body.advanced_mode, user)
+
+
+@router.post("/conversations/{conversation_id}/messages/stream")
+def send_message_stream_endpoint(
+    conversation_id: str, body: ChatMessageIn, user: CurrentUser = Depends(get_rate_limited_chat_user)
+):
+    """Server-Sent Events stream of the same reply - see
+    ConversationService.send_message_stream()."""
+    return StreamingResponse(
+        ConversationService.send_message_stream(conversation_id, body.message, body.advanced_mode, user),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

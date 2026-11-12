@@ -16,7 +16,7 @@ project's own convention overrides that default.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env            # set GEMINI_API_KEY, STORAGE_MODE, SUPABASE_URL at minimum
+cp .env.example .env            # set GEMINI_API_KEY, VOYAGE_API_KEY, STORAGE_MODE, SUPABASE_URL at minimum
 python scripts/ingest.py        # index docs/fixtures/sample_docs/ as shared (user_id NULL) documents
 uvicorn api.app:app --reload    # http://127.0.0.1:8000/docs for interactive API docs
 ```
@@ -92,23 +92,35 @@ rather than working against raw chunk text.
 `process_chat_query()` is the single entry point conversations call into, and it is doc-scoped (every
 retrieval call is filtered to one `doc_id`, not a global search). Flow: LLM query rewriting
 (`retrieval/query_rewriter.py`) → hybrid retrieval — BM25 + dense + Reciprocal Rank Fusion
-(`retrieval/hybrid.py`) → LLM-based reranking (`retrieval/reranker.py`, one batched Gemini call
-scoring every candidate chunk's relevance 0.0-1.0 — not a locally-hosted cross-encoder; see that
-module's docstring and #20) → relevance grading + Jaccard dedup (`retrieval/grader.py`) → context
-compression + parent-section reconstruction (`retrieval/compression.py`) → an adaptive context budget
-(2/4/5 blocks based on top score) → a **confidence gate**: below `RETRIEVAL_CONFIDENCE_THRESHOLD` the
-pipeline abstains instead of generating, returning the closest chunks as `sources` with no synthesized
-claim → if confident but a follow-up looks warranted, **one bounded additional retrieval hop** (never
-an open-ended loop) → grounded generation → faithfulness scoring (`evaluation/judge.py`, a second
-cheap LLM call checking the answer against its own cited chunks) → **faithfulness hard gate**: below
+(`retrieval/hybrid.py`) → LLM-based reranking (`retrieval/reranker.py`, one batched call scoring every
+candidate chunk's relevance 0.0-1.0 — not a locally-hosted cross-encoder; see that module's docstring
+and #20) → relevance grading + Jaccard dedup (`retrieval/grader.py`) → context compression +
+parent-section reconstruction (`retrieval/compression.py`) → an adaptive context budget (2/4/5 blocks
+based on top score) → a **confidence gate**: below `RETRIEVAL_CONFIDENCE_THRESHOLD` the pipeline
+abstains instead of generating, returning the closest chunks as `sources` with no synthesized claim →
+if confident but a follow-up looks warranted, **one bounded additional retrieval hop** (never an
+open-ended loop) → grounded generation (`generate_cloudflare_chat()`/`generate_cloudflare_chat_stream()`,
+`server/src/core/llm.py`) → faithfulness scoring (`evaluation/judge.py`, a second cheap LLM call
+checking the answer against its own cited chunks) → **faithfulness hard gate**: below
 `FAITHFULNESS_GATE_THRESHOLD` the generated answer is withheld and replaced with an explicit "did not
 pass the faithfulness check" message (still listing sources/unsupported claims) rather than returned
 as-is → telemetry (`telemetry.py`) logs every stage's latency. The retrieval-confidence gate only runs
 in "advanced mode" — naive mode skips reranking entirely and always attempts an answer — but the
 faithfulness gate runs in both modes, since the judge call doesn't depend on reranking.
-`FAITHFULNESS_GATE_THRESHOLD` (default 0.7, see `config.py`) was set from a small probe against real
-`docs/eval/eval_set.json` content rather than a full `run_eval.py` pass, due to free-tier Gemini API quota
-limits — revisit once issue #24 is resolved.
+
+**Every LLM call in this flow — query rewriting, reranking, judging, and the final answer — runs on
+Cloudflare Workers AI, not Gemini.** Gemini's free-tier quota repeatedly exhausted every candidate in
+its own fallback chain during real use (both for the final answer and for the comparatively light
+judge/reranker/title calls), so the whole active call surface moved to Cloudflare's free tier (300 RPM,
+10,000 Neurons/day, no payment method required). The only code that still calls Gemini is `src/graph.py`'s
+entity-graph extraction (**disabled by default** via `ENABLE_ENTITY_GRAPH` — see below) and
+`scripts/test_connection.py`'s connectivity check; `GEMINI_API_KEY` is still a required setting but only
+needs to be any non-empty placeholder string if entity graph stays off, since `google-genai`'s client
+validates non-emptiness (not validity) at construction and the key is never sent to Google unless that
+feature is turned on. `FAITHFULNESS_GATE_THRESHOLD` (default 0.7, see `config.py`) was set from a small
+probe against real `docs/eval/eval_set.json` content rather than a full `run_eval.py` pass, due to the
+free-tier quota limits that motivated this migration in the first place — revisit once issue #24 is
+resolved.
 
 Every stage above runs inside `src/core/observability.py`'s `traced_stage()`, which logs that stage's
 start/completion (with elapsed ms)/failure through the standard `logging` module under a per-request
@@ -122,19 +134,32 @@ Action, `pg_cron`) depends on deployment specifics this project doesn't hardcode
 `POST /conversations/{id}/messages` and `POST /upload` additionally sit behind
 `src/core/rate_limiter.py`'s per-user sliding-window limiter (`api/deps.py`'s
 `get_rate_limited_chat_user`/`get_rate_limited_upload_user`), so a single client can't exhaust the
-app's Gemini quota through repeated requests (#15). Both are in-memory/per-process, same limitation
-as `response_cache.py`/`hybrid.py`'s index cache below.
+app's Cloudflare quota through repeated requests (#15). Both are in-memory/per-process, same
+limitation as `response_cache.py`/`hybrid.py`'s index cache below.
 
-Chat/structured generation calls (`src/core/llm.py`) walk a configured chat-model chain until one
-succeeds — a real mitigation, not just theoretical: this project hit the free tier's daily quota
-mid-session while tuning the faithfulness threshold above. The chain defaults to the 2-element
-`GEMINI_CHAT_MODEL`/`GEMINI_FALLBACK_CHAT_MODEL` pair, but `GEMINI_CHAT_MODEL_CHAIN` (comma-separated)
-overrides it with an arbitrary-length list — each extra model is a separate free-tier quota bucket.
-`scripts/list_available_models.py` lists which model ids a given key can actually call right now
-(filtered by name heuristic to exclude TTS/image/music/agent-product models that also expose the
-same `generateContent` action) to build that value from, rather than guessing. Failures are logged
-through the `evidence_rag.llm` logger with whether the skip was quota/rate-limit-shaped or some
-other error, same "inherits the root logger's handler" pattern as `src/core/observability.py`.
+`src/core/llm.py` has three Cloudflare functions covering every active call path:
+`generate_cloudflare_chat()`/`generate_cloudflare_chat_stream()` for free text (the final RAG answer,
+query rewriting/decomposition) and `generate_cloudflare_json()` for JSON-shaped output (reranking,
+judging, title generation). The latter has no server-enforced schema — Cloudflare's OpenAI-compatible
+endpoint doesn't document reliable JSON-mode support across models — so the prompt itself asks for
+JSON text and the response is parsed defensively (`_extract_json_block()`: the first balanced
+`{...}`/`[...]` block, tolerant of stray text around it, `None` on any parse failure so the caller
+degrades gracefully). All three share one call path (`_cloudflare_chat_completion()`) with a
+process-local cooldown that activates on an HTTP 429 (honoring `Retry-After` when Cloudflare sends
+one) and is cleared, not retried, until it expires — deliberately not a blind "retry every candidate
+every time" loop, since this project watched exactly that pattern burn several minutes retrying two
+already-exhausted Gemini models on every single call during a reingest. A transient (non-429) failure
+gets a small number of retries with exponential backoff + jitter instead. Lazily configured (no error
+at import time without credentials) so the rest of the app, including every test in this repo, boots
+and runs without `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN` set — only an actual call raises, with
+a specific "not configured" message, if they're missing.
+
+The Gemini-backed functions above these (`generate_chat_response()`/`generate_structured_response()`)
+still exist, walking a configured chat-model chain until one succeeds (`GEMINI_CHAT_MODEL`/
+`GEMINI_FALLBACK_CHAT_MODEL`, or `GEMINI_CHAT_MODEL_CHAIN` for an arbitrary-length override —
+`scripts/list_available_models.py` lists which model ids a given key can actually call right now,
+filtered by name heuristic to exclude TTS/image/music/agent-product models), but only `src/graph.py`'s
+entity-graph extraction (disabled by default) and `scripts/test_connection.py` call them.
 Embedding calls retry the same model instead (no chain), since `document_chunks.embedding` is a
 fixed-width pgvector column tied to one embedding model's output dimension.
 
@@ -169,11 +194,17 @@ similarity against an in-memory, L2-normalized embedding matrix built from the f
 `supabase` mode it instead calls `src/storage/database.py`'s `dense_ann_search()`, a real
 approximate-nearest-neighbor SQL query against `document_chunks.embedding` that uses
 `scripts/supabase_schema.sql`'s `idx_chunks_embedding` HNSW index (#17) — built on
-`(embedding::halfvec(3072))` with `halfvec_cosine_ops`, not on `embedding` directly, since pgvector's
-HNSW index caps at 2000 dimensions and `gemini-embedding-001` produces 3072-dim vectors; every query
-against the index (including `dense_ann_search()`) must apply the identical `::halfvec(3072)` cast on
-both sides of `<=>`, or the planner silently falls back to a full sequential scan instead of using the
-index. `dense_ann_search()` also filters by `doc_ids` directly in SQL (`WHERE doc_id = ANY(...)`)
+`(embedding::halfvec(N))` with `halfvec_cosine_ops` (`N` = `VOYAGE_EMBEDDING_DIMENSION`, 1024 by
+default), not on `embedding` directly, since pgvector's HNSW index caps at 2000 dimensions for the
+plain `vector` type (`halfvec` raises that to 4000 — relevant if `N` is ever raised above 2000, e.g.
+Voyage's `voyage-3-large` at 2048); every query against the index (including `dense_ann_search()`)
+must apply the identical `::halfvec(N)` cast on both sides of `<=>`, or the planner silently falls
+back to a full sequential scan instead of using the index. Embeddings are Voyage AI's (`get_embedding()`/
+`get_embeddings_batch()` in `src/core/llm.py`, asymmetric `input_type="query"` vs `"document"`), kept
+independent of chat generation (still Gemini) — swapping either provider doesn't require touching the
+other, though an embedding-model/dimension change needs `scripts/supabase_schema.sql` re-applied and
+every document reingested from scratch (`get_indexed_embedding_models()` in `database.py` exists to
+flag exactly this kind of mismatch). `dense_ann_search()` also filters by `doc_ids` directly in SQL (`WHERE doc_id = ANY(...)`)
 rather than post-filtering a full-corpus ranking. The sparse/BM25 layer is scoped the same way now
 too (#27, closed): whenever `doc_ids` is given (every real chat request — conversations are always
 scoped to 1-5 documents), `retrieval/hybrid.py` builds its BM25 index (and, in local/SQLite mode, the

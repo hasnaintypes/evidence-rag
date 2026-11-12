@@ -10,6 +10,18 @@ type GraphViewProps = {
   onNodeClick: (entityId: number) => void;
 };
 
+// vis-network draws to a <canvas> - its color options become a 2D context
+// fillStyle/strokeStyle directly, which (unlike a DOM element's CSS) can't
+// resolve a raw "var(--foo)" string. Reads the actual computed value of a
+// custom property instead - a real color token is a perfectly valid
+// canvas fillStyle (oklch() included, in any current browser), it just
+// has to be resolved first.
+function cssVar(name: string, fallback: string): string {
+  if (typeof window === "undefined") return fallback;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return value || fallback;
+}
+
 export function GraphView({ data, onNodeClick }: GraphViewProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const networkRef = useRef<Network | null>(null);
@@ -32,6 +44,11 @@ export function GraphView({ data, onNodeClick }: GraphViewProps) {
       })),
     );
 
+    const accent = cssVar("--sidebar-primary", "#6d8cff");
+    const foreground = cssVar("--foreground", "#f5f5f5");
+    const border = cssVar("--border", "#3a3a3a");
+    const mutedForeground = cssVar("--muted-foreground", "#a0a0a0");
+
     const network = new Network(
       containerRef.current,
       { nodes, edges },
@@ -39,15 +56,15 @@ export function GraphView({ data, onNodeClick }: GraphViewProps) {
         nodes: {
           shape: "dot",
           size: 10,
-          font: { color: "var(--foreground)", size: 12 },
+          font: { color: foreground, size: 12 },
           color: {
-            background: "var(--primary)",
-            border: "var(--primary)",
-            highlight: { background: "var(--primary)", border: "var(--foreground)" },
+            background: accent,
+            border: accent,
+            highlight: { background: accent, border: foreground },
           },
         },
         edges: {
-          color: { color: "var(--border)", highlight: "var(--foreground)" },
+          color: { color: border, highlight: accent, hover: mutedForeground },
           smooth: false,
           scaling: { min: 1, max: 6 },
         },

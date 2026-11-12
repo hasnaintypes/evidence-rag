@@ -1,6 +1,6 @@
 from typing import List
 
-from src.core.llm import generate_chat_response
+from src.core.llm import generate_cloudflare_chat
 
 MAX_QUERY_TRACKS = 3
 
@@ -39,7 +39,7 @@ def rewrite_query(original_query: str) -> List[str]:
         # long-form answer. Without this cap the call was taking ~27s
         # on local hardware because the model had headroom to keep
         # generating well past what was actually needed.
-        raw_response = generate_chat_response(prompt, max_tokens=120)
+        raw_response = generate_cloudflare_chat(prompt, max_tokens=120)
     except Exception:
         return [original_query]
 
@@ -91,7 +91,7 @@ def decompose_into_subqueries(original_query: str, num_subqueries: int = 2) -> L
 
     try:
         # Same reasoning as rewrite_query - short, bounded output expected.
-        raw_response = generate_chat_response(prompt, max_tokens=120)
+        raw_response = generate_cloudflare_chat(prompt, max_tokens=120)
     except Exception:
         return []
 
