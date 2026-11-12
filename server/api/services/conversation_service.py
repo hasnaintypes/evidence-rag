@@ -3,6 +3,7 @@ import logging
 import uuid
 from typing import Any, Dict, Iterator, List, Optional
 
+import structlog
 from fastapi import HTTPException
 
 from api.authz import get_owned_conversation
@@ -50,7 +51,9 @@ def _generate_title(user_message: str) -> Optional[str]:
     raises, never blocks the real reply on this. No server-enforced JSON
     schema (see src/core/llm.py's generate_cloudflare_json() docstring) -
     the prompt above asks for the shape in text instead."""
-    result = generate_cloudflare_json(TITLE_PROMPT.format(question=user_message), max_tokens=50)
+    result = generate_cloudflare_json(
+        TITLE_PROMPT.format(question=user_message), max_tokens=50, operation="title_generation"
+    )
     if not isinstance(result, dict):
         return None
     title = result.get("title")
@@ -171,17 +174,27 @@ class ConversationService:
 
         insert_message(conversation_id, role="user", content=message)
 
-        try:
-            result = process_chat_query(
-                message,
-                advanced_mode=advanced_mode,
-                doc_ids=conversation["doc_ids"],
-                history=history,
-                user_id=user.id,
-            )
-        except Exception:
-            logger.exception("process_chat_query failed for conversation_id=%s user_id=%s", conversation_id, user.id)
-            raise HTTPException(status_code=500, detail="Failed to generate a response. Please try again.")
+        # Binds chat_session_id to this request's log context (via
+        # structlog.contextvars) for the duration of the pipeline call -
+        # every event logged anywhere during process_chat_query(),
+        # including ai_tracker.py's per-call events and
+        # request_summary.py's end-of-request line, picks this up
+        # automatically without query_pipeline.py needing to know or
+        # pass a conversation id at all.
+        with structlog.contextvars.bound_contextvars(chat_session_id=conversation_id):
+            try:
+                result = process_chat_query(
+                    message,
+                    advanced_mode=advanced_mode,
+                    doc_ids=conversation["doc_ids"],
+                    history=history,
+                    user_id=user.id,
+                )
+            except Exception:
+                logger.exception(
+                    "process_chat_query failed for conversation_id=%s user_id=%s", conversation_id, user.id
+                )
+                raise HTTPException(status_code=500, detail="Failed to generate a response. Please try again.")
 
         return ConversationService._persist_reply(conversation_id, message, history, result)
 
@@ -215,27 +228,36 @@ class ConversationService:
         insert_message(conversation_id, role="user", content=message)
 
         def _events() -> Iterator[str]:
-            try:
-                for event in process_chat_query_stream(
-                    message,
-                    advanced_mode=advanced_mode,
-                    doc_ids=conversation["doc_ids"],
-                    history=history,
-                    user_id=user.id,
-                ):
-                    if event["type"] == "token":
-                        yield f"data: {json.dumps({'type': 'token', 'text': event['text']})}\n\n"
-                        continue
-                    reply_message = ConversationService._persist_reply(
-                        conversation_id, message, history, event["result"]
+            # Bound for the entire generator body, including every yield
+            # below - not just the process_chat_query_stream() call - so
+            # chat_session_id stays attached to every log line emitted
+            # while the SSE consumer is actively pulling tokens (same
+            # intent as send_message()'s plain `with` block above; this
+            # one just can't be a single `with` wrapping only the call,
+            # since the call itself is a generator this function also
+            # yields through).
+            with structlog.contextvars.bound_contextvars(chat_session_id=conversation_id):
+                try:
+                    for event in process_chat_query_stream(
+                        message,
+                        advanced_mode=advanced_mode,
+                        doc_ids=conversation["doc_ids"],
+                        history=history,
+                        user_id=user.id,
+                    ):
+                        if event["type"] == "token":
+                            yield f"data: {json.dumps({'type': 'token', 'text': event['text']})}\n\n"
+                            continue
+                        reply_message = ConversationService._persist_reply(
+                            conversation_id, message, history, event["result"]
+                        )
+                        yield f"data: {json.dumps({'type': 'done', 'message': reply_message})}\n\n"
+                except Exception:
+                    logger.exception(
+                        "process_chat_query_stream failed for conversation_id=%s user_id=%s", conversation_id, user.id
                     )
-                    yield f"data: {json.dumps({'type': 'done', 'message': reply_message})}\n\n"
-            except Exception:
-                logger.exception(
-                    "process_chat_query_stream failed for conversation_id=%s user_id=%s", conversation_id, user.id
-                )
-                error_payload = {"type": "error", "detail": "Failed to generate a response. Please try again."}
-                yield f"data: {json.dumps(error_payload)}\n\n"
+                    error_payload = {"type": "error", "detail": "Failed to generate a response. Please try again."}
+                    yield f"data: {json.dumps(error_payload)}\n\n"
 
         return _events()
 

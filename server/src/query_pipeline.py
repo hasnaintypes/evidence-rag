@@ -13,6 +13,8 @@ from src.core.telemetry import log_query_event
 from src.core.security import generate_source_token
 from src.core.guardrails import scan_for_injection_patterns
 from src.core.response_cache import get_cached_response, store_cached_response
+from src.core.ai_tracker import log_cache_event
+from src.core.request_summary import build_request_summary, log_request_summary
 
 MAX_HOPS = 2  # initial retrieval pass + at most 1 follow-up hop, never more
 SNIPPET_MAX_CHARS = 280  # citation snippet length - enough to verify a claim, not the whole chunk
@@ -85,7 +87,7 @@ def _prepare_generation(
     # can run before paying for query rewriting's LLM call too, not just
     # generation/judging - the whole point of checking early.
     with traced_stage(request_id, "embedding", telemetry, user_id):
-        query_embedding = get_embedding(query)
+        query_embedding = get_embedding(query, operation="query_embedding", request_id=request_id)
 
     # --- PHASE 1.5: Semantic response cache ---
     # Only consulted on a conversation's first turn (no prior history) -
@@ -100,15 +102,17 @@ def _prepare_generation(
             # generation/faithfulness stats); a cache hit has none of
             # those to report, and telemetry["cache_hit"] below is the
             # signal for "this result didn't cost a fresh Gemini call."
+            log_cache_event(hit=True, request_id=request_id)
             cached_result = dict(cached)
             cached_result["telemetry"] = {**telemetry, "cache_hit": True}
             cached_result["sources"] = _refresh_source_tokens_for_cache_hit(cached_result.get("sources", []), user_id)
             return {"early": True, "result": cached_result}
         telemetry["cache_hit"] = False
+        log_cache_event(hit=False, request_id=request_id)
 
     # --- PHASE 2: Query expansion ---
     with traced_stage(request_id, "query_expansion", telemetry, user_id):
-        expanded_queries = rewrite_query(query) if advanced_mode else [query]
+        expanded_queries = rewrite_query(query, request_id=request_id) if advanced_mode else [query]
 
     # --- PHASE 3: Multi-track hybrid retrieval ---
     all_candidate_chunks = []
@@ -143,7 +147,7 @@ def _prepare_generation(
         telemetry["culling_and_compression_time_ms"] = 0.0
     else:
         with traced_stage(request_id, "rerank", telemetry, user_id):
-            reranked = rerank_chunks(query=query, chunks=all_candidate_chunks, top_n=6)
+            reranked = rerank_chunks(query=query, chunks=all_candidate_chunks, top_n=6, request_id=request_id)
 
         with traced_stage(request_id, "culling_and_compression", telemetry, user_id):
             graded = grade_retrieved_chunks(query=query, chunks=reranked)
@@ -184,12 +188,12 @@ def _prepare_generation(
     hop_count = 1
     with traced_stage(request_id, "followup_hop", telemetry, user_id):
         if advanced_mode and top_score <= 0.5 and len(final_context_chunks) > 0:
-            subqueries = decompose_into_subqueries(query)
+            subqueries = decompose_into_subqueries(query, request_id=request_id)
             if subqueries:
                 hop_count = 2
                 followup_candidates = []
                 for sub_q in subqueries:
-                    sub_embedding = get_embedding(sub_q)
+                    sub_embedding = get_embedding(sub_q, operation="followup_query_embedding", request_id=request_id)
                     retrieved = _retrieve(
                         query_text=sub_q, query_embedding=sub_embedding, top_k=search_width, doc_ids=doc_ids
                     )
@@ -199,7 +203,9 @@ def _prepare_generation(
                             followup_candidates.append(chunk)
 
                 if followup_candidates:
-                    reranked_followup = rerank_chunks(query=query, chunks=followup_candidates, top_n=6)
+                    reranked_followup = rerank_chunks(
+                        query=query, chunks=followup_candidates, top_n=6, request_id=request_id
+                    )
                     graded_followup = grade_retrieved_chunks(query=query, chunks=reranked_followup)
                     compressed_followup = compress_context_chunks(query=query, chunks=graded_followup)
 
@@ -397,7 +403,11 @@ def _finalize_generation(
     # just an apology message, and judging it would waste a call and
     # muddy the faithfulness signal with failed-generation noise.
     with traced_stage(request_id, "faithfulness_scoring", telemetry, user_id):
-        faithfulness_result = None if generation_failed else score_faithfulness(final_summary, final_context_chunks)
+        faithfulness_result = (
+            None
+            if generation_failed
+            else score_faithfulness(final_summary, final_context_chunks, request_id=request_id)
+        )
 
     faithfulness_score = faithfulness_result["faithfulness_score"] if faithfulness_result else None
     unsupported_claims = faithfulness_result["unsupported_claims"] if faithfulness_result else []
@@ -500,16 +510,30 @@ def process_chat_query(
     request_id = new_request_id()
     telemetry = {"request_id": request_id}
 
-    prep = _prepare_generation(query, advanced_mode, doc_ids, history, user_id, request_id, telemetry)
-    if prep["early"]:
-        return prep["result"]
+    try:
+        prep = _prepare_generation(query, advanced_mode, doc_ids, history, user_id, request_id, telemetry)
+        if prep["early"]:
+            result = prep["result"]
+            log_request_summary(build_request_summary(request_id, result["telemetry"], outcome="early_return"))
+            return result
 
-    with traced_stage(request_id, "generation", telemetry, user_id):
-        raw_response = generate_cloudflare_chat(prep["prompt"])
+        with traced_stage(request_id, "generation", telemetry, user_id):
+            raw_response = generate_cloudflare_chat(
+                prep["prompt"], operation="answer_generation", request_id=request_id
+            )
 
-    return _finalize_generation(
-        raw_response, prep, query, advanced_mode, doc_ids, history, user_id, request_id, telemetry
-    )
+        result = _finalize_generation(
+            raw_response, prep, query, advanced_mode, doc_ids, history, user_id, request_id, telemetry
+        )
+        score = result["faithfulness"]["score"]
+        outcome = (
+            "faithfulness_gated" if score is not None and score < settings.faithfulness_gate_threshold else "success"
+        )
+        log_request_summary(build_request_summary(request_id, telemetry, outcome=outcome))
+        return result
+    except Exception:
+        log_request_summary(build_request_summary(request_id, telemetry, outcome="failed"))
+        raise
 
 
 def process_chat_query_stream(
@@ -536,23 +560,43 @@ def process_chat_query_stream(
     """
     request_id = new_request_id()
     telemetry = {"request_id": request_id}
+    outcome = "cancelled"  # overwritten below on every path that returns/raises normally
+    try:
+        prep = _prepare_generation(query, advanced_mode, doc_ids, history, user_id, request_id, telemetry)
+        if prep["early"]:
+            outcome = "early_return"
+            yield {"type": "done", "result": prep["result"]}
+            return
 
-    prep = _prepare_generation(query, advanced_mode, doc_ids, history, user_id, request_id, telemetry)
-    if prep["early"]:
-        yield {"type": "done", "result": prep["result"]}
-        return
+        chunks_received = []
+        with traced_stage(request_id, "generation", telemetry, user_id):
+            for piece in generate_cloudflare_chat_stream(
+                prep["prompt"], operation="answer_generation", request_id=request_id
+            ):
+                chunks_received.append(piece)
+                yield {"type": "token", "text": piece}
 
-    chunks_received = []
-    with traced_stage(request_id, "generation", telemetry, user_id):
-        for piece in generate_cloudflare_chat_stream(prep["prompt"]):
-            chunks_received.append(piece)
-            yield {"type": "token", "text": piece}
-
-    raw_response = "".join(chunks_received)
-    result = _finalize_generation(
-        raw_response, prep, query, advanced_mode, doc_ids, history, user_id, request_id, telemetry
-    )
-    yield {"type": "done", "result": result}
+        raw_response = "".join(chunks_received)
+        result = _finalize_generation(
+            raw_response, prep, query, advanced_mode, doc_ids, history, user_id, request_id, telemetry
+        )
+        score = result["faithfulness"]["score"]
+        outcome = (
+            "faithfulness_gated" if score is not None and score < settings.faithfulness_gate_threshold else "success"
+        )
+        yield {"type": "done", "result": result}
+    except GeneratorExit:
+        # The SSE client disconnected mid-stream (conversations.py's
+        # route consumer stopped iterating) - this generator is being
+        # torn down, not failing, so the summary below must still run in
+        # the `finally` clause rather than being skipped as "no summary
+        # for a request that never finished."
+        raise
+    except Exception:
+        outcome = "failed"
+        raise
+    finally:
+        log_request_summary(build_request_summary(request_id, telemetry, outcome=outcome))
 
 
 def _refresh_source_tokens_for_cache_hit(sources: list, user_id: str = None) -> list:
