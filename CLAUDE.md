@@ -178,6 +178,63 @@ follow-up depends on prior turns, so caching it under the bare query embedding r
 stale/wrong-context answer. In-memory/per-process, same as `retrieval/hybrid.py`'s index cache — not
 shared across workers or persisted across a restart.
 
+### Observability: structured logging, AI-call tracking, chat-request summaries
+
+`src/core/logging_config.py` wraps the stdlib `logging` module (every existing
+`logging.getLogger("evidence_rag.*")` call site — `observability.py`'s `traced_stage()`, `llm.py`,
+`telemetry.py` — keeps working unchanged) with `structlog`, so every log line, old call sites and new
+structured ones alike, renders as one JSON event: UTC ISO-8601 `timestamp`, `level`, `service`,
+`environment`, `logger`, `event`, plus whatever structured fields a call site added. `LOG_FORMAT`
+controls `console` (colorized, for local dev) vs `json` rendering; file output (`LOG_TO_FILE`) is
+routed by logger name into `logs/application/app.jsonl` (everything else), `logs/ai/invocations.jsonl`
+(`evidence_rag.ai`), `logs/chat/requests.jsonl` (`evidence_rag.chat`), and `logs/errors/errors.jsonl`
+(a deliberate mirror of any ERROR+ line, from any category) — rotated via `concurrent-log-handler`
+(safe across multiple OS processes, unlike stdlib's plain `RotatingFileHandler`) and swept for
+rotated-backup age (`LOG_RETENTION_DAYS`) once at startup. `logs/` is gitignored; only its four
+category `.gitkeep` files are committed.
+
+`src/core/ai_tracker.py`'s `track_ai_call()` wraps every real AI/embedding call site in `llm.py`
+(Voyage's `get_embedding()`/`get_embeddings_batch()`, the shared Cloudflare transport
+`_cloudflare_chat_completion()` behind `generate_cloudflare_chat()`/`_stream()`/`_json()`, and the
+dormant Gemini `generate_chat_response()`/`generate_structured_response()` chain) with one
+`ai.invocation.*` event per *logical* call, tagged with an `operation` string each caller passes
+explicitly (`"answer_generation"`, `"query_rewriting"`, `"reranking"`, `"faithfulness_judging"`,
+`"title_generation"`, `"entity_extraction"`, `"document_ingestion"`, …) — this is what distinguishes
+otherwise-identical-looking Cloudflare calls in the log. A separate `ai.http_attempt` event fires per
+*actual* outbound HTTP attempt (every retry in `_cloudflare_chat_completion()`'s bounded backoff loop,
+every candidate in the Gemini fallback chain), so "1 logical invocation → N HTTP attempts" is visible
+instead of collapsed into a single pass/fail line. Token usage is only ever reported from a provider's
+own response (`response.usage`) — never estimated or fabricated; Voyage's `embed()` doesn't return
+token counts today, so embedding invocations simply omit the field. `summarize_messages()` is the only
+thing ever logged about a request payload — message count/roles/char length/system-prompt presence,
+never message content — so no raw prompt, document content, or credential ever reaches a log line.
+
+`src/core/request_summary.py`'s `build_request_summary()`/`log_request_summary()` reduce one request's
+accumulated `telemetry` dict (per-stage `traced_stage()` timings, `cache_hit`, `injection_flags`, and
+the `ai_calls` list `track_ai_call(telemetry=...)` appends to) into exactly one `chat.request.*` event
+— success, early-return (cache hit/empty retrieval/confidence-gate abstention), faithfulness-gated,
+cancelled (SSE client disconnected mid-stream), or failed — logged once per `process_chat_query()`/
+`process_chat_query_stream()` call, never per stage or per retry. `chat_session_id` is bound via
+`structlog.contextvars.bound_contextvars()` in `api/services/conversation_service.py` around the
+pipeline call, so it — and every AI invocation logged during that call — carries the conversation id
+automatically without `query_pipeline.py` needing to know about conversations at all.
+
+`scripts/inspect_logs.py` (`chats --last N`, `session <id>`, `request <id>`, `stats [--today]`,
+`errors --last N [--verbose]`) reads the JSONL files directly — no new dependency — to answer "how
+many AI calls did this chat message make, and why" without hand-grepping raw log lines.
+
+**Production log export**: disabled by default. Setting `BETTER_STACK_SOURCE_TOKEN` adds a
+`QueueHandler`/`QueueListener`-backed exporter (`logging_config.py`'s `_maybe_add_better_stack_handler()`)
+that ships the same JSON lines to Better Stack's Logs ingestion endpoint on a background thread — a
+request thread only ever enqueues a string, never waits on the network, and any export failure is
+swallowed (never breaks a chat response). Better Stack was chosen over Grafana Cloud/Sentry for this
+project's scale: free tier is 3GB logs/traces retained for 3 days (verify current numbers at
+betterstack.com/pricing before relying on them — this was last checked 2026-11-12), no payment method
+required to start, native structured-JSON ingestion, and a dashboard that needs no separate
+OpenTelemetry Collector to stand up first. To enable: create a Logs source in the Better Stack
+dashboard (Telemetry → Sources → Connect source), set `BETTER_STACK_SOURCE_TOKEN` to its token, and
+redeploy — nothing else in the app changes.
+
 ### Storage is swappable, pipeline logic is not
 
 `STORAGE_MODE` (`local` vs `supabase`) only changes `server/src/storage/{database,files}.py` — SQLite
