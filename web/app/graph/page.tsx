@@ -3,9 +3,10 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "@/hooks/use-toast";
-import { Network, Share2 } from "lucide-react";
+import { FileText, Network, Share2 } from "lucide-react";
 import { GraphView } from "@/components/graph/graph-view";
 import { MessageResponse } from "@/components/ai-elements/message";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -153,7 +154,11 @@ export default function GraphPage() {
             </div>
           </div>
         ) : (
-          <GraphView data={graphData} onNodeClick={handleNodeClick} />
+          <div className="h-full w-full p-4">
+            <div className="h-full w-full overflow-hidden rounded-xl border border-border bg-card/30">
+              <GraphView data={graphData} onNodeClick={handleNodeClick} />
+            </div>
+          </div>
         )}
       </div>
 
@@ -161,25 +166,36 @@ export default function GraphPage() {
         <SheetContent className="flex flex-col gap-0 p-0 sm:max-w-md">
           <SheetHeader className="border-b border-border">
             <SheetTitle>{selectedLabel}</SheetTitle>
-            {selectedDoc && (
-              <SheetDescription>
-                {selectedDoc.filename}
-                {selectedSection?.heading_path ? ` · ${selectedSection.heading_path}` : ""}
-              </SheetDescription>
-            )}
+            <SheetDescription>Where this entity appears in your documents</SheetDescription>
           </SheetHeader>
           <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
             {!selectedSection ? (
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-2 rounded-lg border border-border bg-card/40 p-3">
                 <Skeleton className="h-3.5 w-3/4 rounded-full" />
                 <Skeleton className="h-3.5 w-full rounded-full" />
                 <Skeleton className="h-3.5 w-5/6 rounded-full" />
                 <Skeleton className="h-3.5 w-2/3 rounded-full" />
               </div>
             ) : (
-              <>
+              <div className="flex flex-col gap-2 rounded-lg border border-border bg-card/40 p-3">
+                {selectedDoc && (
+                  <span className="flex min-w-0 items-center gap-2 text-sm font-medium">
+                    <Badge variant="secondary" className="shrink-0 rounded-full">
+                      <FileText className="size-3" />
+                    </Badge>
+                    <span className="truncate">
+                      {selectedDoc.filename}
+                      {selectedSection.page != null ? ` · p.${selectedSection.page}` : ""}
+                    </span>
+                  </span>
+                )}
+                {selectedSection.heading_path && (
+                  <p className="truncate text-xs font-medium text-muted-foreground">
+                    {selectedSection.heading_path}
+                  </p>
+                )}
                 {selectedSection.content && (
-                  <blockquote className="border-l-2 border-muted pl-3 text-sm leading-relaxed text-muted-foreground [&_*]:my-0">
+                  <blockquote className="border-l-2 border-muted pl-3 text-xs leading-relaxed text-muted-foreground [&_*]:my-0">
                     <MessageResponse>{selectedSection.content}</MessageResponse>
                   </blockquote>
                 )}
@@ -200,10 +216,9 @@ export default function GraphPage() {
                     }
                   >
                     Open source document
-                    {selectedSection.page ? ` (page ${selectedSection.page})` : ""}
                   </Button>
                 )}
-              </>
+              </div>
             )}
           </div>
         </SheetContent>
