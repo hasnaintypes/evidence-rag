@@ -8,7 +8,10 @@ class ChatMessageIn(BaseModel):
 
 
 class ConversationCreate(BaseModel):
-    doc_ids: list[str] = Field(min_length=1, max_length=5)
+    # Empty is allowed - ConversationService.create() resolves it to the
+    # shared/demo corpus (documents with user_id IS NULL) instead of
+    # requiring the caller to attach a document before starting a chat.
+    doc_ids: list[str] = Field(default_factory=list, max_length=5)
 
 
 class ConversationUpdate(BaseModel):

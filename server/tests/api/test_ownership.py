@@ -68,6 +68,32 @@ def test_conversation_creation_accepts_a_shared_document(client, app):
     assert response.status_code == 201
 
 
+def test_conversation_creation_with_no_doc_ids_falls_back_to_the_shared_corpus(client, app):
+    _seed_shared_document()
+    _seed_private_document()  # some other user's private doc must never be picked up here
+    override_current_user(app, OTHER)
+
+    response = client.post("/conversations", json={"doc_ids": []})
+    assert response.status_code == 201
+    assert response.json()["doc_ids"] == ["shared-doc"]
+
+
+def test_conversation_creation_with_doc_ids_omitted_also_falls_back(client, app):
+    _seed_shared_document()
+    override_current_user(app, OTHER)
+
+    response = client.post("/conversations", json={})
+    assert response.status_code == 201
+    assert response.json()["doc_ids"] == ["shared-doc"]
+
+
+def test_conversation_creation_400s_when_no_shared_documents_exist(client, app):
+    override_current_user(app, OTHER)
+
+    response = client.post("/conversations", json={"doc_ids": []})
+    assert response.status_code == 400
+
+
 def test_get_conversation_404s_for_a_non_owner(client, app):
     _seed_shared_document()
     create_conversation("conv-1", user_id=OWNER, doc_ids=["shared-doc"])

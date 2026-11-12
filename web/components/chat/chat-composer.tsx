@@ -68,7 +68,9 @@ function displayName(
 // exactly this set once created. Each file starts uploading the moment
 // it's picked - not on submit - so by the time the user finishes typing
 // their first question, processing is already underway (or done). Submit
-// is blocked until every upload resolves.
+// is blocked until every upload resolves, but attaching anything is
+// optional - submitting with none selected falls back to the server's
+// shared/demo document corpus (see ConversationService.create()).
 export function ChatComposer() {
   const router = useRouter();
   const { user } = useAuth();
@@ -196,10 +198,6 @@ export function ChatComposer() {
       toast.error("Type a question first.");
       return;
     }
-    if (attachments.length === 0) {
-      toast.error("Attach at least one document to chat about.");
-      return;
-    }
     if (isUploading || attachments.some((a) => !a.docId)) {
       toast.error("Still processing your documents - hang on.");
       return;
@@ -276,7 +274,7 @@ export function ChatComposer() {
               )}
               <PromptInputBody>
                 <PromptInputTextarea
-                  placeholder="Ask a question about your documents…"
+                  placeholder="Ask a question about your documents, or the shared corpus…"
                   disabled={isSubmitting}
                 />
               </PromptInputBody>
