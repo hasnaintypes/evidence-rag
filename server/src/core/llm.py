@@ -9,6 +9,7 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
 from src.core.config import settings
+from src.core.ai_tracker import track_ai_call, summarize_messages
 from typing import Any, Dict, Iterator, List, Optional
 
 # Tracked so db.py can flag a change of embedding model, which would
@@ -108,7 +109,7 @@ def _skip_reason(exc: Exception) -> str:
     return "quota/rate-limit" if _is_quota_or_rate_limit_error(exc) else "error"
 
 
-def get_embedding(text: str) -> List[float]:
+def get_embedding(text: str, operation: str = "embedding", request_id: Optional[str] = None) -> List[float]:
     """
     Generates a vector embedding for the provided text via the Voyage AI API.
 
@@ -140,14 +141,21 @@ def get_embedding(text: str) -> List[float]:
         input_type="query",
         output_dimension=settings.voyage_embedding_dimension,
     )
-    try:
-        result = embedding_client.embed([clean_text], **kwargs)
-    except Exception:
-        result = embedding_client.embed([clean_text], **kwargs)
-    return result.embeddings[0]
+    with track_ai_call("voyage", settings.voyage_embedding_model, operation, request_id=request_id) as span:
+        span.record_request({"input_type": "query", "text_count": 1, "approx_input_chars": len(clean_text)})
+        try:
+            result = embedding_client.embed([clean_text], **kwargs)
+            span.log_attempt(1, "success")
+        except Exception as e:
+            span.log_attempt(1, "retry", error_category=type(e).__name__)
+            result = embedding_client.embed([clean_text], **kwargs)
+            span.log_attempt(2, "success")
+        return result.embeddings[0]
 
 
-def get_embeddings_batch(texts: List[str]) -> List[List[float]]:
+def get_embeddings_batch(
+    texts: List[str], operation: str = "embedding_batch", request_id: Optional[str] = None
+) -> List[List[float]]:
     """
     Embeds many chunks in ONE Voyage API call instead of one call per
     chunk - see ingestion/pipeline.py's finish_ingest() docstring for why
@@ -176,14 +184,27 @@ def get_embeddings_batch(texts: List[str]) -> List[List[float]]:
         input_type="document",
         output_dimension=settings.voyage_embedding_dimension,
     )
-    try:
-        result = embedding_client.embed(clean_texts, **kwargs)
-    except Exception:
-        result = embedding_client.embed(clean_texts, **kwargs)
-    return result.embeddings
+    with track_ai_call("voyage", settings.voyage_embedding_model, operation, request_id=request_id) as span:
+        span.record_request(
+            {
+                "input_type": "document",
+                "text_count": len(clean_texts),
+                "approx_input_chars": sum(len(t) for t in clean_texts),
+            }
+        )
+        try:
+            result = embedding_client.embed(clean_texts, **kwargs)
+            span.log_attempt(1, "success")
+        except Exception as e:
+            span.log_attempt(1, "retry", error_category=type(e).__name__)
+            result = embedding_client.embed(clean_texts, **kwargs)
+            span.log_attempt(2, "success")
+        return result.embeddings
 
 
-def generate_chat_response(prompt: str, max_tokens: Optional[int] = None) -> str:
+def generate_chat_response(
+    prompt: str, max_tokens: Optional[int] = None, operation: str = "chat_generation", request_id: Optional[str] = None
+) -> str:
     """
     Sends the augmented prompt to Gemini and returns the response, walking
     _CHAT_MODEL_CANDIDATES (settings.gemini_chat_model_chain, or the
@@ -199,29 +220,37 @@ def generate_chat_response(prompt: str, max_tokens: Optional[int] = None) -> str
         max_output_tokens=max_tokens if max_tokens is not None else settings.generation_max_tokens,
     )
     errors: List[str] = []
-    for model in _CHAT_MODEL_CANDIDATES:
-        try:
-            response = client.models.generate_content(
-                model=model,
-                contents=f"You are an intelligent AI assistant.\n\n{prompt}",
-                config=config,
-            )
-            # response.text is Optional[str] - None (not a raised
-            # exception) when a candidate has no text parts, e.g. the
-            # model stopped on SAFETY/MAX_TOKENS. Treated as a failure
-            # worth trying the fallback on too, same as
-            # generate_structured_response()'s empty-response check below.
-            if response.text:
-                if model != _CHAT_MODEL_CANDIDATES[0]:
-                    logger.warning("generate_chat_response: served by fallback candidate %r", model)
-                return response.text
-            errors.append(f"{model}: empty response")
-            logger.warning("generate_chat_response: candidate %r returned an empty response, trying next", model)
-        except Exception as e:
-            errors.append(f"{model}: {e}")
-            logger.warning("generate_chat_response: candidate %r failed (%s), trying next", model, _skip_reason(e))
-    logger.error("generate_chat_response: every candidate in the chain failed: %s", "; ".join(errors))
-    return f"Error during generation: {'; '.join(errors)}"
+    with track_ai_call("gemini", _CHAT_MODEL_CANDIDATES[0], operation, request_id=request_id) as span:
+        for attempt, model in enumerate(_CHAT_MODEL_CANDIDATES, start=1):
+            span.model = model
+            span.is_fallback = model != _CHAT_MODEL_CANDIDATES[0]
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=f"You are an intelligent AI assistant.\n\n{prompt}",
+                    config=config,
+                )
+                # response.text is Optional[str] - None (not a raised
+                # exception) when a candidate has no text parts, e.g. the
+                # model stopped on SAFETY/MAX_TOKENS. Treated as a failure
+                # worth trying the fallback on too, same as
+                # generate_structured_response()'s empty-response check below.
+                if response.text:
+                    span.log_attempt(attempt, "success")
+                    if model != _CHAT_MODEL_CANDIDATES[0]:
+                        logger.warning("generate_chat_response: served by fallback candidate %r", model)
+                    return response.text
+                errors.append(f"{model}: empty response")
+                span.log_attempt(attempt, "empty_response")
+                logger.warning("generate_chat_response: candidate %r returned an empty response, trying next", model)
+            except Exception as e:
+                errors.append(f"{model}: {e}")
+                span.log_attempt(attempt, "error", error_category=_skip_reason(e))
+                logger.warning("generate_chat_response: candidate %r failed (%s), trying next", model, _skip_reason(e))
+        span.outcome = "error"
+        span.error_category = "chain_exhausted"
+        logger.error("generate_chat_response: every candidate in the chain failed: %s", "; ".join(errors))
+        return f"Error during generation: {'; '.join(errors)}"
 
 
 def generate_chat_response_stream(prompt: str, max_tokens: Optional[int] = None):
@@ -379,7 +408,9 @@ def _cloudflare_retry_after_seconds(exc: "openai.RateLimitError") -> float:
     return CLOUDFLARE_RATE_LIMIT_COOLDOWN_DEFAULT_SECONDS + random.uniform(0, 5)
 
 
-def _cloudflare_chat_completion(messages: List[Dict[str, str]], max_tokens: int, temperature: float, stream: bool):
+def _cloudflare_chat_completion(
+    messages: List[Dict[str, str]], max_tokens: int, temperature: float, stream: bool, span=None
+):
     """
     One logical request to Cloudflare's Chat Completions endpoint for
     settings.cloudflare_model, with bounded retry+backoff for transient
@@ -390,9 +421,19 @@ def _cloudflare_chat_completion(messages: List[Dict[str, str]], max_tokens: int,
     if the model is already in cooldown from a previous 429 - this is
     what keeps a rate-limited model from being hit again on every
     subsequent call until the cooldown clears.
+
+    `span` (an ai_tracker.AICallSpan, optional) gets one log_attempt()
+    call per outbound HTTP attempt made here - every retry iteration, not
+    just the final/successful one - so a caller further up (e.g.
+    generate_cloudflare_chat()) can report "1 logical invocation -> N
+    actual HTTP attempts" instead of collapsing retries into a single
+    pass/fail line. None is accepted so this function keeps working for
+    any future caller that doesn't need invocation-level tracking.
     """
     remaining = _cloudflare_cooldown_remaining()
     if remaining > 0:
+        if span is not None:
+            span.log_attempt(1, "cooldown_skipped", error_category="rate_limited")
         raise RuntimeError(f"Cloudflare Workers AI is cooling down after a rate limit - retry in {remaining:.0f}s.")
 
     http_client = _cloudflare_client_or_raise()
@@ -414,6 +455,8 @@ def _cloudflare_chat_completion(messages: List[Dict[str, str]], max_tokens: int,
                 elapsed_ms,
                 stream,
             )
+            if span is not None:
+                span.log_attempt(attempt + 1, "success")
             return response
         except openai.RateLimitError as e:
             cooldown = _cloudflare_retry_after_seconds(e)
@@ -423,9 +466,17 @@ def _cloudflare_chat_completion(messages: List[Dict[str, str]], max_tokens: int,
                 settings.cloudflare_model,
                 cooldown,
             )
+            if span is not None:
+                span.http_status = 429
+                span.error_category = "rate_limited"
+                span.log_attempt(attempt + 1, "rate_limited", http_status=429, error_category="rate_limited")
             raise
         except (openai.APIConnectionError, openai.APITimeoutError) as e:
             last_error = e
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if span is not None:
+                span.http_status = status
+                span.log_attempt(attempt + 1, "transient_failure", http_status=status, error_category=type(e).__name__)
             if attempt < CLOUDFLARE_MAX_TRANSIENT_RETRIES:
                 backoff = (0.5 * (2**attempt)) + random.uniform(0, 0.5)
                 logger.warning(
@@ -438,11 +489,15 @@ def _cloudflare_chat_completion(messages: List[Dict[str, str]], max_tokens: int,
                 time.sleep(backoff)
                 continue
             logger.error("cloudflare chat completion failed after %d retries: %s", CLOUDFLARE_MAX_TRANSIENT_RETRIES, e)
+            if span is not None:
+                span.error_category = type(e).__name__
             raise
     raise last_error  # pragma: no cover - loop always returns or raises above
 
 
-def generate_cloudflare_chat(prompt: str, max_tokens: Optional[int] = None) -> str:
+def generate_cloudflare_chat(
+    prompt: str, max_tokens: Optional[int] = None, operation: str = "chat_generation", request_id: Optional[str] = None
+) -> str:
     """
     Generates free text via Cloudflare Workers AI - query_pipeline.py's
     final RAG answer and retrieval/query_rewriter.py's query expansion/
@@ -453,31 +508,55 @@ def generate_cloudflare_chat(prompt: str, max_tokens: Optional[int] = None) -> s
     returns "Error during generation: ..." on any failure rather than
     raising, since query_pipeline.py's generation_failed check keys off
     that exact substring regardless of which provider produced it.
+
+    `operation` distinguishes *why* this call happened (e.g.
+    "answer_generation" vs "query_rewriting") for ai_tracker.py's
+    invocation log - every caller of this function passes its own value
+    rather than this function guessing from the prompt text.
     """
-    try:
-        response = _cloudflare_chat_completion(
-            messages=[{"role": "user", "content": f"You are an intelligent AI assistant.\n\n{prompt}"}],
-            max_tokens=max_tokens if max_tokens is not None else settings.generation_max_tokens,
-            temperature=settings.generation_temperature,
-            stream=False,
+    messages = [{"role": "user", "content": f"You are an intelligent AI assistant.\n\n{prompt}"}]
+    with track_ai_call("cloudflare", settings.cloudflare_model, operation, request_id=request_id) as span:
+        span.record_request(
+            {
+                **summarize_messages(messages),
+                "max_tokens": max_tokens if max_tokens is not None else settings.generation_max_tokens,
+                "temperature": settings.generation_temperature,
+            }
         )
-        text = response.choices[0].message.content if response.choices else None
-        if text:
-            if response.usage:
-                logger.info(
-                    "generate_cloudflare_chat: prompt_tokens=%s completion_tokens=%s",
-                    response.usage.prompt_tokens,
-                    response.usage.completion_tokens,
-                )
-            return text
-        logger.warning("generate_cloudflare_chat: Cloudflare returned an empty response")
-        return "Error during generation: Cloudflare Workers AI returned an empty response"
-    except Exception as e:
-        logger.error("generate_cloudflare_chat: Cloudflare call failed: %s", e)
-        return f"Error during generation: {e}"
+        try:
+            response = _cloudflare_chat_completion(
+                messages=messages,
+                max_tokens=max_tokens if max_tokens is not None else settings.generation_max_tokens,
+                temperature=settings.generation_temperature,
+                stream=False,
+                span=span,
+            )
+            text = response.choices[0].message.content if response.choices else None
+            if text:
+                if response.usage:
+                    span.record_tokens(response.usage.prompt_tokens, response.usage.completion_tokens)
+                    logger.info(
+                        "generate_cloudflare_chat: prompt_tokens=%s completion_tokens=%s",
+                        response.usage.prompt_tokens,
+                        response.usage.completion_tokens,
+                    )
+                return text
+            span.outcome = "empty_response"
+            logger.warning("generate_cloudflare_chat: Cloudflare returned an empty response")
+            return "Error during generation: Cloudflare Workers AI returned an empty response"
+        except Exception as e:
+            span.outcome = "error"
+            span.error_category = span.error_category or type(e).__name__
+            logger.error("generate_cloudflare_chat: Cloudflare call failed: %s", e)
+            return f"Error during generation: {e}"
 
 
-def generate_cloudflare_chat_stream(prompt: str, max_tokens: Optional[int] = None) -> Iterator[str]:
+def generate_cloudflare_chat_stream(
+    prompt: str,
+    max_tokens: Optional[int] = None,
+    operation: str = "chat_generation_stream",
+    request_id: Optional[str] = None,
+) -> Iterator[str]:
     """
     Streaming counterpart to generate_cloudflare_chat() - see that function's
     docstring and this module's Cloudflare section docstring for scope.
@@ -486,31 +565,60 @@ def generate_cloudflare_chat_stream(prompt: str, max_tokens: Optional[int] = Non
     logged and simply ends the stream rather than appending the
     "Error during generation: ..." sentinel after real partial text -
     same reasoning as generate_chat_response_stream()'s equivalent case.
-    """
-    yielded_any = False
-    try:
-        stream = _cloudflare_chat_completion(
-            messages=[{"role": "user", "content": f"You are an intelligent AI assistant.\n\n{prompt}"}],
-            max_tokens=max_tokens if max_tokens is not None else settings.generation_max_tokens,
-            temperature=settings.generation_temperature,
-            stream=True,
-        )
-        for chunk in stream:
-            delta = chunk.choices[0].delta.content if chunk.choices else None
-            if delta:
-                yielded_any = True
-                yield delta
-    except Exception as e:
-        if yielded_any:
-            logger.error("generate_cloudflare_chat_stream: Cloudflare call failed mid-stream: %s", e)
-            return
-        logger.error("generate_cloudflare_chat_stream: Cloudflare call failed before any output: %s", e)
-        yield f"Error during generation: {e}"
-        return
 
-    if not yielded_any:
-        logger.warning("generate_cloudflare_chat_stream: Cloudflare returned an empty response")
-        yield "Error during generation: Cloudflare Workers AI returned an empty response"
+    Streaming's "duration" (what ai_tracker.py records as duration_ms) is
+    deliberately the whole generator's lifetime, not just time-to-first-
+    token - a client that cancels mid-stream (closes the SSE connection)
+    is exactly the case the surrounding `with` block's GeneratorExit
+    handling below must still close out cleanly, since
+    track_ai_call()'s own context manager only sees a normal return in
+    that case, not an exception - the explicit `finally` records that.
+    """
+    messages = [{"role": "user", "content": f"You are an intelligent AI assistant.\n\n{prompt}"}]
+    with track_ai_call("cloudflare", settings.cloudflare_model, operation, request_id=request_id) as span:
+        span.record_request(
+            {
+                **summarize_messages(messages),
+                "max_tokens": max_tokens if max_tokens is not None else settings.generation_max_tokens,
+                "temperature": settings.generation_temperature,
+                "stream": True,
+            }
+        )
+        yielded_any = False
+        cancelled = False
+        try:
+            stream = _cloudflare_chat_completion(
+                messages=messages,
+                max_tokens=max_tokens if max_tokens is not None else settings.generation_max_tokens,
+                temperature=settings.generation_temperature,
+                stream=True,
+                span=span,
+            )
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content if chunk.choices else None
+                if delta:
+                    yielded_any = True
+                    yield delta
+        except GeneratorExit:
+            cancelled = True
+            raise
+        except Exception as e:
+            span.outcome = "error"
+            span.error_category = span.error_category or type(e).__name__
+            if yielded_any:
+                logger.error("generate_cloudflare_chat_stream: Cloudflare call failed mid-stream: %s", e)
+                return
+            logger.error("generate_cloudflare_chat_stream: Cloudflare call failed before any output: %s", e)
+            yield f"Error during generation: {e}"
+            return
+        finally:
+            if cancelled:
+                span.outcome = "cancelled"
+
+        if not yielded_any:
+            span.outcome = "empty_response"
+            logger.warning("generate_cloudflare_chat_stream: Cloudflare returned an empty response")
+            yield "Error during generation: Cloudflare Workers AI returned an empty response"
 
 
 def _extract_json_block(text: str) -> Optional[str]:
@@ -553,7 +661,13 @@ def _extract_json_block(text: str) -> Optional[str]:
     return None
 
 
-def generate_cloudflare_json(prompt: str, max_tokens: Optional[int] = None, temperature: float = 0.0) -> Optional[dict]:
+def generate_cloudflare_json(
+    prompt: str,
+    max_tokens: Optional[int] = None,
+    temperature: float = 0.0,
+    operation: str = "json_generation",
+    request_id: Optional[str] = None,
+) -> Optional[dict]:
     """
     Generates a JSON-shaped result via Cloudflare Workers AI, for callers
     that need a reliably parseable structured output but can't lean on a
@@ -568,31 +682,53 @@ def generate_cloudflare_json(prompt: str, max_tokens: Optional[int] = None, temp
     cooldown, no JSON block found, invalid JSON) so callers fall back
     gracefully - same "best-effort enrichment, never breaks the main
     response" posture as generate_structured_response() had.
+
+    `operation` is one of "reranking" / "faithfulness_judging" /
+    "title_generation" today (see each caller) - distinguishes these
+    otherwise-identical-looking Cloudflare calls in ai_tracker.py's log.
     """
-    try:
-        response = _cloudflare_chat_completion(
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=max_tokens if max_tokens is not None else settings.generation_max_tokens,
-            temperature=temperature,
-            stream=False,
+    messages = [{"role": "user", "content": prompt}]
+    with track_ai_call("cloudflare", settings.cloudflare_model, operation, request_id=request_id) as span:
+        span.record_request(
+            {
+                **summarize_messages(messages),
+                "max_tokens": max_tokens if max_tokens is not None else settings.generation_max_tokens,
+                "temperature": temperature,
+            }
         )
-        raw_text = response.choices[0].message.content if response.choices else None
-        if not raw_text:
-            logger.warning("generate_cloudflare_json: Cloudflare returned an empty response")
-            return None
+        try:
+            response = _cloudflare_chat_completion(
+                messages=messages,
+                max_tokens=max_tokens if max_tokens is not None else settings.generation_max_tokens,
+                temperature=temperature,
+                stream=False,
+                span=span,
+            )
+            raw_text = response.choices[0].message.content if response.choices else None
+            if not raw_text:
+                span.outcome = "empty_response"
+                logger.warning("generate_cloudflare_json: Cloudflare returned an empty response")
+                return None
+            if response.usage:
+                span.record_tokens(response.usage.prompt_tokens, response.usage.completion_tokens)
 
-        block = _extract_json_block(raw_text)
-        if block is None:
-            logger.warning("generate_cloudflare_json: no JSON block found in the response")
-            return None
+            block = _extract_json_block(raw_text)
+            if block is None:
+                span.outcome = "unparseable_response"
+                logger.warning("generate_cloudflare_json: no JSON block found in the response")
+                return None
 
-        return json.loads(block)
-    except (json.JSONDecodeError, ValueError) as e:
-        logger.warning("generate_cloudflare_json: response was not valid JSON: %s", e)
-        return None
-    except Exception as e:
-        logger.error("generate_cloudflare_json: Cloudflare call failed: %s", e)
-        return None
+            return json.loads(block)
+        except (json.JSONDecodeError, ValueError) as e:
+            span.outcome = "unparseable_response"
+            span.error_category = type(e).__name__
+            logger.warning("generate_cloudflare_json: response was not valid JSON: %s", e)
+            return None
+        except Exception as e:
+            span.outcome = "error"
+            span.error_category = span.error_category or type(e).__name__
+            logger.error("generate_cloudflare_json: Cloudflare call failed: %s", e)
+            return None
 
 
 VISION_TRANSCRIPTION_PROMPT = """This is a scanned page from a technical/industrial document with no extractable text layer. Transcribe its content as plain text, preserving structure:
@@ -603,7 +739,7 @@ VISION_TRANSCRIPTION_PROMPT = """This is a scanned page from a technical/industr
 Output only the transcription, no commentary."""
 
 
-def transcribe_page_image(image_bytes: bytes) -> str:
+def transcribe_page_image(image_bytes: bytes, operation: str = "vision_transcription") -> str:
     """
     Sends a rendered PDF page image to Gemini for OCR/transcription, used as
     a fallback for scanned pages that pdfplumber's text extraction can't
@@ -611,18 +747,24 @@ def transcribe_page_image(image_bytes: bytes) -> str:
     failure so ingestion can fall back to a placeholder node instead of
     crashing the whole document.
     """
-    try:
-        response = client.models.generate_content(
-            model=settings.gemini_chat_model,
-            contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-                VISION_TRANSCRIPTION_PROMPT,
-            ],
-            config=types.GenerateContentConfig(temperature=0.0, max_output_tokens=2000),
-        )
-        return response.text or ""
-    except Exception:
-        return ""
+    with track_ai_call("gemini", settings.gemini_chat_model, operation) as span:
+        span.record_request({"image_bytes": len(image_bytes)})
+        try:
+            response = client.models.generate_content(
+                model=settings.gemini_chat_model,
+                contents=[
+                    types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+                    VISION_TRANSCRIPTION_PROMPT,
+                ],
+                config=types.GenerateContentConfig(temperature=0.0, max_output_tokens=2000),
+            )
+            span.log_attempt(1, "success")
+            return response.text or ""
+        except Exception as e:
+            span.outcome = "error"
+            span.error_category = type(e).__name__
+            span.log_attempt(1, "error", error_category=type(e).__name__)
+            return ""
 
 
 def generate_structured_response(
@@ -630,6 +772,8 @@ def generate_structured_response(
     response_schema: Dict[str, Any],
     max_tokens: Optional[int] = None,
     temperature: float = 0.0,
+    operation: str = "structured_generation",
+    request_id: Optional[str] = None,
 ) -> Optional[dict]:
     """
     Sends a prompt to Gemini constrained to a JSON schema (via
@@ -656,20 +800,28 @@ def generate_structured_response(
         response_mime_type="application/json",
         response_schema=response_schema,
     )
-    for model in _CHAT_MODEL_CANDIDATES:
-        try:
-            response = client.models.generate_content(model=model, contents=prompt, config=config)
-            raw_text = response.text
-            if not raw_text:
-                logger.warning("generate_structured_response: candidate %r returned an empty response", model)
-                continue
-            parsed = json.loads(raw_text)
-            if model != _CHAT_MODEL_CANDIDATES[0]:
-                logger.warning("generate_structured_response: served by fallback candidate %r", model)
-            return parsed
-        except Exception as e:
-            logger.warning(
-                "generate_structured_response: candidate %r failed (%s), trying next", model, _skip_reason(e)
-            )
-    logger.error("generate_structured_response: every candidate in the chain failed")
-    return None
+    with track_ai_call("gemini", _CHAT_MODEL_CANDIDATES[0], operation, request_id=request_id) as span:
+        for attempt, model in enumerate(_CHAT_MODEL_CANDIDATES, start=1):
+            span.model = model
+            span.is_fallback = model != _CHAT_MODEL_CANDIDATES[0]
+            try:
+                response = client.models.generate_content(model=model, contents=prompt, config=config)
+                raw_text = response.text
+                if not raw_text:
+                    span.log_attempt(attempt, "empty_response")
+                    logger.warning("generate_structured_response: candidate %r returned an empty response", model)
+                    continue
+                parsed = json.loads(raw_text)
+                span.log_attempt(attempt, "success")
+                if model != _CHAT_MODEL_CANDIDATES[0]:
+                    logger.warning("generate_structured_response: served by fallback candidate %r", model)
+                return parsed
+            except Exception as e:
+                span.log_attempt(attempt, "error", error_category=_skip_reason(e))
+                logger.warning(
+                    "generate_structured_response: candidate %r failed (%s), trying next", model, _skip_reason(e)
+                )
+        span.outcome = "error"
+        span.error_category = "chain_exhausted"
+        logger.error("generate_structured_response: every candidate in the chain failed")
+        return None
