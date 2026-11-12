@@ -1,13 +1,14 @@
+import json
 import logging
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from fastapi import HTTPException
 
 from api.authz import get_owned_conversation
 from api.deps import CurrentUser
-from src.query_pipeline import process_chat_query
-from src.core.llm import generate_structured_response
+from src.query_pipeline import process_chat_query, process_chat_query_stream
+from src.core.llm import generate_cloudflare_json
 from src.core.security import generate_source_token
 
 # Same "inherits whatever handler the process entry point set up for the
@@ -21,6 +22,7 @@ from src.storage.database import (
     delete_conversation,
     delete_messages_after,
     get_conversation_messages,
+    get_shared_document_ids,
     insert_message,
     list_conversations,
     touch_conversation,
@@ -30,21 +32,13 @@ from src.storage.database import (
 HISTORY_TURNS = 6  # prior turns folded into the generation prompt - bounded so the prompt doesn't grow unbounded over a long conversation
 TITLE_MAX_CHARS = 60
 
-TITLE_RESPONSE_SCHEMA: Dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "title": {
-            "type": "string",
-            "description": "A short, specific chat title, 4-8 words, no quotes or trailing punctuation.",
-        },
-    },
-    "required": ["title"],
-}
-
 TITLE_PROMPT = """Generate a short, specific title (4-8 words, no quotes, no trailing \
 punctuation) for a chat that starts with this question:
 
-{question}"""
+{question}
+
+Output ONLY a JSON object of this exact shape, no other text before or after it:
+{{"title": "<the title>"}}"""
 
 
 def _generate_title(user_message: str) -> Optional[str]:
@@ -53,10 +47,10 @@ def _generate_title(user_message: str) -> Optional[str]:
     evaluation/judge.py's score_faithfulness() - returns None on any
     failure (bad/missing API response, wrong type) so the caller falls
     back to the existing message[:TITLE_MAX_CHARS] truncation; never
-    raises, never blocks the real reply on this."""
-    result = generate_structured_response(
-        TITLE_PROMPT.format(question=user_message), response_schema=TITLE_RESPONSE_SCHEMA, max_tokens=50
-    )
+    raises, never blocks the real reply on this. No server-enforced JSON
+    schema (see src/core/llm.py's generate_cloudflare_json() docstring) -
+    the prompt above asks for the shape in text instead."""
+    result = generate_cloudflare_json(TITLE_PROMPT.format(question=user_message), max_tokens=50)
     if not isinstance(result, dict):
         return None
     title = result.get("title")
@@ -75,7 +69,17 @@ class ConversationService:
 
     @staticmethod
     def create(doc_ids: List[str], user: CurrentUser) -> Dict[str, Any]:
-        if not all_documents_accessible(doc_ids, user.id):
+        """
+        No document attached (doc_ids empty) resolves to the shared/demo
+        corpus instead of requiring the caller to pick one first - see
+        get_shared_document_ids()'s docstring for why that's a real doc_id
+        list rather than passing doc_ids=None through to retrieval.
+        """
+        if not doc_ids:
+            doc_ids = get_shared_document_ids()
+            if not doc_ids:
+                raise HTTPException(status_code=400, detail="No shared documents are available to chat about yet.")
+        elif not all_documents_accessible(doc_ids, user.id):
             raise HTTPException(status_code=404, detail="One or more documents were not found.")
         conversation_id = uuid.uuid4().hex
         return create_conversation(conversation_id, user_id=user.id, doc_ids=doc_ids)
@@ -179,6 +183,68 @@ class ConversationService:
             logger.exception("process_chat_query failed for conversation_id=%s user_id=%s", conversation_id, user.id)
             raise HTTPException(status_code=500, detail="Failed to generate a response. Please try again.")
 
+        return ConversationService._persist_reply(conversation_id, message, history, result)
+
+    @staticmethod
+    def send_message_stream(
+        conversation_id: str, message: str, advanced_mode: bool, user: CurrentUser
+    ) -> Iterator[str]:
+        """
+        SSE counterpart to send_message(): same ownership check, history
+        fold-in, and user-message insert, but streams the answer back as
+        it's generated (via process_chat_query_stream()) instead of
+        blocking until generation AND the faithfulness judge both finish.
+
+        Yields Server-Sent Events lines ("data: {json}\\n\\n") of two
+        shapes: {"type": "token", "text": str} for each chunk of
+        generated text, and exactly one final {"type": "done",
+        "message": {...}} carrying the same shape send_message() returns
+        as its JSON body. A pipeline failure becomes {"type": "error",
+        "detail": ...} instead of an HTTP 500 - by the time any of this
+        has streamed, response headers (and likely some body) are already
+        sent, so a mid-stream failure can only be reported inside the
+        stream itself, never as a different status code (same reasoning
+        as send_message()'s docstring for #52, applied to a path that
+        can't raise an HTTPException partway through).
+        """
+        conversation = get_owned_conversation(conversation_id, user)
+
+        history_rows = get_conversation_messages(conversation_id, limit=HISTORY_TURNS)
+        history = [{"role": m["role"], "content": m["content"]} for m in history_rows]
+
+        insert_message(conversation_id, role="user", content=message)
+
+        def _events() -> Iterator[str]:
+            try:
+                for event in process_chat_query_stream(
+                    message,
+                    advanced_mode=advanced_mode,
+                    doc_ids=conversation["doc_ids"],
+                    history=history,
+                    user_id=user.id,
+                ):
+                    if event["type"] == "token":
+                        yield f"data: {json.dumps({'type': 'token', 'text': event['text']})}\n\n"
+                        continue
+                    reply_message = ConversationService._persist_reply(
+                        conversation_id, message, history, event["result"]
+                    )
+                    yield f"data: {json.dumps({'type': 'done', 'message': reply_message})}\n\n"
+            except Exception:
+                logger.exception(
+                    "process_chat_query_stream failed for conversation_id=%s user_id=%s", conversation_id, user.id
+                )
+                error_payload = {"type": "error", "detail": "Failed to generate a response. Please try again."}
+                yield f"data: {json.dumps(error_payload)}\n\n"
+
+        return _events()
+
+    @staticmethod
+    def _persist_reply(conversation_id: str, message: str, history: list, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Shared by send_message() and send_message_stream(): stores the
+        assistant turn and (first turn only) generates a real title - see
+        send_message()'s docstring for why a pipeline failure never
+        reaches this (nothing is persisted for a failed run)."""
         assistant_message = insert_message(
             conversation_id,
             role="assistant",
@@ -187,8 +253,8 @@ class ConversationService:
             faithfulness_score=(result.get("faithfulness") or {}).get("score"),
         )
 
-        # First turn only (history was fetched above, before this message's
-        # own insert_message() call, so an empty history means nothing came
+        # First turn only (history was fetched before this message's own
+        # insert_message() call, so an empty history means nothing came
         # before this one): ask the model for a real title instead of just
         # truncating the raw question. touch_conversation only sets the
         # title if it's still unset (COALESCE) either way, so later turns

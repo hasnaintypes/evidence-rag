@@ -259,6 +259,68 @@ export async function sendMessage(
   return response.json() as Promise<ConversationMessage>;
 }
 
+type ChatStreamEvent =
+  | { type: "token"; text: string }
+  | { type: "done"; message: ConversationMessage }
+  | { type: "error"; detail: string };
+
+/**
+ * Streaming counterpart to sendMessage() - POST /conversations/{id}/messages/stream
+ * returns Server-Sent Events instead of one blocking JSON response, so the
+ * reply shows up token-by-token instead of only once generation AND the
+ * faithfulness judge call after it have both finished server-side (the
+ * longest stretch of chat-pipeline.py's request). Same manual fetch +
+ * stream-reader approach as subscribeToDocumentStatus() above, for the same
+ * reason (EventSource can't send the Authorization header this API needs).
+ *
+ * Calls onToken for each chunk of generated text as it arrives, then
+ * resolves with the final persisted message once the server sends its
+ * "done" event - the same shape sendMessage() resolves with.
+ */
+export async function sendMessageStream(
+  conversationId: string,
+  message: string,
+  advancedMode: boolean,
+  onToken: (text: string) => void,
+  signal?: AbortSignal,
+): Promise<ConversationMessage> {
+  const response = await apiFetch(
+    `/conversations/${encodeURIComponent(conversationId)}/messages/stream`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, advanced_mode: advancedMode }),
+      signal,
+    },
+  );
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("Streaming response had no body.");
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      const dataLine = frame.split("\n").find((line) => line.startsWith("data:"));
+      if (!dataLine) continue;
+      const event = JSON.parse(dataLine.slice(5).trim()) as ChatStreamEvent;
+      if (event.type === "token") {
+        onToken(event.text);
+      } else if (event.type === "done") {
+        return event.message;
+      } else {
+        throw new Error(event.detail);
+      }
+    }
+  }
+  throw new Error("The reply stream ended unexpectedly.");
+}
+
 export async function restoreCheckpoint(
   conversationId: string,
   messageId: number,

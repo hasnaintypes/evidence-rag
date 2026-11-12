@@ -8,6 +8,7 @@ api/authz.py's get_owned_conversation() like every other mutation,
 instead of add_document_to_conversation()'s own inline check.
 """
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -21,6 +22,18 @@ from src.storage.database import (
     get_conversation_messages,
     upsert_document_record,
 )
+
+
+def _parse_sse_events(body: str) -> list[dict]:
+    """Parses the "data: {json}\\n\\n" frames send_message_stream() emits
+    back into a list of event dicts, in order."""
+    events = []
+    for frame in body.split("\n\n"):
+        for line in frame.split("\n"):
+            if line.startswith("data:"):
+                events.append(json.loads(line[len("data:") :].strip()))
+    return events
+
 
 OWNER = "owner-user"
 OTHER = "other-user"
@@ -91,7 +104,7 @@ def test_send_message_returns_llm_generated_title_on_first_turn_only(client, app
     with (
         patch("api.services.conversation_service.process_chat_query", return_value=fake_result),
         patch(
-            "api.services.conversation_service.generate_structured_response",
+            "api.services.conversation_service.generate_cloudflare_json",
             return_value={"title": "Retention Drivers This Quarter"},
         ),
     ):
@@ -125,7 +138,7 @@ def test_send_message_falls_back_to_truncated_title_when_llm_call_fails(client, 
     }
     with (
         patch("api.services.conversation_service.process_chat_query", return_value=fake_result),
-        patch("api.services.conversation_service.generate_structured_response", return_value=None),
+        patch("api.services.conversation_service.generate_cloudflare_json", return_value=None),
     ):
         response = client.post(f"/conversations/{conversation_id}/messages", json={"message": "a fresh question"})
 
@@ -134,6 +147,90 @@ def test_send_message_falls_back_to_truncated_title_when_llm_call_fails(client, 
 
     conversation = get_conversation(conversation_id)
     assert conversation["title"] == "a fresh question"  # the existing truncated fallback, unchanged
+
+
+def _fake_stream_events(reply="a real answer"):
+    yield {"type": "token", "text": "a real "}
+    yield {"type": "token", "text": "answer"}
+    yield {
+        "type": "done",
+        "result": {
+            "reply": reply,
+            "sources": [],
+            "faithfulness": {"score": 0.9, "unsupported_claims": []},
+            "telemetry": {"request_id": "abc"},
+            "chunks_matrix": [],
+            "thinking": "",
+        },
+    }
+
+
+def test_send_message_stream_yields_tokens_then_a_done_event_with_the_real_reply(client, app):
+    conversation_id = _seed_conversation()
+    override_current_user(app, OWNER)
+
+    with patch(
+        "api.services.conversation_service.process_chat_query_stream",
+        side_effect=lambda *args, **kwargs: _fake_stream_events(),
+    ):
+        response = client.post(f"/conversations/{conversation_id}/messages/stream", json={"message": "hello"})
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    assert [e["type"] for e in events] == ["token", "token", "done"]
+    assert events[-1]["message"]["content"] == "a real answer"
+
+    messages = get_conversation_messages(conversation_id)
+    assert len(messages) == 2
+    assert messages[1]["role"] == "assistant"
+    assert messages[1]["content"] == "a real answer"
+
+
+def test_send_message_stream_reports_an_error_event_and_persists_no_fake_reply_on_pipeline_failure(client, app):
+    conversation_id = _seed_conversation()
+    override_current_user(app, OWNER)
+
+    def _raising_stream(*args, **kwargs):
+        raise RuntimeError("quota exceeded")
+        yield  # pragma: no cover - makes this a generator function
+
+    with patch("api.services.conversation_service.process_chat_query_stream", side_effect=_raising_stream):
+        response = client.post(f"/conversations/{conversation_id}/messages/stream", json={"message": "hello"})
+
+    events = _parse_sse_events(response.text)
+    assert len(events) == 1
+    assert events[0]["type"] == "error"
+    assert "quota exceeded" not in events[0]["detail"]
+
+    messages = get_conversation_messages(conversation_id)
+    assert len(messages) == 1
+    assert messages[0]["role"] == "user"
+
+
+def test_send_message_stream_generates_a_title_on_first_turn_only(client, app):
+    conversation_id = _seed_conversation()
+    override_current_user(app, OWNER)
+
+    with (
+        patch(
+            "api.services.conversation_service.process_chat_query_stream",
+            side_effect=lambda *args, **kwargs: _fake_stream_events(),
+        ),
+        patch(
+            "api.services.conversation_service.generate_cloudflare_json",
+            return_value={"title": "Retention Drivers This Quarter"},
+        ),
+    ):
+        first = client.post(f"/conversations/{conversation_id}/messages/stream", json={"message": "hello"})
+        first_events = _parse_sse_events(first.text)
+        assert first_events[-1]["message"]["title"] == "Retention Drivers This Quarter"
+
+        second = client.post(f"/conversations/{conversation_id}/messages/stream", json={"message": "a follow-up"})
+        second_events = _parse_sse_events(second.text)
+        assert second_events[-1]["message"]["title"] is None
+
+    conversation = get_conversation(conversation_id)
+    assert conversation["title"] == "Retention Drivers This Quarter"
 
 
 # --- Add document to a conversation (#54) -----------------------------------

@@ -37,7 +37,7 @@ import {
   getConversation,
   getDocumentStatus,
   restoreCheckpoint,
-  sendMessage,
+  sendMessageStream,
   subscribeToDocumentStatus,
   uploadDocument,
   type DocumentStatus,
@@ -222,7 +222,23 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
     sendAbortRef.current = controller;
 
     try {
-      const result = await sendMessage(conversationId, trimmed, advancedMode, controller.signal);
+      const result = await sendMessageStream(
+        conversationId,
+        trimmed,
+        advancedMode,
+        (text) => {
+          // First token flips the bubble from the ThinkingIndicator
+          // spinner (shown while pending) to the real streamed text -
+          // see chat-message.tsx's `if (message.pending)` branch, which
+          // ignores content entirely while still pending.
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === pendingId ? { ...m, content: m.content + text, pending: false } : m,
+            ),
+          );
+        },
+        controller.signal,
+      );
       setMessages((prev) =>
         prev.map((m) => (m.id === pendingId ? { ...fromServerMessage(result), id: pendingId } : m)),
       );

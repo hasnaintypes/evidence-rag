@@ -718,6 +718,27 @@ def delete_document_data(doc_id: str) -> None:
         conn.close()
 
 
+def get_shared_document_ids() -> List[str]:
+    """
+    Returns the doc_id of every shared/demo document (user_id IS NULL -
+    docs/fixtures/sample_docs, ingested via scripts/ingest.py). Used to
+    resolve a conversation started with no document attached to the
+    shared corpus, rather than leaving its doc_ids empty: an empty
+    doc_ids reaching retrieval would hit retrieval/hybrid.py's
+    doc_ids=None path, which has no user_id filter at all and is only
+    safe for scripts/run_eval.py's offline admin use - reusing it for
+    real chat would let a query retrieve chunks from other users'
+    private uploads.
+    """
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT doc_id FROM documents WHERE user_id IS NULL ORDER BY ingested_at DESC")
+        return [dict(row)["doc_id"] for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
 def list_documents(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Returns a user's own uploaded documents plus shared/demo documents
@@ -1084,20 +1105,21 @@ def dense_ann_search(
     Supabase-mode-only approximate-nearest-neighbor search: asks Postgres
     for the top_k chunks closest to query_embedding by cosine distance,
     via pgvector's `<=>` operator against an expression cast to
-    `halfvec(3072)` - matching idx_chunks_embedding
-    (scripts/supabase_schema.sql), the HNSW index this exists to use.
+    `halfvec(settings.voyage_embedding_dimension)` - matching
+    idx_chunks_embedding (scripts/supabase_schema.sql), the HNSW index
+    this exists to use.
 
     The cast is not cosmetic: pgvector's HNSW index has a hard 2000-
-    dimension cap for the plain `vector` type, and gemini-embedding-001
-    (EMBEDDING_DIM below, see src/core/llm.py) produces 3072-dim vectors - an
-    HNSW index directly on `embedding` would fail to create at all
-    ("column cannot have more than 2000 dimensions for hnsw index",
-    confirmed against a real pgvector 0.8 instance while building this).
-    `halfvec` (half-precision) raises that cap to 4000, so the index is
-    built on `(embedding::halfvec(3072))` instead - every query against
-    it, including this one, must apply the identical cast on both sides
-    of `<=>` or the planner has no matching expression to use the index
-    for, and silently falls back to a full sequential scan + sort.
+    dimension cap for the plain `vector` type. `halfvec` (half-precision)
+    raises that cap to 4000 - needed for a 2048-dim Voyage model, though
+    the 1024-dim default is already under 2000 - so the index is built
+    on `(embedding::halfvec(N))` regardless of dimension for consistency
+    (confirmed against a real pgvector 0.8 instance that a plain `vector`
+    HNSW index above 2000 dims fails outright with "column cannot have
+    more than 2000 dimensions for hnsw index"). Every query against this
+    index, including this one, must apply the identical cast (same N) on
+    both sides of `<=>` or the planner has no matching expression to use
+    the index for, and silently falls back to a full sequential scan + sort.
 
     doc_ids, when given, is filtered in SQL (WHERE doc_id = ANY(...))
     rather than in Python after the fact - the planner can push this
@@ -1124,26 +1146,28 @@ def _dense_ann_search_with(
 ) -> List[Dict[str, Any]]:
     cursor = conn.cursor()
     # pgvector accepts a bracketed literal ("[0.1,0.2,...]") cast to
-    # ::halfvec(3072) - same literal format insert_chunk()/
+    # ::halfvec(N) - same literal format insert_chunk()/
     # insert_chunks_batch() use when writing embeddings (as ::vector;
     # the storage column itself stays full-precision `vector`, only this
     # query-side expression is cast down to match the index).
     embedding_literal = "[" + ",".join(str(float(x)) for x in query_embedding) + "]"
+    halfvec_dim = settings.voyage_embedding_dimension
 
-    base_select = """
+    base_select = f"""
         SELECT id, doc_id, source_file, page_number, chunk_index, chunk_text,
                node_type, heading_path, node_ids, parent_id, bbox,
-               embedding::halfvec(3072) <=> %s::halfvec(3072) AS distance
+               embedding::halfvec({halfvec_dim}) <=> %s::halfvec({halfvec_dim}) AS distance
         FROM document_chunks
     """
     if doc_ids:
         cursor.execute(
-            base_select + " WHERE doc_id = ANY(%s) ORDER BY embedding::halfvec(3072) <=> %s::halfvec(3072) LIMIT %s",
+            base_select
+            + f" WHERE doc_id = ANY(%s) ORDER BY embedding::halfvec({halfvec_dim}) <=> %s::halfvec({halfvec_dim}) LIMIT %s",
             (embedding_literal, list(doc_ids), embedding_literal, top_k),
         )
     else:
         cursor.execute(
-            base_select + " ORDER BY embedding::halfvec(3072) <=> %s::halfvec(3072) LIMIT %s",
+            base_select + f" ORDER BY embedding::halfvec({halfvec_dim}) <=> %s::halfvec({halfvec_dim}) LIMIT %s",
             (embedding_literal, embedding_literal, top_k),
         )
     rows = cursor.fetchall()

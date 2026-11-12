@@ -1,7 +1,7 @@
 import re
 
 from src.core.config import settings
-from src.core.llm import get_embedding, generate_chat_response
+from src.core.llm import get_embedding, generate_cloudflare_chat, generate_cloudflare_chat_stream
 from src.retrieval.query_rewriter import rewrite_query, decompose_into_subqueries
 from src.retrieval.hybrid import hybrid_retrieve
 from src.retrieval.reranker import rerank_chunks
@@ -60,31 +60,25 @@ def _format_history(history: list) -> str:
     return "CONVERSATION SO FAR:\n" + "\n".join(lines) + "\n\n"
 
 
-def process_chat_query(
-    query: str, advanced_mode: bool = True, doc_ids: list = None, history: list = None, user_id: str = None
+def _prepare_generation(
+    query: str, advanced_mode: bool, doc_ids: list, history: list, user_id: str, request_id: str, telemetry: dict
 ) -> dict:
     """
-    RAG pipeline: query expansion -> hybrid retrieval -> rerank -> grade ->
-    compress (+ parent expansion) -> [optional single follow-up hop] -> generate.
+    Phases 1-5.5 of process_chat_query(): embedding -> cache lookup ->
+    query expansion -> hybrid retrieval -> rerank -> grade -> compress
+    (+ parent expansion, + optional follow-up hop) -> confidence gate ->
+    prompt assembly. Shared by process_chat_query() and
+    process_chat_query_stream() so the two paths can't drift apart on
+    everything up to (but not including) the actual generation call.
 
-    No hardcoded/canned answers anywhere in this pipeline. If retrieval or
-    generation fails, the pipeline reports that honestly instead of
-    returning a pre-written answer — a wrong-but-confident canned response
-    is worse than an explicit "insufficient context" reply, because it
-    fails silently on any query the fallback list wasn't written for.
-
-    doc_ids: scopes retrieval to a conversation's attached documents (up to
-    5 - see api/routers/conversations.py).
-    history: prior turns in the conversation, [{"role", "content"}, ...],
-    folded into the generation prompt so follow-ups resolve correctly.
-    user_id: the caller, used to sign each returned source's citation link
-    (see _build_sources() / src/core/security.py) - required to produce a
-    working source_token, but the pipeline still runs without it (token
-    omitted) so this isn't a breaking change for any other caller.
+    Returns {"early": True, "result": {...}} when nothing more needs to
+    happen (a cache hit, empty retrieval, or the confidence gate
+    abstaining) - the caller should return/yield that result as-is. On
+    an actual cache miss that reaches generation, returns {"early":
+    False, "prompt": ..., "query_embedding": ..., "final_context_chunks":
+    ..., "chunks_matrix_payload": ..., "sources": ..., "expanded_queries":
+    ..., "hop_count": ..., "top_score": ...} for _finalize_generation().
     """
-    request_id = new_request_id()
-    telemetry = {"request_id": request_id}
-
     # --- PHASE 1: Embedding ---
     # Computed before query expansion (reversed from the two phases'
     # natural numbering) specifically so the semantic cache lookup below
@@ -109,7 +103,7 @@ def process_chat_query(
             cached_result = dict(cached)
             cached_result["telemetry"] = {**telemetry, "cache_hit": True}
             cached_result["sources"] = _refresh_source_tokens_for_cache_hit(cached_result.get("sources", []), user_id)
-            return cached_result
+            return {"early": True, "result": cached_result}
         telemetry["cache_hit"] = False
 
     # --- PHASE 2: Query expansion ---
@@ -132,11 +126,14 @@ def process_chat_query(
                     all_candidate_chunks.append(chunk)
 
     if not all_candidate_chunks:
-        return _empty_result(
-            reply="No relevant content was found in the knowledge base for this question.",
-            thinking="Retrieval returned 0 candidates across all expanded query tracks.",
-            telemetry=telemetry,
-        )
+        return {
+            "early": True,
+            "result": _empty_result(
+                reply="No relevant content was found in the knowledge base for this question.",
+                thinking="Retrieval returned 0 candidates across all expanded query tracks.",
+                telemetry=telemetry,
+            ),
+        }
 
     # --- PHASE 4: Rerank -> grade -> compress (+ parent expansion) ---
     top_score = 0.0
@@ -169,11 +166,14 @@ def process_chat_query(
             final_context_chunks = compressed[:chunk_limit]
 
     if not final_context_chunks:
-        return _empty_result(
-            reply="Relevant chunks were found but none passed the relevance grading step.",
-            thinking="All candidates were pruned during grading/compression.",
-            telemetry=telemetry,
-        )
+        return {
+            "early": True,
+            "result": _empty_result(
+                reply="Relevant chunks were found but none passed the relevance grading step.",
+                thinking="All candidates were pruned during grading/compression.",
+                telemetry=telemetry,
+            ),
+        }
 
     # --- PHASE 4.5: Single bounded follow-up hop if context looks weak ---
     # Not an open-ended agentic loop - capped at MAX_HOPS=2 total (initial
@@ -287,18 +287,21 @@ def process_chat_query(
             user_id=user_id,
         )
         return {
-            "reply": (
-                "The indexed documents did not contain sufficiently relevant evidence to "
-                "answer this question reliably - insufficient context for a confident answer "
-                "(retrieval confidence below the configured threshold). The closest matches "
-                "found are listed in the sources below, but none were a strong enough match "
-                "to synthesize an answer from."
-            ),
-            "thinking": abstain_thinking,
-            "telemetry": telemetry,
-            "chunks_matrix": chunks_matrix_payload,
-            "sources": sources,
-            "faithfulness": {"score": None, "unsupported_claims": []},
+            "early": True,
+            "result": {
+                "reply": (
+                    "The indexed documents did not contain sufficiently relevant evidence to "
+                    "answer this question reliably - insufficient context for a confident answer "
+                    "(retrieval confidence below the configured threshold). The closest matches "
+                    "found are listed in the sources below, but none were a strong enough match "
+                    "to synthesize an answer from."
+                ),
+                "thinking": abstain_thinking,
+                "telemetry": telemetry,
+                "chunks_matrix": chunks_matrix_payload,
+                "sources": sources,
+                "faithfulness": {"score": None, "unsupported_claims": []},
+            },
         }
 
     prompt = f"""You are a technical documentation assistant. Answer the question using ONLY the information in the document chunks below.
@@ -322,9 +325,46 @@ QUESTION:
 
 ANSWER:"""
 
-    # --- PHASE 6: Generation ---
-    with traced_stage(request_id, "generation", telemetry, user_id):
-        raw_response = generate_chat_response(prompt)
+    return {
+        "early": False,
+        "prompt": prompt,
+        "query_embedding": query_embedding,
+        "final_context_chunks": final_context_chunks,
+        "chunks_matrix_payload": chunks_matrix_payload,
+        "sources": sources,
+        "expanded_queries": expanded_queries,
+        "hop_count": hop_count,
+        "top_score": top_score,
+    }
+
+
+def _finalize_generation(
+    raw_response: str,
+    prep: dict,
+    query: str,
+    advanced_mode: bool,
+    doc_ids: list,
+    history: list,
+    user_id: str,
+    request_id: str,
+    telemetry: dict,
+) -> dict:
+    """
+    Phases 6-6.6 of process_chat_query(): citation sanitization,
+    repetition-loop detection, faithfulness scoring, the faithfulness hard
+    gate, result assembly, query_log/response_cache writes. Shared by
+    process_chat_query() (raw_response is the full, already-generated
+    text) and process_chat_query_stream() (raw_response is the
+    concatenation of every chunk generate_cloudflare_chat_stream() yielded)
+    - both apply the exact same post-processing to whatever text came
+    back, regardless of how it was produced.
+    """
+    final_context_chunks = prep["final_context_chunks"]
+    chunks_matrix_payload = prep["chunks_matrix_payload"]
+    sources = prep["sources"]
+    expanded_queries = prep["expanded_queries"]
+    hop_count = prep["hop_count"]
+    top_score = prep["top_score"]
 
     final_summary = raw_response.strip()
     # The model is instructed (instruction 6 above) to cite chunk numbers
@@ -430,9 +470,89 @@ ANSWER:"""
     # failure or a faithfulness-gated withheld answer isn't cached), and
     # only on a conversation's first turn (not a history-dependent reply).
     if not history and not generation_failed and not faithfulness_gated:
-        store_cached_response(doc_ids, advanced_mode, query_embedding, result)
+        store_cached_response(doc_ids, advanced_mode, prep["query_embedding"], result)
 
     return result
+
+
+def process_chat_query(
+    query: str, advanced_mode: bool = True, doc_ids: list = None, history: list = None, user_id: str = None
+) -> dict:
+    """
+    RAG pipeline: query expansion -> hybrid retrieval -> rerank -> grade ->
+    compress (+ parent expansion) -> [optional single follow-up hop] -> generate.
+
+    No hardcoded/canned answers anywhere in this pipeline. If retrieval or
+    generation fails, the pipeline reports that honestly instead of
+    returning a pre-written answer — a wrong-but-confident canned response
+    is worse than an explicit "insufficient context" reply, because it
+    fails silently on any query the fallback list wasn't written for.
+
+    doc_ids: scopes retrieval to a conversation's attached documents (up to
+    5 - see api/routers/conversations.py).
+    history: prior turns in the conversation, [{"role", "content"}, ...],
+    folded into the generation prompt so follow-ups resolve correctly.
+    user_id: the caller, used to sign each returned source's citation link
+    (see _build_sources() / src/core/security.py) - required to produce a
+    working source_token, but the pipeline still runs without it (token
+    omitted) so this isn't a breaking change for any other caller.
+    """
+    request_id = new_request_id()
+    telemetry = {"request_id": request_id}
+
+    prep = _prepare_generation(query, advanced_mode, doc_ids, history, user_id, request_id, telemetry)
+    if prep["early"]:
+        return prep["result"]
+
+    with traced_stage(request_id, "generation", telemetry, user_id):
+        raw_response = generate_cloudflare_chat(prep["prompt"])
+
+    return _finalize_generation(
+        raw_response, prep, query, advanced_mode, doc_ids, history, user_id, request_id, telemetry
+    )
+
+
+def process_chat_query_stream(
+    query: str, advanced_mode: bool = True, doc_ids: list = None, history: list = None, user_id: str = None
+):
+    """
+    Streaming counterpart to process_chat_query(), used by the chat
+    route's SSE path (api/services/conversation_service.py) to show the
+    answer as it's generated instead of blocking on generation AND the
+    faithfulness judge call after it. Same parameters, same pipeline
+    (via the shared _prepare_generation()/_finalize_generation() helpers
+    above) - only the generation phase itself streams.
+
+    Yields {"type": "token", "text": str} for each chunk of generated
+    text as it arrives (nothing is yielded for an "early" result - cache
+    hit, empty retrieval, or confidence-gate abstention - there's no
+    partial text to stream for those), then exactly one final
+    {"type": "done", "result": {...}} carrying the same shape
+    process_chat_query() returns. If the faithfulness hard gate ends up
+    firing, "done"'s result["reply"] is the gated withheld-answer message,
+    not the streamed text - the caller is responsible for showing that
+    as a correction once "done" arrives, same as any other post-
+    generation gate in this pipeline.
+    """
+    request_id = new_request_id()
+    telemetry = {"request_id": request_id}
+
+    prep = _prepare_generation(query, advanced_mode, doc_ids, history, user_id, request_id, telemetry)
+    if prep["early"]:
+        yield {"type": "done", "result": prep["result"]}
+        return
+
+    chunks_received = []
+    with traced_stage(request_id, "generation", telemetry, user_id):
+        for piece in generate_cloudflare_chat_stream(prep["prompt"]):
+            chunks_received.append(piece)
+            yield {"type": "token", "text": piece}
+
+    raw_response = "".join(chunks_received)
+    result = _finalize_generation(
+        raw_response, prep, query, advanced_mode, doc_ids, history, user_id, request_id, telemetry
+    )
+    yield {"type": "done", "result": result}
 
 
 def _refresh_source_tokens_for_cache_hit(sources: list, user_id: str = None) -> list:
