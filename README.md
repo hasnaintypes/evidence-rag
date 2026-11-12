@@ -238,8 +238,12 @@ cp .env.example .env
 ```
 
 ```env
-STORAGE_MODE=local             # or "supabase" for Postgres+pgvector + Supabase Storage
-GEMINI_API_KEY=your-key-here
+STORAGE_MODE=local                     # or "supabase" for Postgres+pgvector + Supabase Storage
+VOYAGE_API_KEY=your-key-here           # embeddings
+CLOUDFLARE_ACCOUNT_ID=your-account-id  # every active LLM call: final answer, query rewriting,
+CLOUDFLARE_API_TOKEN=your-token-here   #   reranking, faithfulness judging, conversation titling
+GEMINI_API_KEY=unused-placeholder      # dormant unless ENABLE_ENTITY_GRAPH=true - any non-empty
+                                        #   string works, never sent to Google while it's off
 ENABLE_ENTITY_GRAPH=false
 SUPABASE_URL=https://your-project.supabase.co
 CORS_ALLOWED_ORIGINS=http://localhost:3000

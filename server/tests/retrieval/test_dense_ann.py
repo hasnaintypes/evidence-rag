@@ -1,9 +1,10 @@
 """Tests for src/storage/database.py's dense_ann_search() - specifically
 that every branch casts both sides of the `<=>` comparison to
-halfvec(3072), matching scripts/supabase_schema.sql's idx_chunks_embedding
-HNSW index. A mismatched cast on either branch means Postgres has no
-matching indexed expression and silently falls back to a full sequential
-scan instead of using the index - see #17."""
+halfvec(settings.voyage_embedding_dimension), matching
+scripts/supabase_schema.sql's idx_chunks_embedding HNSW index. A
+mismatched cast on either branch means Postgres has no matching indexed
+expression and silently falls back to a full sequential scan instead of
+using the index - see #17."""
 
 from unittest.mock import MagicMock, patch
 
@@ -31,16 +32,18 @@ def _run_with_fake_cursor(doc_ids):
 
 
 def test_the_doc_id_filtered_branch_casts_both_sides_to_halfvec():
+    dim = settings.voyage_embedding_dimension
     sql = _run_with_fake_cursor(doc_ids=["doc-1"])
-    assert "embedding::halfvec(3072) <=> %s::halfvec(3072)" in sql
+    assert f"embedding::halfvec({dim}) <=> %s::halfvec({dim})" in sql
 
 
 def test_the_unfiltered_branch_also_casts_both_sides_to_halfvec():
     """Regression test: this branch used to order by the plain
     `embedding <=> %s::vector`, which doesn't match idx_chunks_embedding's
     indexed expression and silently falls back to a sequential scan."""
+    dim = settings.voyage_embedding_dimension
     sql = _run_with_fake_cursor(doc_ids=None)
-    assert "embedding::halfvec(3072) <=> %s::halfvec(3072)" in sql
+    assert f"embedding::halfvec({dim}) <=> %s::halfvec({dim})" in sql
     assert "::vector" not in sql
 
 

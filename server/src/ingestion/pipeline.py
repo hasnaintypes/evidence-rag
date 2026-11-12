@@ -22,24 +22,25 @@ from src.core.response_cache import invalidate_doc_id
 from src.retrieval.hybrid import invalidate_index_cache
 from src.graph import build_document_graph
 
-# Batched (EMBED_BATCH_SIZE chunks per Gemini call) AND concurrent
+# Batched (EMBED_BATCH_SIZE chunks per Voyage call) AND concurrent
 # (EMBED_CONCURRENCY batches in flight at once) - one call per chunk was
 # the single biggest cost on large documents: hundreds of chunks meant
 # hundreds of network round trips, and that per-request latency, not
 # embedding compute time, was what dominated. Concurrent via a thread
-# pool since the Gemini SDK call is synchronous I/O (releases the GIL
+# pool since the Voyage SDK call is synchronous I/O (releases the GIL
 # while waiting on the socket) - no async client rewrite needed for this.
-# ponytail: fixed worker count, raise if Gemini's per-minute rate limit
-# allows more headroom than this leaves on the table.
+# ponytail: fixed worker count - Voyage's Tier 1 (a payment method added)
+# RPM/TPM is comfortably above what this leaves on the table, but without
+# one, Voyage's default limit (around 3 RPM) is well under 6 concurrent
+# requests - lower this (or add a wait/backoff in get_embeddings_batch())
+# if ingesting without a payment method on file.
 EMBED_CONCURRENCY = 6
 
-# No official per-request batch-size limit is published for the Gemini
-# Developer API's embedContent/batchEmbedContents path (only Vertex AI
-# restricts gemini-embedding-001 to one text per call, and this project
-# talks to the Developer API via an API key, not Vertex) - so this starts
-# conservative rather than guessing a large number that might 400 on an
-# oversized payload. ponytail: raise this once a larger batch size has
-# been confirmed to succeed in practice.
+# Voyage's embed() documents both a max text count AND a per-request
+# token budget per call (see docs.voyageai.com/docs/rate-limits) - this
+# starts conservative rather than guessing a batch size that might exceed
+# either for longer chunks. ponytail: raise this once a larger batch size
+# has been confirmed to succeed in practice.
 EMBED_BATCH_SIZE = 20
 
 SUPPORTED_EXTENSIONS = [".md", ".pdf", ".docx", ".xlsx", ".xls", ".csv"]

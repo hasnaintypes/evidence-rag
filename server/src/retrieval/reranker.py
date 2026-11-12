@@ -1,9 +1,10 @@
 from typing import Any, Dict, List
 
-from src.core.llm import generate_structured_response
+from src.core.llm import generate_cloudflare_json
 
 # --------------------------------------------------------------------------- #
-# LLM-based reranking (Gemini), replacing a locally-hosted cross-encoder
+# LLM-based reranking (Cloudflare Workers AI), replacing a locally-hosted
+# cross-encoder
 #
 # This used to load sentence-transformers' CrossEncoder("BAAI/bge-reranker-base")
 # in-process. That model's weights plus torch pushed the server's memory
@@ -13,12 +14,18 @@ from src.core.llm import generate_structured_response
 # ("Out of memory (used over 512Mi)"). See GitHub issue #20.
 #
 # Rather than host a second (even if smaller) local model, this reuses
-# Gemini - already configured and already called for every other LLM
-# step in this pipeline (query rewriting, generation, faithfulness
-# judging) - for one batched relevance-scoring call per rerank_chunks()
-# invocation, scoring every candidate chunk in a single request rather
-# than one call per chunk. This removes sentence-transformers/torch from
-# the dependency tree entirely.
+# whichever provider already backs every other LLM step in this
+# pipeline (query rewriting, generation, faithfulness judging - all
+# Cloudflare now, see src/core/llm.py's Cloudflare section docstring for
+# why it replaced Gemini here) - for one batched relevance-scoring call
+# per rerank_chunks() invocation, scoring every candidate chunk in a
+# single request rather than one call per chunk. This removes sentence-
+# transformers/torch from the dependency tree entirely.
+#
+# No server-enforced JSON schema (generate_cloudflare_json() - the
+# prompt below asks for the exact {"scores": [...]} shape in text, then
+# the response is regex/balanced-bracket parsed, same defensive handling
+# generate_structured_response() used to make unnecessary on Gemini).
 #
 # Score scale changed from the old cross-encoder's raw logits
 # (roughly -10..+10, clustering positive for relevant pairs) to a
@@ -32,27 +39,6 @@ from src.core.llm import generate_structured_response
 # run_eval.py pass - revisit alongside #24 once free-tier quota allows it.
 # --------------------------------------------------------------------------- #
 
-RERANK_RESPONSE_SCHEMA: Dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "scores": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "index": {"type": "integer", "description": "1-based CHUNK number from the prompt."},
-                    "relevance": {
-                        "type": "number",
-                        "description": "0.0 (not relevant) to 1.0 (directly answers the query).",
-                    },
-                },
-                "required": ["index", "relevance"],
-            },
-        }
-    },
-    "required": ["scores"],
-}
-
 RERANK_PROMPT = """You are scoring how relevant each document chunk is to a search query, for a \
 retrieval pipeline deciding which chunks to keep. Score each chunk from 0.0 \
 (not relevant / off-topic) to 1.0 (directly answers the query), based only on \
@@ -65,7 +51,10 @@ QUERY:
 CHUNKS:
 {chunks_block}
 
-Score every chunk listed above, one entry per chunk index - do not skip any."""
+Score every chunk listed above, one entry per chunk index - do not skip any.
+
+Output ONLY a JSON object of this exact shape, no other text before or after it:
+{{"scores": [{{"index": <1-based CHUNK number>, "relevance": <0.0-1.0>}}, ...]}}"""
 
 
 def _format_chunks_for_scoring(chunks: List[Dict[str, Any]]) -> str:
@@ -79,8 +68,8 @@ def _format_chunks_for_scoring(chunks: List[Dict[str, Any]]) -> str:
 def rerank_chunks(query: str, chunks: List[Dict[str, Any]], top_n: int = 4) -> List[Dict[str, Any]]:
     """
     Re-scores and re-ranks retrieved chunks by relevance to `query`, via a
-    single batched Gemini call (see module docstring for why this isn't a
-    local cross-encoder anymore).
+    single batched Cloudflare call (see module docstring for why this
+    isn't a local cross-encoder anymore).
 
     On any failure (API error, malformed/incomplete JSON) every chunk
     falls back to a 0.0 relevance score - since Python's sort is stable,
@@ -95,12 +84,12 @@ def rerank_chunks(query: str, chunks: List[Dict[str, Any]], top_n: int = 4) -> L
         return []
 
     prompt = RERANK_PROMPT.format(query=query, chunks_block=_format_chunks_for_scoring(chunks))
-    # Structured output is small per chunk (an int + a float), but a large
-    # fused candidate set (several expanded query tracks x top_k each,
-    # deduped) can still run to 20+ chunks - sized with headroom rather
-    # than the ~500-800 token budget other structured calls in this
-    # codebase use for a handful of fields.
-    result = generate_structured_response(prompt, response_schema=RERANK_RESPONSE_SCHEMA, max_tokens=2000)
+    # Output is small per chunk (an int + a float), but a large fused
+    # candidate set (several expanded query tracks x top_k each, deduped)
+    # can still run to 20+ chunks - sized with headroom rather than the
+    # ~500-800 token budget other JSON calls in this codebase use for a
+    # handful of fields.
+    result = generate_cloudflare_json(prompt, max_tokens=2000)
 
     scores_by_index: Dict[int, float] = {}
     if isinstance(result, dict) and isinstance(result.get("scores"), list):
