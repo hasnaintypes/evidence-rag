@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 from src.core.llm import generate_cloudflare_chat
 
@@ -20,7 +20,7 @@ Original question:
 Rewritten variants:"""
 
 
-def rewrite_query(original_query: str) -> List[str]:
+def rewrite_query(original_query: str, request_id: Optional[str] = None) -> List[str]:
     """
     Expands a query into multiple phrasings for multi-track hybrid
     retrieval, using the local/cloud chat model rather than a fixed
@@ -39,7 +39,9 @@ def rewrite_query(original_query: str) -> List[str]:
         # long-form answer. Without this cap the call was taking ~27s
         # on local hardware because the model had headroom to keep
         # generating well past what was actually needed.
-        raw_response = generate_cloudflare_chat(prompt, max_tokens=120)
+        raw_response = generate_cloudflare_chat(
+            prompt, max_tokens=120, operation="query_rewriting", request_id=request_id
+        )
     except Exception:
         return [original_query]
 
@@ -77,7 +79,9 @@ Original question:
 Sub-questions:"""
 
 
-def decompose_into_subqueries(original_query: str, num_subqueries: int = 2) -> List[str]:
+def decompose_into_subqueries(
+    original_query: str, num_subqueries: int = 2, request_id: Optional[str] = None
+) -> List[str]:
     """
     Splits a complex question into simpler sub-questions for a follow-up
     retrieval hop. Used only when the first retrieval pass is judged
@@ -91,7 +95,9 @@ def decompose_into_subqueries(original_query: str, num_subqueries: int = 2) -> L
 
     try:
         # Same reasoning as rewrite_query - short, bounded output expected.
-        raw_response = generate_cloudflare_chat(prompt, max_tokens=120)
+        raw_response = generate_cloudflare_chat(
+            prompt, max_tokens=120, operation="query_decomposition", request_id=request_id
+        )
     except Exception:
         return []
 

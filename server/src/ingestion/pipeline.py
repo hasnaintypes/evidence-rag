@@ -252,7 +252,7 @@ def finish_ingest(
 
     def _embed_batch(batch: List[Dict[str, Any]]) -> List[tuple]:
         nonlocal indexed_count
-        embeddings = get_embeddings_batch([item["chunk_text"] for item in batch])
+        embeddings = get_embeddings_batch([item["chunk_text"] for item in batch], operation="document_ingestion")
         with count_lock:
             indexed_count += len(batch)
         return list(zip(batch, embeddings))

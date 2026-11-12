@@ -83,7 +83,10 @@ def extract_entities_batch(texts: List[str]) -> List[List[str]]:
     # section's entity array; sized with headroom per section here since
     # a batch call also repeats the {index, entities} wrapper per entry.
     result = generate_structured_response(
-        prompt, response_schema=GRAPH_RESPONSE_SCHEMA, max_tokens=max(300, 200 * len(texts))
+        prompt,
+        response_schema=GRAPH_RESPONSE_SCHEMA,
+        max_tokens=max(300, 200 * len(texts)),
+        operation="entity_extraction",
     )
 
     entities_by_index: Dict[int, List[str]] = {}

@@ -54,7 +54,9 @@ def _format_chunks_for_judge(context_chunks: List[Dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
-def score_faithfulness(answer: str, context_chunks: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def score_faithfulness(
+    answer: str, context_chunks: List[Dict[str, Any]], request_id: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
     """
     Judges whether `answer` is faithful to `context_chunks` using a second,
     cheap Cloudflare call, with the JSON shape asked for in the prompt and
@@ -75,7 +77,7 @@ def score_faithfulness(answer: str, context_chunks: List[Dict[str, Any]]) -> Opt
     context_text = _format_chunks_for_judge(context_chunks)
     prompt = FAITHFULNESS_JUDGE_PROMPT.format(context=context_text, answer=answer.strip())
 
-    result = generate_cloudflare_json(prompt, max_tokens=500)
+    result = generate_cloudflare_json(prompt, max_tokens=500, operation="faithfulness_judging", request_id=request_id)
     if not isinstance(result, dict):
         return None
 

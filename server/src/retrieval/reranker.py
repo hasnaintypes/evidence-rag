@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from src.core.llm import generate_cloudflare_json
 
@@ -65,7 +65,9 @@ def _format_chunks_for_scoring(chunks: List[Dict[str, Any]]) -> str:
     return "\n\n".join(parts)
 
 
-def rerank_chunks(query: str, chunks: List[Dict[str, Any]], top_n: int = 4) -> List[Dict[str, Any]]:
+def rerank_chunks(
+    query: str, chunks: List[Dict[str, Any]], top_n: int = 4, request_id: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """
     Re-scores and re-ranks retrieved chunks by relevance to `query`, via a
     single batched Cloudflare call (see module docstring for why this
@@ -89,7 +91,7 @@ def rerank_chunks(query: str, chunks: List[Dict[str, Any]], top_n: int = 4) -> L
     # can still run to 20+ chunks - sized with headroom rather than the
     # ~500-800 token budget other JSON calls in this codebase use for a
     # handful of fields.
-    result = generate_cloudflare_json(prompt, max_tokens=2000)
+    result = generate_cloudflare_json(prompt, max_tokens=2000, operation="reranking", request_id=request_id)
 
     scores_by_index: Dict[int, float] = {}
     if isinstance(result, dict) and isinstance(result.get("scores"), list):
