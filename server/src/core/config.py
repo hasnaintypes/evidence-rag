@@ -35,6 +35,44 @@ class Settings(BaseSettings):
     # WARNING default regardless of this value, so raising this to DEBUG
     # won't flood the logs with e.g. httpx/google-genai request noise.
     log_level: str = "INFO"
+    # Free-text label stamped onto every structured log event's
+    # "environment" field (see src/core/logging_config.py) - not used for
+    # branching behavior anywhere, purely so a centralized log viewer
+    # (once Phase 7's production exporter is turned on) can filter
+    # dev/staging/prod traffic apart.
+    environment: str = "development"
+    # --- Structured logging / observability (src/core/logging_config.py,
+    # src/core/ai_tracker.py) ---
+    # "json" for machine-readable JSONL (what the file sinks below always
+    # use regardless of this setting); "console" for a human-readable
+    # colorized renderer on stdout/stderr during local development.
+    log_format: str = "console"
+    log_to_console: bool = True
+    log_to_file: bool = True
+    # Relative paths resolve against the process cwd (normally server/),
+    # same convention as STORAGE_MODE=local's sqlite/file paths.
+    log_directory: str = "./logs"
+    log_max_file_size_mb: int = 20
+    log_retention_days: int = 7
+    # Per-category kill switches so a deployment that doesn't want the
+    # (lower-cardinality but still real) overhead of per-AI-call logging,
+    # or the end-of-request summary line, can turn either off without
+    # touching LOG_LEVEL.
+    log_ai_invocations: bool = True
+    log_chat_summaries: bool = True
+    # --- Production log export (Better Stack Telemetry - see
+    # CLAUDE.md's Observability section for why this provider was
+    # chosen and src/core/logging_config.py for the exporter itself).
+    # Disabled by default: leaving BETTER_STACK_SOURCE_TOKEN unset means
+    # this app never makes a single outbound call to Better Stack, same
+    # "lazily configured, no error without credentials" posture as
+    # cloudflare_account_id/cloudflare_api_token above. Get a source
+    # token by creating a Logs source in the Better Stack dashboard
+    # (Telemetry -> Sources -> Connect source) after you've reviewed the
+    # free-tier limits (3GB/3 days as of this writing - verify current
+    # numbers at betterstack.com/pricing before relying on them).
+    better_stack_source_token: str = ""
+    better_stack_ingesting_host: str = "in.logs.betterstack.com"
     top_k: int = 3
     chunk_size_tokens: int = 200
     chunk_overlap_tokens: int = 40

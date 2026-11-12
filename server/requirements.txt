@@ -40,6 +40,15 @@ psycopg2-binary==2.9.9
 # own pyjwt[crypto] requirement, pulled in transitively via the supabase package)
 PyJWT[crypto]==2.12.0
 
+# Observability (src/core/logging_config.py, src/core/ai_tracker.py) -
+# structlog wraps the existing stdlib "evidence_rag.*" logger tree (no
+# call-site rewrite needed) to emit structured JSON events;
+# concurrent-log-handler rotates logs/*.jsonl safely even if this process
+# is ever run with multiple workers (plain RotatingFileHandler is not
+# safe for that - see logging_config.py's docstring).
+structlog==24.4.0
+concurrent-log-handler==0.9.25
+
 # Dev / test
 pytest==8.3.3
 httpx==0.28.1
