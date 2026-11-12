@@ -13,6 +13,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("GEMINI_API_KEY", "test-key-not-a-real-credential")
 os.environ.setdefault("VOYAGE_API_KEY", "test-key-not-a-real-credential")
 
+# LOG_TO_FILE defaults to true (src/core/config.py) for real local dev, but
+# api/app.py calls configure_logging() at *import* time - before any
+# per-test fixture below gets a chance to monkeypatch settings - so without
+# this, every test run that imports api.app (most of tests/api/) would
+# write real files into server/logs/ on the developer's own machine.
+# test_logging_config.py covers the actual file-writing/routing behavior
+# directly, with its own tmp_path-based LOG_DIRECTORY override, so nothing
+# here loses coverage by disabling file output for the rest of the suite.
+os.environ.setdefault("LOG_TO_FILE", "false")
+
 import pytest  # noqa: E402
 
 from src.core.config import settings  # noqa: E402

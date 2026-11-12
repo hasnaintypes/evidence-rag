@@ -46,7 +46,7 @@ Unrelated paragraph content, also long enough to survive chunking as a block.
     return _write_md(tmp_path, content=content)
 
 
-def _fake_embedding_batch(texts):
+def _fake_embedding_batch(texts, **kwargs):
     return [[0.0] * 8 for _ in texts]
 
 
