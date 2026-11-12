@@ -40,6 +40,7 @@ skills-lock.json
 # Local-only design exploration prototypes - never for the repo (see
 # design-preview/evidencerag-redesign/DESIGN_REVIEW.md)
 design-preview/
+prototypes/
 
 # Logs
 *.logconfig.env
