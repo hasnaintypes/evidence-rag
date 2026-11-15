@@ -15,15 +15,15 @@ from src.core.config import settings
 
 
 @pytest.fixture(autouse=True)
-def _reset_cloudflare_module_state():
-    """_cloudflare_client/_cloudflare_cooldown_until are process-global
-    (see llm.py's Cloudflare section) so a cooldown or cached client set
+def _reset_llm_module_state():
+    """_llm_client/_llm_cooldown_until are process-global
+    (see llm.py's chat-generation section) so a cooldown or cached client set
     by one test must never leak into another."""
-    llm._cloudflare_client = None
-    llm._cloudflare_cooldown_until = 0.0
+    llm._llm_client = None
+    llm._llm_cooldown_until = 0.0
     yield
-    llm._cloudflare_client = None
-    llm._cloudflare_cooldown_until = 0.0
+    llm._llm_client = None
+    llm._llm_cooldown_until = 0.0
 
 
 class _FakeResponse:
@@ -378,9 +378,9 @@ def test_generate_chat_response_logs_the_quota_skip_reason(monkeypatch, caplog):
     assert any("quota/rate-limit" in record.message for record in caplog.records)
 
 
-# --- generate_cloudflare_chat / generate_cloudflare_chat_stream (Cloudflare Workers AI) ---
+# --- generate_llm_chat / generate_llm_chat_stream (configured LLM endpoint) ---
 # query_pipeline.py's final RAG answer generation only - see llm.py's
-# Cloudflare section docstring. Everything else (query rewriting,
+# chat-generation section docstring. Everything else (query rewriting,
 # reranking, judging, entity graph, titling) stays on Gemini and is
 # covered by the tests above.
 
@@ -399,46 +399,47 @@ def _fake_stream_chunks(*texts):
         yield MagicMock(choices=[choice])
 
 
-def _configure_cloudflare(monkeypatch):
-    monkeypatch.setattr(settings, "cloudflare_account_id", "test-account")
-    monkeypatch.setattr(settings, "cloudflare_api_token", "test-token")
+def _configure_llm(monkeypatch):
+    monkeypatch.setattr(settings, "llm_base_url", "https://test.invalid/v1")
+    monkeypatch.setattr(settings, "llm_api_key", "test-key")
+    monkeypatch.setattr(settings, "llm_model", "test-model")
 
 
-def test_generate_cloudflare_chat_returns_an_honest_error_when_not_configured(monkeypatch):
-    monkeypatch.setattr(settings, "cloudflare_account_id", "")
-    monkeypatch.setattr(settings, "cloudflare_api_token", "")
-    result = llm.generate_cloudflare_chat("some prompt")
+def test_generate_llm_chat_returns_an_honest_error_when_not_configured(monkeypatch):
+    monkeypatch.setattr(settings, "llm_base_url", "")
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    result = llm.generate_llm_chat("some prompt")
     assert "error during generation" in result.lower()
     assert "not configured" in result.lower()
 
 
-def test_generate_cloudflare_chat_returns_the_model_text_on_success(monkeypatch):
-    _configure_cloudflare(monkeypatch)
+def test_generate_llm_chat_returns_the_model_text_on_success(monkeypatch):
+    _configure_llm(monkeypatch)
     fake_client = MagicMock()
     fake_client.chat.completions.create.return_value = _fake_completion("the answer")
 
-    with patch.object(llm, "_cloudflare_client_or_raise", return_value=fake_client):
-        result = llm.generate_cloudflare_chat("some prompt")
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_chat("some prompt")
 
     assert result == "the answer"
     call_kwargs = fake_client.chat.completions.create.call_args.kwargs
-    assert call_kwargs["model"] == settings.cloudflare_model
+    assert call_kwargs["model"] == settings.llm_model
     assert call_kwargs["stream"] is False
 
 
-def test_generate_cloudflare_chat_reports_an_empty_response_honestly(monkeypatch):
-    _configure_cloudflare(monkeypatch)
+def test_generate_llm_chat_reports_an_empty_response_honestly(monkeypatch):
+    _configure_llm(monkeypatch)
     fake_client = MagicMock()
     fake_client.chat.completions.create.return_value = _fake_completion(None)
 
-    with patch.object(llm, "_cloudflare_client_or_raise", return_value=fake_client):
-        result = llm.generate_cloudflare_chat("some prompt")
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_chat("some prompt")
 
     assert "error during generation" in result.lower()
 
 
-def test_generate_cloudflare_chat_starts_a_cooldown_on_a_429_and_reports_honestly(monkeypatch):
-    _configure_cloudflare(monkeypatch)
+def test_generate_llm_chat_starts_a_cooldown_on_a_429_and_reports_honestly(monkeypatch):
+    _configure_llm(monkeypatch)
     request = httpx.Request("POST", "https://example.com")
     response = httpx.Response(429, headers={"retry-after": "5"}, request=request)
     fake_client = MagicMock()
@@ -446,29 +447,29 @@ def test_generate_cloudflare_chat_starts_a_cooldown_on_a_429_and_reports_honestl
         "rate limited", response=response, body=None
     )
 
-    with patch.object(llm, "_cloudflare_client_or_raise", return_value=fake_client):
-        result = llm.generate_cloudflare_chat("some prompt")
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_chat("some prompt")
 
     assert "error during generation" in result.lower()
-    assert llm._cloudflare_cooldown_remaining() > 0
+    assert llm._llm_cooldown_remaining() > 0
 
 
-def test_generate_cloudflare_chat_skips_the_request_entirely_during_a_cooldown(monkeypatch):
-    _configure_cloudflare(monkeypatch)
-    llm._start_cloudflare_cooldown(30.0)
+def test_generate_llm_chat_skips_the_request_entirely_during_a_cooldown(monkeypatch):
+    _configure_llm(monkeypatch)
+    llm._start_llm_cooldown(30.0)
     fake_client = MagicMock()
 
-    with patch.object(llm, "_cloudflare_client_or_raise", return_value=fake_client):
-        result = llm.generate_cloudflare_chat("some prompt")
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_chat("some prompt")
 
     assert "error during generation" in result.lower()
     assert "cooling down" in result.lower()
     fake_client.chat.completions.create.assert_not_called()
 
 
-def test_generate_cloudflare_chat_retries_a_transient_failure_before_succeeding(monkeypatch):
-    _configure_cloudflare(monkeypatch)
-    monkeypatch.setattr(llm, "CLOUDFLARE_MAX_TRANSIENT_RETRIES", 1)
+def test_generate_llm_chat_retries_a_transient_failure_before_succeeding(monkeypatch):
+    _configure_llm(monkeypatch)
+    monkeypatch.setattr(llm, "LLM_MAX_TRANSIENT_RETRIES", 1)
     request = httpx.Request("POST", "https://example.com")
     fake_client = MagicMock()
     fake_client.chat.completions.create.side_effect = [
@@ -476,38 +477,38 @@ def test_generate_cloudflare_chat_retries_a_transient_failure_before_succeeding(
         _fake_completion("recovered answer"),
     ]
 
-    with patch.object(llm, "_cloudflare_client_or_raise", return_value=fake_client), patch("time.sleep"):
-        result = llm.generate_cloudflare_chat("some prompt")
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client), patch("time.sleep"):
+        result = llm.generate_llm_chat("some prompt")
 
     assert result == "recovered answer"
     assert fake_client.chat.completions.create.call_count == 2
 
 
-def test_generate_cloudflare_chat_stream_yields_each_chunk_in_order(monkeypatch):
-    _configure_cloudflare(monkeypatch)
+def test_generate_llm_chat_stream_yields_each_chunk_in_order(monkeypatch):
+    _configure_llm(monkeypatch)
     fake_client = MagicMock()
     fake_client.chat.completions.create.return_value = _fake_stream_chunks("Hello ", "world")
 
-    with patch.object(llm, "_cloudflare_client_or_raise", return_value=fake_client):
-        result = list(llm.generate_cloudflare_chat_stream("some prompt"))
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = list(llm.generate_llm_chat_stream("some prompt"))
 
     assert result == ["Hello ", "world"]
     assert fake_client.chat.completions.create.call_args.kwargs["stream"] is True
 
 
-def test_generate_cloudflare_chat_stream_reports_honest_failure_before_any_output(monkeypatch):
-    _configure_cloudflare(monkeypatch)
+def test_generate_llm_chat_stream_reports_honest_failure_before_any_output(monkeypatch):
+    _configure_llm(monkeypatch)
     fake_client = MagicMock()
     fake_client.chat.completions.create.side_effect = RuntimeError("boom")
 
-    with patch.object(llm, "_cloudflare_client_or_raise", return_value=fake_client):
-        result = list(llm.generate_cloudflare_chat_stream("some prompt"))
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = list(llm.generate_llm_chat_stream("some prompt"))
 
     assert len(result) == 1
     assert "error during generation" in result[0].lower()
 
 
-def test_generate_cloudflare_chat_stream_does_not_append_an_error_after_partial_output():
+def test_generate_llm_chat_stream_does_not_append_an_error_after_partial_output():
     """Once real text has streamed, a later failure must not glue a
     fabricated error sentinel onto the end of it."""
 
@@ -518,16 +519,16 @@ def test_generate_cloudflare_chat_stream_does_not_append_an_error_after_partial_
     fake_client = MagicMock()
     fake_client.chat.completions.create.return_value = fake_stream()
 
-    with patch.object(llm, "_cloudflare_client_or_raise", return_value=fake_client):
-        result = list(llm.generate_cloudflare_chat_stream("some prompt"))
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = list(llm.generate_llm_chat_stream("some prompt"))
 
     assert result == ["partial text"]
 
 
-# --- generate_cloudflare_json / _extract_json_block --------------------------
+# --- generate_llm_json / _extract_json_block --------------------------
 # Used by reranker.py, judge.py, and conversation_service.py's title
 # generation now that none of them get a server-enforced schema from
-# Cloudflare - the prompt asks for JSON in text, this parses it back out.
+# the configured LLM endpoint - the prompt asks for JSON in text, this parses it back out.
 
 
 def test_extract_json_block_finds_a_simple_object():
@@ -555,65 +556,65 @@ def test_extract_json_block_returns_none_when_no_json_present():
     assert llm._extract_json_block("no json here at all") is None
 
 
-def test_generate_cloudflare_json_returns_the_parsed_dict_on_success(monkeypatch):
-    _configure_cloudflare(monkeypatch)
+def test_generate_llm_json_returns_the_parsed_dict_on_success(monkeypatch):
+    _configure_llm(monkeypatch)
     fake_client = MagicMock()
     fake_client.chat.completions.create.return_value = _fake_completion('{"score": 0.8, "unsupported_claims": []}')
 
-    with patch.object(llm, "_cloudflare_client_or_raise", return_value=fake_client):
-        result = llm.generate_cloudflare_json("some prompt")
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_json("some prompt")
 
     assert result == {"score": 0.8, "unsupported_claims": []}
 
 
-def test_generate_cloudflare_json_parses_json_with_stray_text_around_it(monkeypatch):
-    _configure_cloudflare(monkeypatch)
+def test_generate_llm_json_parses_json_with_stray_text_around_it(monkeypatch):
+    _configure_llm(monkeypatch)
     fake_client = MagicMock()
     fake_client.chat.completions.create.return_value = _fake_completion(
         'Here is the result:\n{"title": "A Title"}\nLet me know if you need anything else.'
     )
 
-    with patch.object(llm, "_cloudflare_client_or_raise", return_value=fake_client):
-        result = llm.generate_cloudflare_json("some prompt")
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_json("some prompt")
 
     assert result == {"title": "A Title"}
 
 
-def test_generate_cloudflare_json_returns_none_on_an_empty_response(monkeypatch):
-    _configure_cloudflare(monkeypatch)
+def test_generate_llm_json_returns_none_on_an_empty_response(monkeypatch):
+    _configure_llm(monkeypatch)
     fake_client = MagicMock()
     fake_client.chat.completions.create.return_value = _fake_completion(None)
 
-    with patch.object(llm, "_cloudflare_client_or_raise", return_value=fake_client):
-        result = llm.generate_cloudflare_json("some prompt")
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_json("some prompt")
 
     assert result is None
 
 
-def test_generate_cloudflare_json_returns_none_when_no_json_block_is_found(monkeypatch):
-    _configure_cloudflare(monkeypatch)
+def test_generate_llm_json_returns_none_when_no_json_block_is_found(monkeypatch):
+    _configure_llm(monkeypatch)
     fake_client = MagicMock()
     fake_client.chat.completions.create.return_value = _fake_completion("I'm not sure how to answer that.")
 
-    with patch.object(llm, "_cloudflare_client_or_raise", return_value=fake_client):
-        result = llm.generate_cloudflare_json("some prompt")
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_json("some prompt")
 
     assert result is None
 
 
-def test_generate_cloudflare_json_returns_none_on_invalid_json(monkeypatch):
-    _configure_cloudflare(monkeypatch)
+def test_generate_llm_json_returns_none_on_invalid_json(monkeypatch):
+    _configure_llm(monkeypatch)
     fake_client = MagicMock()
     fake_client.chat.completions.create.return_value = _fake_completion('{"score": 0.8,}')
 
-    with patch.object(llm, "_cloudflare_client_or_raise", return_value=fake_client):
-        result = llm.generate_cloudflare_json("some prompt")
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_json("some prompt")
 
     assert result is None
 
 
-def test_generate_cloudflare_json_returns_none_when_not_configured(monkeypatch):
-    monkeypatch.setattr(settings, "cloudflare_account_id", "")
-    monkeypatch.setattr(settings, "cloudflare_api_token", "")
-    result = llm.generate_cloudflare_json("some prompt")
+def test_generate_llm_json_returns_none_when_not_configured(monkeypatch):
+    monkeypatch.setattr(settings, "llm_base_url", "")
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    result = llm.generate_llm_json("some prompt")
     assert result is None

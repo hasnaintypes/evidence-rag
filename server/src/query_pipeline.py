@@ -1,7 +1,7 @@
 import re
 
 from src.core.config import settings
-from src.core.llm import get_embedding, generate_cloudflare_chat, generate_cloudflare_chat_stream
+from src.core.llm import get_embedding, generate_llm_chat, generate_llm_chat_stream
 from src.retrieval.query_rewriter import rewrite_query, decompose_into_subqueries
 from src.retrieval.hybrid import hybrid_retrieve
 from src.retrieval.reranker import rerank_chunks
@@ -361,7 +361,7 @@ def _finalize_generation(
     gate, result assembly, query_log/response_cache writes. Shared by
     process_chat_query() (raw_response is the full, already-generated
     text) and process_chat_query_stream() (raw_response is the
-    concatenation of every chunk generate_cloudflare_chat_stream() yielded)
+    concatenation of every chunk generate_llm_chat_stream() yielded)
     - both apply the exact same post-processing to whatever text came
     back, regardless of how it was produced.
     """
@@ -525,9 +525,7 @@ def process_chat_query(
             return result
 
         with traced_stage(request_id, "generation", telemetry, user_id):
-            raw_response = generate_cloudflare_chat(
-                prep["prompt"], operation="answer_generation", request_id=request_id
-            )
+            raw_response = generate_llm_chat(prep["prompt"], operation="answer_generation", request_id=request_id)
 
         result = _finalize_generation(
             raw_response, prep, query, advanced_mode, doc_ids, history, user_id, request_id, telemetry
@@ -577,9 +575,7 @@ def process_chat_query_stream(
 
         chunks_received = []
         with traced_stage(request_id, "generation", telemetry, user_id):
-            for piece in generate_cloudflare_chat_stream(
-                prep["prompt"], operation="answer_generation", request_id=request_id
-            ):
+            for piece in generate_llm_chat_stream(prep["prompt"], operation="answer_generation", request_id=request_id):
                 chunks_received.append(piece)
                 # Still appended above (so _finalize_generation's
                 # "error during generation" substring check below still

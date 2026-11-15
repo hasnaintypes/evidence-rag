@@ -99,7 +99,7 @@ parent-section reconstruction (`retrieval/compression.py`) → an adaptive conte
 based on top score) → a **confidence gate**: below `RETRIEVAL_CONFIDENCE_THRESHOLD` the pipeline
 abstains instead of generating, returning the closest chunks as `sources` with no synthesized claim →
 if confident but a follow-up looks warranted, **one bounded additional retrieval hop** (never an
-open-ended loop) → grounded generation (`generate_cloudflare_chat()`/`generate_cloudflare_chat_stream()`,
+open-ended loop) → grounded generation (`generate_llm_chat()`/`generate_llm_chat_stream()`,
 `server/src/core/llm.py`) → faithfulness scoring (`evaluation/judge.py`, a second cheap LLM call
 checking the answer against its own cited chunks) → **faithfulness hard gate**: below
 `FAITHFULNESS_GATE_THRESHOLD` the generated answer is withheld and replaced with an explicit "did not
@@ -109,10 +109,17 @@ in "advanced mode" — naive mode skips reranking entirely and always attempts a
 faithfulness gate runs in both modes, since the judge call doesn't depend on reranking.
 
 **Every LLM call in this flow — query rewriting, reranking, judging, and the final answer — runs on
-Cloudflare Workers AI, not Gemini.** Gemini's free-tier quota repeatedly exhausted every candidate in
-its own fallback chain during real use (both for the final answer and for the comparatively light
-judge/reranker/title calls), so the whole active call surface moved to Cloudflare's free tier (300 RPM,
-10,000 Neurons/day, no payment method required). The only code that still calls Gemini is `src/graph.py`'s
+a configured OpenAI-compatible endpoint (`LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL`), not Gemini.**
+Gemini's free-tier quota repeatedly exhausted every candidate in its own fallback chain during real
+use (both for the final answer and for the comparatively light judge/reranker/title calls), so the
+whole active call surface moved off Gemini's native SDK onto the `openai` SDK client pointed at
+whichever OpenAI-compatible Chat Completions server is configured — Cloudflare Workers AI's free tier
+(300 RPM, 10,000 Neurons/day, no payment method required) was this project's original choice, but
+Gemini's own OpenAI-compatible endpoint (`generativelanguage.googleapis.com/v1beta/openai/`, reusing
+the same `GEMINI_API_KEY`) or any other OpenAI-compatible server (a self-hosted vLLM/Ollama instance,
+OpenRouter, a personal gateway) works identically, since it's the same client/retry/cooldown/tracking
+code regardless of which endpoint `LLM_BASE_URL` points at. The only code that still calls Gemini's
+native SDK directly (not through this OpenAI-compatible path) is `src/graph.py`'s
 entity-graph extraction (**disabled by default** via `ENABLE_ENTITY_GRAPH` — see below) and
 `scripts/test_connection.py`'s connectivity check; `GEMINI_API_KEY` is still a required setting but only
 needs to be any non-empty placeholder string if entity graph stays off, since `google-genai`'s client
@@ -134,25 +141,25 @@ Action, `pg_cron`) depends on deployment specifics this project doesn't hardcode
 `POST /conversations/{id}/messages` and `POST /upload` additionally sit behind
 `src/core/rate_limiter.py`'s per-user sliding-window limiter (`api/deps.py`'s
 `get_rate_limited_chat_user`/`get_rate_limited_upload_user`), so a single client can't exhaust the
-app's Cloudflare quota through repeated requests (#15). Both are in-memory/per-process, same
-limitation as `response_cache.py`/`hybrid.py`'s index cache below.
+app's configured LLM endpoint's quota through repeated requests (#15). Both are in-memory/per-process,
+same limitation as `response_cache.py`/`hybrid.py`'s index cache below.
 
-`src/core/llm.py` has three Cloudflare functions covering every active call path:
-`generate_cloudflare_chat()`/`generate_cloudflare_chat_stream()` for free text (the final RAG answer,
-query rewriting/decomposition) and `generate_cloudflare_json()` for JSON-shaped output (reranking,
-judging, title generation). The latter has no server-enforced schema — Cloudflare's OpenAI-compatible
-endpoint doesn't document reliable JSON-mode support across models — so the prompt itself asks for
-JSON text and the response is parsed defensively (`_extract_json_block()`: the first balanced
+`src/core/llm.py` has three functions covering every active call path against the configured
+OpenAI-compatible endpoint: `generate_llm_chat()`/`generate_llm_chat_stream()` for free text (the
+final RAG answer, query rewriting/decomposition) and `generate_llm_json()` for JSON-shaped output
+(reranking, judging, title generation). The latter has no server-enforced schema — not every
+OpenAI-compatible endpoint documents reliable JSON-mode support across models — so the prompt itself
+asks for JSON text and the response is parsed defensively (`_extract_json_block()`: the first balanced
 `{...}`/`[...]` block, tolerant of stray text around it, `None` on any parse failure so the caller
-degrades gracefully). All three share one call path (`_cloudflare_chat_completion()`) with a
-process-local cooldown that activates on an HTTP 429 (honoring `Retry-After` when Cloudflare sends
-one) and is cleared, not retried, until it expires — deliberately not a blind "retry every candidate
-every time" loop, since this project watched exactly that pattern burn several minutes retrying two
+degrades gracefully). All three share one call path (`_llm_chat_completion()`) with a process-local
+cooldown that activates on an HTTP 429 (honoring `Retry-After` when the endpoint sends one) and is
+cleared, not retried, until it expires — deliberately not a blind "retry every candidate every time"
+loop, since this project watched exactly that pattern burn several minutes retrying two
 already-exhausted Gemini models on every single call during a reingest. A transient (non-429) failure
 gets a small number of retries with exponential backoff + jitter instead. Lazily configured (no error
 at import time without credentials) so the rest of the app, including every test in this repo, boots
-and runs without `CLOUDFLARE_ACCOUNT_ID`/`CLOUDFLARE_API_TOKEN` set — only an actual call raises, with
-a specific "not configured" message, if they're missing.
+and runs without `LLM_BASE_URL`/`LLM_API_KEY` set — only an actual call raises, with a specific "not
+configured" message, if they're missing.
 
 The Gemini-backed functions above these (`generate_chat_response()`/`generate_structured_response()`)
 still exist, walking a configured chat-model chain until one succeeds (`GEMINI_CHAT_MODEL`/
@@ -194,14 +201,14 @@ rotated-backup age (`LOG_RETENTION_DAYS`) once at startup. `logs/` is gitignored
 category `.gitkeep` files are committed.
 
 `src/core/ai_tracker.py`'s `track_ai_call()` wraps every real AI/embedding call site in `llm.py`
-(Voyage's `get_embedding()`/`get_embeddings_batch()`, the shared Cloudflare transport
-`_cloudflare_chat_completion()` behind `generate_cloudflare_chat()`/`_stream()`/`_json()`, and the
+(Voyage's `get_embedding()`/`get_embeddings_batch()`, the shared transport
+`_llm_chat_completion()` behind `generate_llm_chat()`/`_stream()`/`_json()`, and the
 dormant Gemini `generate_chat_response()`/`generate_structured_response()` chain) with one
 `ai.invocation.*` event per *logical* call, tagged with an `operation` string each caller passes
 explicitly (`"answer_generation"`, `"query_rewriting"`, `"reranking"`, `"faithfulness_judging"`,
 `"title_generation"`, `"entity_extraction"`, `"document_ingestion"`, …) — this is what distinguishes
-otherwise-identical-looking Cloudflare calls in the log. A separate `ai.http_attempt` event fires per
-*actual* outbound HTTP attempt (every retry in `_cloudflare_chat_completion()`'s bounded backoff loop,
+otherwise-identical-looking LLM calls in the log. A separate `ai.http_attempt` event fires per
+*actual* outbound HTTP attempt (every retry in `_llm_chat_completion()`'s bounded backoff loop,
 every candidate in the Gemini fallback chain), so "1 logical invocation → N HTTP attempts" is visible
 instead of collapsed into a single pass/fail line. Token usage is only ever reported from a provider's
 own response (`response.usage`) — never estimated or fabricated; Voyage's `embed()` doesn't return

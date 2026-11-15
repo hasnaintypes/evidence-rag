@@ -80,10 +80,10 @@ def test_send_message_returns_the_real_reply_on_success(client, app):
     # This conversation's history is empty, so it's a first turn - the
     # title-generation BackgroundTask fires within this same call (see
     # test_send_message_returns_llm_generated_title_on_first_turn_only),
-    # so it needs mocking too or this would make a real Cloudflare call.
+    # so it needs mocking too or this would make a real LLM call.
     with (
         patch("api.services.conversation_service.process_chat_query", return_value=fake_result),
-        patch("api.services.conversation_service.generate_cloudflare_json", return_value=None),
+        patch("api.services.conversation_service.generate_llm_json", return_value=None),
     ):
         response = client.post(f"/conversations/{conversation_id}/messages", json={"message": "hello"})
 
@@ -111,7 +111,7 @@ def test_send_message_returns_llm_generated_title_on_first_turn_only(client, app
     with (
         patch("api.services.conversation_service.process_chat_query", return_value=fake_result),
         patch(
-            "api.services.conversation_service.generate_cloudflare_json",
+            "api.services.conversation_service.generate_llm_json",
             return_value={"title": "Retention Drivers This Quarter"},
         ),
     ):
@@ -152,7 +152,7 @@ def test_send_message_falls_back_to_truncated_title_when_llm_call_fails(client, 
     }
     with (
         patch("api.services.conversation_service.process_chat_query", return_value=fake_result),
-        patch("api.services.conversation_service.generate_cloudflare_json", return_value=None),
+        patch("api.services.conversation_service.generate_llm_json", return_value=None),
     ):
         response = client.post(f"/conversations/{conversation_id}/messages", json={"message": "a fresh question"})
 
@@ -186,13 +186,13 @@ def test_send_message_stream_yields_tokens_then_a_done_event_with_the_real_reply
     # This conversation's history is empty, so it's a first turn - the
     # title-generation call that fires inline after "done" (see
     # test_send_message_stream_generates_a_title_on_first_turn_only) needs
-    # mocking here too, or this test would make a real Cloudflare call.
+    # mocking here too, or this test would make a real LLM call.
     with (
         patch(
             "api.services.conversation_service.process_chat_query_stream",
             side_effect=lambda *args, **kwargs: _fake_stream_events(),
         ),
-        patch("api.services.conversation_service.generate_cloudflare_json", return_value=None),
+        patch("api.services.conversation_service.generate_llm_json", return_value=None),
     ):
         response = client.post(f"/conversations/{conversation_id}/messages/stream", json={"message": "hello"})
 
@@ -238,7 +238,7 @@ def test_send_message_stream_generates_a_title_on_first_turn_only(client, app):
             side_effect=lambda *args, **kwargs: _fake_stream_events(),
         ),
         patch(
-            "api.services.conversation_service.generate_cloudflare_json",
+            "api.services.conversation_service.generate_llm_json",
             return_value={"title": "Retention Drivers This Quarter"},
         ),
     ):

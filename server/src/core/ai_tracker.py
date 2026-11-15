@@ -12,8 +12,8 @@ from src.core.config import settings
 #
 # Every real LLM/embedding call this app makes already runs through one of
 # three functions in src/core/llm.py: get_embedding()/get_embeddings_batch()
-# (Voyage), _cloudflare_chat_completion() (the shared transport behind
-# generate_cloudflare_chat()/_stream()/_json() - query rewriting, reranking,
+# (Voyage), _llm_chat_completion() (the shared transport behind
+# generate_llm_chat()/_stream()/_json() - query rewriting, reranking,
 # judging, titling, the final answer), and generate_chat_response()/
 # generate_structured_response() (Gemini, only src/graph.py's entity graph
 # and scripts/test_connection.py). track_ai_call() wraps each of those call
@@ -22,8 +22,8 @@ from src.core.config import settings
 # logging_config.py routes that logger to logs/ai/invocations.jsonl.
 #
 # "Logical invocation" vs "actual HTTP attempt" is a real distinction this
-# app already has retry logic for: _cloudflare_chat_completion() loops up
-# to CLOUDFLARE_MAX_TRANSIENT_RETRIES+1 times on a transient failure before
+# app already has retry logic for: _llm_chat_completion() loops up
+# to LLM_MAX_TRANSIENT_RETRIES+1 times on a transient failure before
 # giving up, and the Gemini functions walk a multi-model fallback chain.
 # track_ai_call() yields an AICallSpan the caller marks every attempt on
 # (log_attempt()) so one invocation_id can own several ai.http_attempt
@@ -32,7 +32,7 @@ from src.core.config import settings
 #
 # No token-usage field is ever invented here: callers only pass
 # input_tokens/output_tokens when the provider's own response actually
-# returned them (Cloudflare's OpenAI-compatible response.usage; Voyage's
+# returned them (the configured LLM endpoint's OpenAI-compatible response.usage; Voyage's
 # embed() does not return token counts today, so embedding invocations
 # simply omit the field rather than estimate one).
 # --------------------------------------------------------------------------- #
@@ -138,7 +138,7 @@ def track_ai_call(
 ):
     """
     Wraps one logical AI invocation (one get_embedding() call, one
-    generate_cloudflare_chat() call, etc - regardless of how many HTTP
+    generate_llm_chat() call, etc - regardless of how many HTTP
     attempts it takes underneath). Logs ai.invocation.started on entry and
     ai.invocation.completed/failed on exit (re-raising any exception
     unchanged), then - when `telemetry` is given - appends a summary dict
@@ -161,7 +161,7 @@ def track_ai_call(
     try:
         yield span
     except GeneratorExit:
-        # A streaming caller (generate_cloudflare_chat_stream()) whose
+        # A streaming caller (generate_llm_chat_stream()) whose
         # consumer disconnects mid-stream - the SSE client closed the
         # connection - unwinds this generator via GeneratorExit, not a
         # normal Exception. Logged as a distinct "cancelled" outcome

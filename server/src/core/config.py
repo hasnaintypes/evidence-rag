@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     # Disabled by default: leaving BETTER_STACK_SOURCE_TOKEN unset means
     # this app never makes a single outbound call to Better Stack, same
     # "lazily configured, no error without credentials" posture as
-    # cloudflare_account_id/cloudflare_api_token above. Get a source
+    # llm_base_url/llm_api_key below. Get a source
     # token by creating a Logs source in the Better Stack dashboard
     # (Telemetry -> Sources -> Connect source) after you've reviewed the
     # free-tier limits (3GB/3 days as of this writing - verify current
@@ -90,7 +90,7 @@ class Settings(BaseSettings):
 
     # --- Gemini (query rewriting, reranking, faithfulness judging, entity-graph
     # extraction, conversation titling - NOT the final RAG answer anymore,
-    # see cloudflare_* below, and NOT embeddings, which are Voyage AI) ---
+    # see llm_* below, and NOT embeddings, which are Voyage AI) ---
     gemini_api_key: str
     gemini_chat_model: str = "gemini-2.5-flash"
     # Same-provider fallback used by generate_chat_response()/
@@ -117,19 +117,28 @@ class Settings(BaseSettings):
     # model ids this API key can actually call before putting them here.
     gemini_chat_model_chain: str = ""
 
-    # --- Cloudflare Workers AI (final RAG answer generation only - see
-    # src/core/llm.py's Cloudflare section docstring for why this moved off
-    # Gemini, and generate_cloudflare_chat()/generate_cloudflare_chat_stream() for the
-    # actual calls). No default for account_id/api_token (unlike
-    # gemini_api_key/voyage_api_key above) - these are allowed to be unset
-    # at startup so the rest of the app (including every test in this repo)
-    # still boots without them; only an actual generate_cloudflare_chat() call
-    # raises, with a specific "not configured" error, if they're missing.
-    cloudflare_account_id: str = ""
-    cloudflare_api_token: str = ""
-    # Verified against Cloudflare's models catalog (developers.cloudflare.com/
-    # workers-ai/models/) - Google's Gemma, OpenAI-compatible Chat Completions.
-    cloudflare_model: str = "@cf/google/gemma-4-26b-a4b-it"
+    # --- Chat generation (final RAG answer - see src/core/llm.py's
+    # chat-generation section docstring for why this moved off Gemini,
+    # and generate_llm_chat()/generate_llm_chat_stream()/generate_llm_json()
+    # for the actual calls) ---
+    # Any OpenAI-compatible Chat Completions server works here - the
+    # `openai` SDK client just needs a base_url + api_key + model id:
+    # Cloudflare Workers AI (base_url
+    # "https://api.cloudflare.com/client/v4/accounts/<account_id>/ai/v1",
+    # api_key your Cloudflare API token), a self-hosted vLLM/Ollama
+    # instance, OpenRouter, or Gemini's own OpenAI-compatible endpoint
+    # (base_url "https://generativelanguage.googleapis.com/v1beta/openai/",
+    # api_key the same key as gemini_api_key above - it's the identical
+    # key, just a different path, so you can run this whole app on one
+    # Gemini key with no second provider at all). No defaults (unlike
+    # gemini_api_key/voyage_api_key above) - all three are allowed to be
+    # unset at startup so the rest of the app (including every test in
+    # this repo) still boots without them; only an actual
+    # generate_llm_chat() call raises, with a specific "not configured"
+    # error, if they're missing.
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_model: str = ""
 
     # --- Voyage AI (embeddings) ---
     voyage_api_key: str

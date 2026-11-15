@@ -10,7 +10,7 @@ from fastapi.encoders import jsonable_encoder
 from api.authz import get_owned_conversation
 from api.deps import CurrentUser
 from src.query_pipeline import process_chat_query, process_chat_query_stream
-from src.core.llm import generate_cloudflare_json
+from src.core.llm import generate_llm_json
 from src.core.security import generate_source_token
 
 # Same "inherits whatever handler the process entry point set up for the
@@ -51,11 +51,9 @@ def _generate_title(user_message: str) -> Optional[str]:
     failure (bad/missing API response, wrong type) so the caller falls
     back to the existing message[:TITLE_MAX_CHARS] truncation; never
     raises, never blocks the real reply on this. No server-enforced JSON
-    schema (see src/core/llm.py's generate_cloudflare_json() docstring) -
+    schema (see src/core/llm.py's generate_llm_json() docstring) -
     the prompt above asks for the shape in text instead."""
-    result = generate_cloudflare_json(
-        TITLE_PROMPT.format(question=user_message), max_tokens=50, operation="title_generation"
-    )
+    result = generate_llm_json(TITLE_PROMPT.format(question=user_message), max_tokens=50, operation="title_generation")
     if not isinstance(result, dict):
         return None
     title = result.get("title")
@@ -274,7 +272,7 @@ class ConversationService:
                         # Title generation happens AFTER "done" is already on
                         # the wire, not before it - the client has the real
                         # answer and can render it immediately; this extra
-                        # Cloudflare call just trails a few hundred ms behind
+                        # LLM call just trails a few hundred ms behind
                         # on the same connection instead of sitting in front
                         # of the answer (2026-11-15 performance audit finding
                         # #1). No BackgroundTasks needed here since this
@@ -302,7 +300,7 @@ class ConversationService:
         reaches this (nothing is persisted for a failed run).
 
         Does NOT call the title-generation LLM itself anymore (2026-11-15
-        performance audit finding #1: that extra Cloudflare round trip was
+        performance audit finding #1: that extra LLM round trip was
         blocking this request/stream's critical path for no good reason -
         title is purely cosmetic and already has this same fallback for
         when generation fails). The real title is generated afterward by

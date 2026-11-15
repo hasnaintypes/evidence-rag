@@ -1,9 +1,9 @@
 from typing import Any, Dict, List, Optional
 
-from src.core.llm import generate_cloudflare_json
+from src.core.llm import generate_llm_json
 
 # --------------------------------------------------------------------------- #
-# LLM-based reranking (Cloudflare Workers AI), replacing a locally-hosted
+# LLM-based reranking (the configured LLM endpoint), replacing a locally-hosted
 # cross-encoder
 #
 # This used to load sentence-transformers' CrossEncoder("BAAI/bge-reranker-base")
@@ -16,13 +16,14 @@ from src.core.llm import generate_cloudflare_json
 # Rather than host a second (even if smaller) local model, this reuses
 # whichever provider already backs every other LLM step in this
 # pipeline (query rewriting, generation, faithfulness judging - all
-# Cloudflare now, see src/core/llm.py's Cloudflare section docstring for
-# why it replaced Gemini here) - for one batched relevance-scoring call
+# the configured LLM endpoint now, see src/core/llm.py's chat-generation
+# section docstring for why it replaced Gemini here) - for one batched
+# relevance-scoring call
 # per rerank_chunks() invocation, scoring every candidate chunk in a
 # single request rather than one call per chunk. This removes sentence-
 # transformers/torch from the dependency tree entirely.
 #
-# No server-enforced JSON schema (generate_cloudflare_json() - the
+# No server-enforced JSON schema (generate_llm_json() - the
 # prompt below asks for the exact {"scores": [...]} shape in text, then
 # the response is regex/balanced-bracket parsed, same defensive handling
 # generate_structured_response() used to make unnecessary on Gemini).
@@ -70,7 +71,7 @@ def rerank_chunks(
 ) -> List[Dict[str, Any]]:
     """
     Re-scores and re-ranks retrieved chunks by relevance to `query`, via a
-    single batched Cloudflare call (see module docstring for why this
+    single batched LLM call (see module docstring for why this
     isn't a local cross-encoder anymore).
 
     On any failure (API error, malformed/incomplete JSON) every chunk
@@ -91,7 +92,7 @@ def rerank_chunks(
     # can still run to 20+ chunks - sized with headroom rather than the
     # ~500-800 token budget other JSON calls in this codebase use for a
     # handful of fields.
-    result = generate_cloudflare_json(prompt, max_tokens=2000, operation="reranking", request_id=request_id)
+    result = generate_llm_json(prompt, max_tokens=2000, operation="reranking", request_id=request_id)
 
     scores_by_index: Dict[int, float] = {}
     if isinstance(result, dict) and isinstance(result.get("scores"), list):

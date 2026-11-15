@@ -246,7 +246,7 @@ def _maybe_add_better_stack_handler(root: logging.Logger) -> None:
     """
     No-op unless BETTER_STACK_SOURCE_TOKEN is set - this app makes zero
     outbound calls to Better Stack otherwise, same "lazily configured,
-    requires an explicit credential" posture as llm.py's Cloudflare
+    requires an explicit credential" posture as llm.py's LLM-endpoint
     client. When it IS set, the actual HTTP POST runs on a dedicated
     background thread (via logging.handlers.QueueHandler/QueueListener)
     rather than inline in emit() - a request thread only has to put a

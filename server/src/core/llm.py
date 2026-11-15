@@ -65,9 +65,9 @@ logger = logging.getLogger("evidence_rag.llm")
 # call site that used to depend on this chain (query_pipeline.py's final
 # answer, retrieval/query_rewriter.py's query expansion/decomposition,
 # retrieval/reranker.py, evaluation/judge.py, conversation_service.py's
-# title generation) moved to Cloudflare Workers AI - see the Cloudflare
-# section below (generate_cloudflare_chat()/generate_cloudflare_chat_stream()/
-# generate_cloudflare_json()). The two functions here are kept only for
+# title generation) moved to the configured LLM endpoint - see the chat-generation
+# section below (generate_llm_chat()/generate_llm_chat_stream()/
+# generate_llm_json()). The two functions here are kept only for
 # src/graph.py's entity-graph extraction (disabled by default via
 # ENABLE_ENTITY_GRAPH, so this chain costs nothing while it's off) and
 # scripts/test_connection.py's connectivity check - not deleted, since
@@ -308,13 +308,14 @@ def generate_chat_response_stream(prompt: str, max_tokens: Optional[int] = None)
 
 
 # --------------------------------------------------------------------------- #
-# Chat generation (Cloudflare Workers AI) - the active provider for this app
+# Chat generation (configured OpenAI-compatible endpoint) - the active
+# provider for this app.
 #
 # Every LLM call this app makes in normal use goes through one of the
-# three functions below - generate_cloudflare_chat()/
-# generate_cloudflare_chat_stream() (free text: query_pipeline.py's final
-# RAG answer, retrieval/query_rewriter.py's query expansion/decomposition)
-# and generate_cloudflare_json() (JSON-shaped: retrieval/reranker.py,
+# three functions below - generate_llm_chat()/generate_llm_chat_stream()
+# (free text: query_pipeline.py's final RAG answer, retrieval/
+# query_rewriter.py's query expansion/decomposition) and
+# generate_llm_json() (JSON-shaped: retrieval/reranker.py,
 # evaluation/judge.py, conversation_service.py's title generation) -
 # after this project's own Gemini quota repeatedly exhausted every
 # candidate in _CHAT_MODEL_CANDIDATES during real use, for both the final
@@ -322,81 +323,81 @@ def generate_chat_response_stream(prompt: str, max_tokens: Optional[int] = None)
 # src/graph.py's entity-graph extraction (disabled by default) and
 # scripts/test_connection.py still use the Gemini functions above.
 #
-# generate_cloudflare_json() has no server-enforced schema the way
-# generate_structured_response() did on Gemini - Cloudflare's OpenAI-
-# compatible endpoint doesn't document reliable JSON-mode/structured-
-# output support across models - so it works the way this project's own
-# entity-graph extraction used to before generate_structured_response()
-# existed: the prompt itself asks for JSON text, and the response is
-# parsed defensively (first `{...}`/`[...]` block found, regex-extracted
-# in case the model added stray text around it despite instructions,
-# `None` on any parse failure so the caller can fall back gracefully
-# rather than crash).
+# Points the `openai` SDK client at settings.llm_base_url with
+# settings.llm_api_key/settings.llm_model (see config.py's llm_base_url
+# docstring) - ANY OpenAI-compatible Chat Completions server works this
+# way: the configured LLM endpoint, a self-hosted vLLM/Ollama instance,
+# OpenRouter, or Gemini's own OpenAI-compatible endpoint
+# (generativelanguage.googleapis.com/v1beta/openai/ - the same
+# GEMINI_API_KEY works there too, since it's the identical API key, just
+# a different base path).
 #
-# Uses Cloudflare's OpenAI-compatible Chat Completions endpoint
-# (https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility/)
-# via the `openai` SDK pointed at Cloudflare's base_url, rather than a new
-# bespoke HTTP client - Cloudflare's own docs recommend this path, and it
-# avoids hand-rolling request/response parsing for a shape the `openai`
-# package already models correctly (ChatCompletion/ChatCompletionChunk).
+# generate_llm_json() has no server-enforced schema the way
+# generate_structured_response() did on Gemini's native SDK - not every
+# OpenAI-compatible endpoint documents reliable JSON-mode/structured-
+# output support - so it works the way this project's own entity-graph
+# extraction used to before generate_structured_response() existed: the
+# prompt itself asks for JSON text, and the response is parsed
+# defensively (first `{...}`/`[...]` block found, regex-extracted in
+# case the model added stray text around it despite instructions, `None`
+# on any parse failure so the caller can fall back gracefully rather
+# than crash).
 #
 # Deliberately NOT a blind "try every candidate, every time" loop like
 # the Gemini chain above - this project watched exactly that pattern burn
 # several minutes retrying two already-exhausted Gemini models on every
 # single call during ingestion (#entity-graph slowness, 2026-11-12).
-# Instead: a single configured model (settings.cloudflare_model) with a
+# Instead: a single configured model (settings.llm_model) with a
 # process-local cooldown that activates on an HTTP 429 and is cleared
-# instead of retried - see _cloudflare_cooldown_remaining()/
-# _start_cloudflare_cooldown() below. A transient (non-429) failure - a
-# timeout or connection reset - gets a small number of retries with
-# exponential backoff + jitter, since those are the failures a brief
-# retry can plausibly fix; a 429 never is, since the model is already
-# known to be out of quota and retrying it immediately just burns another
-# round trip for the same answer.
+# instead of retried - see _llm_cooldown_remaining()/_start_llm_cooldown()
+# below. A transient (non-429) failure - a timeout or connection reset -
+# gets a small number of retries with exponential backoff + jitter, since
+# those are the failures a brief retry can plausibly fix; a 429 never is,
+# since the model is already known to be out of quota and retrying it
+# immediately just burns another round trip for the same answer.
 # --------------------------------------------------------------------------- #
 
-CLOUDFLARE_RATE_LIMIT_COOLDOWN_DEFAULT_SECONDS = 60.0
-CLOUDFLARE_MAX_TRANSIENT_RETRIES = 2
+LLM_RATE_LIMIT_COOLDOWN_DEFAULT_SECONDS = 60.0
+LLM_MAX_TRANSIENT_RETRIES = 2
 
-_cloudflare_client: Optional["openai.OpenAI"] = None
-_cloudflare_cooldown_until = 0.0  # time.monotonic() timestamp; 0.0 = not cooling down
+_llm_client: Optional["openai.OpenAI"] = None
+_llm_cooldown_until = 0.0  # time.monotonic() timestamp; 0.0 = not cooling down
 
 
-def _cloudflare_client_or_raise() -> "openai.OpenAI":
-    """Lazily builds the Cloudflare client on first use rather than at
-    import time, so the rest of the app (including every test in this
-    repo) still boots and runs without CLOUDFLARE_ACCOUNT_ID/
-    CLOUDFLARE_API_TOKEN set - only an actual call to
-    generate_cloudflare_chat()/generate_cloudflare_chat_stream() needs them, and
-    raises a clear, specific error here if they're missing rather than a
-    generic auth failure from the HTTP layer."""
-    global _cloudflare_client
-    if _cloudflare_client is None:
-        if not settings.cloudflare_account_id or not settings.cloudflare_api_token:
+def _llm_client_or_raise() -> "openai.OpenAI":
+    """Lazily builds the client on first use rather than at import time,
+    so the rest of the app (including every test in this repo) still
+    boots and runs without credentials set - only an actual call to
+    generate_llm_chat()/generate_llm_chat_stream()/generate_llm_json()
+    needs them, and raises a clear, specific error here if they're
+    missing rather than a generic auth failure from the HTTP layer."""
+    global _llm_client
+    if _llm_client is None:
+        if not settings.llm_base_url or not settings.llm_api_key:
             raise RuntimeError(
-                "Cloudflare Workers AI is not configured - set CLOUDFLARE_ACCOUNT_ID and "
-                "CLOUDFLARE_API_TOKEN (see .env.example) before generate_cloudflare_chat()/"
-                "generate_cloudflare_chat_stream() can be called."
+                "The LLM endpoint is not configured - set LLM_BASE_URL, LLM_API_KEY, "
+                "and LLM_MODEL (see .env.example) before generate_llm_chat()/"
+                "generate_llm_chat_stream()/generate_llm_json() can be called."
             )
-        _cloudflare_client = openai.OpenAI(
-            api_key=settings.cloudflare_api_token,
-            base_url=f"https://api.cloudflare.com/client/v4/accounts/{settings.cloudflare_account_id}/ai/v1",
+        _llm_client = openai.OpenAI(
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
             timeout=30.0,
         )
-    return _cloudflare_client
+    return _llm_client
 
 
-def _cloudflare_cooldown_remaining() -> float:
-    return max(0.0, _cloudflare_cooldown_until - time.monotonic())
+def _llm_cooldown_remaining() -> float:
+    return max(0.0, _llm_cooldown_until - time.monotonic())
 
 
-def _start_cloudflare_cooldown(seconds: float) -> None:
-    global _cloudflare_cooldown_until
-    _cloudflare_cooldown_until = time.monotonic() + seconds
+def _start_llm_cooldown(seconds: float) -> None:
+    global _llm_cooldown_until
+    _llm_cooldown_until = time.monotonic() + seconds
 
 
-def _cloudflare_retry_after_seconds(exc: "openai.RateLimitError") -> float:
-    """Respects the 429 response's Retry-After header when Cloudflare
+def _llm_retry_after_seconds(exc: "openai.RateLimitError") -> float:
+    """Respects the 429 response's Retry-After header when the endpoint
     sends one; falls back to a default cooldown + jitter when it
     doesn't, rather than assuming a fixed duration."""
     try:
@@ -405,16 +406,14 @@ def _cloudflare_retry_after_seconds(exc: "openai.RateLimitError") -> float:
             return float(header)
     except Exception:
         pass
-    return CLOUDFLARE_RATE_LIMIT_COOLDOWN_DEFAULT_SECONDS + random.uniform(0, 5)
+    return LLM_RATE_LIMIT_COOLDOWN_DEFAULT_SECONDS + random.uniform(0, 5)
 
 
-def _cloudflare_chat_completion(
-    messages: List[Dict[str, str]], max_tokens: int, temperature: float, stream: bool, span=None
-):
+def _llm_chat_completion(messages: List[Dict[str, str]], max_tokens: int, temperature: float, stream: bool, span=None):
     """
-    One logical request to Cloudflare's Chat Completions endpoint for
-    settings.cloudflare_model, with bounded retry+backoff for transient
-    errors - see this module's Cloudflare section docstring for why a 429
+    One logical request to the configured LLM endpoint's Chat Completions API for
+    settings.llm_model, with bounded retry+backoff for transient
+    errors - see this module's chat-generation section docstring for why a 429
     is handled differently (cooldown, not retry) from everything else.
 
     Raises RuntimeError immediately, without even attempting the request,
@@ -425,24 +424,26 @@ def _cloudflare_chat_completion(
     `span` (an ai_tracker.AICallSpan, optional) gets one log_attempt()
     call per outbound HTTP attempt made here - every retry iteration, not
     just the final/successful one - so a caller further up (e.g.
-    generate_cloudflare_chat()) can report "1 logical invocation -> N
+    generate_llm_chat()) can report "1 logical invocation -> N
     actual HTTP attempts" instead of collapsing retries into a single
     pass/fail line. None is accepted so this function keeps working for
     any future caller that doesn't need invocation-level tracking.
     """
-    remaining = _cloudflare_cooldown_remaining()
+    remaining = _llm_cooldown_remaining()
     if remaining > 0:
         if span is not None:
             span.log_attempt(1, "cooldown_skipped", error_category="rate_limited")
-        raise RuntimeError(f"Cloudflare Workers AI is cooling down after a rate limit - retry in {remaining:.0f}s.")
+        raise RuntimeError(
+            f"the configured LLM endpoint is cooling down after a rate limit - retry in {remaining:.0f}s."
+        )
 
-    http_client = _cloudflare_client_or_raise()
+    http_client = _llm_client_or_raise()
     last_error: Optional[Exception] = None
-    for attempt in range(CLOUDFLARE_MAX_TRANSIENT_RETRIES + 1):
+    for attempt in range(LLM_MAX_TRANSIENT_RETRIES + 1):
         start = time.perf_counter()
         try:
             response = http_client.chat.completions.create(
-                model=settings.cloudflare_model,
+                model=settings.llm_model,
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=temperature,
@@ -450,8 +451,8 @@ def _cloudflare_chat_completion(
             )
             elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
             logger.info(
-                "cloudflare chat completion ok model=%r elapsed_ms=%s stream=%s",
-                settings.cloudflare_model,
+                "llm chat completion ok model=%r elapsed_ms=%s stream=%s",
+                settings.llm_model,
                 elapsed_ms,
                 stream,
             )
@@ -459,11 +460,11 @@ def _cloudflare_chat_completion(
                 span.log_attempt(attempt + 1, "success")
             return response
         except openai.RateLimitError as e:
-            cooldown = _cloudflare_retry_after_seconds(e)
-            _start_cloudflare_cooldown(cooldown)
+            cooldown = _llm_retry_after_seconds(e)
+            _start_llm_cooldown(cooldown)
             logger.warning(
-                "cloudflare chat completion rate-limited (model=%r), cooling down for %.0fs",
-                settings.cloudflare_model,
+                "llm chat completion rate-limited (model=%r), cooling down for %.0fs",
+                settings.llm_model,
                 cooldown,
             )
             if span is not None:
@@ -477,31 +478,31 @@ def _cloudflare_chat_completion(
             if span is not None:
                 span.http_status = status
                 span.log_attempt(attempt + 1, "transient_failure", http_status=status, error_category=type(e).__name__)
-            if attempt < CLOUDFLARE_MAX_TRANSIENT_RETRIES:
+            if attempt < LLM_MAX_TRANSIENT_RETRIES:
                 backoff = (0.5 * (2**attempt)) + random.uniform(0, 0.5)
                 logger.warning(
-                    "cloudflare chat completion transient failure (%s), retrying in %.1fs (attempt %d/%d)",
+                    "llm chat completion transient failure (%s), retrying in %.1fs (attempt %d/%d)",
                     e,
                     backoff,
                     attempt + 1,
-                    CLOUDFLARE_MAX_TRANSIENT_RETRIES,
+                    LLM_MAX_TRANSIENT_RETRIES,
                 )
                 time.sleep(backoff)
                 continue
-            logger.error("cloudflare chat completion failed after %d retries: %s", CLOUDFLARE_MAX_TRANSIENT_RETRIES, e)
+            logger.error("llm chat completion failed after %d retries: %s", LLM_MAX_TRANSIENT_RETRIES, e)
             if span is not None:
                 span.error_category = type(e).__name__
             raise
     raise last_error  # pragma: no cover - loop always returns or raises above
 
 
-def generate_cloudflare_chat(
+def generate_llm_chat(
     prompt: str, max_tokens: Optional[int] = None, operation: str = "chat_generation", request_id: Optional[str] = None
 ) -> str:
     """
-    Generates free text via Cloudflare Workers AI - query_pipeline.py's
+    Generates free text via the configured LLM endpoint - query_pipeline.py's
     final RAG answer and retrieval/query_rewriter.py's query expansion/
-    decomposition. See this module's Cloudflare section docstring for
+    decomposition. See this module's chat-generation section docstring for
     why this is the active chat-generation provider, not Gemini.
 
     Mirrors generate_chat_response()'s honest-failure contract exactly:
@@ -515,7 +516,7 @@ def generate_cloudflare_chat(
     rather than this function guessing from the prompt text.
     """
     messages = [{"role": "user", "content": f"You are an intelligent AI assistant.\n\n{prompt}"}]
-    with track_ai_call("cloudflare", settings.cloudflare_model, operation, request_id=request_id) as span:
+    with track_ai_call("openai_compatible", settings.llm_model, operation, request_id=request_id) as span:
         span.record_request(
             {
                 **summarize_messages(messages),
@@ -524,7 +525,7 @@ def generate_cloudflare_chat(
             }
         )
         try:
-            response = _cloudflare_chat_completion(
+            response = _llm_chat_completion(
                 messages=messages,
                 max_tokens=max_tokens if max_tokens is not None else settings.generation_max_tokens,
                 temperature=settings.generation_temperature,
@@ -536,30 +537,30 @@ def generate_cloudflare_chat(
                 if response.usage:
                     span.record_tokens(response.usage.prompt_tokens, response.usage.completion_tokens)
                     logger.info(
-                        "generate_cloudflare_chat: prompt_tokens=%s completion_tokens=%s",
+                        "generate_llm_chat: prompt_tokens=%s completion_tokens=%s",
                         response.usage.prompt_tokens,
                         response.usage.completion_tokens,
                     )
                 return text
             span.outcome = "empty_response"
-            logger.warning("generate_cloudflare_chat: Cloudflare returned an empty response")
-            return "Error during generation: Cloudflare Workers AI returned an empty response"
+            logger.warning("generate_llm_chat: LLM endpoint returned an empty response")
+            return "Error during generation: the configured LLM endpoint returned an empty response"
         except Exception as e:
             span.outcome = "error"
             span.error_category = span.error_category or type(e).__name__
-            logger.error("generate_cloudflare_chat: Cloudflare call failed: %s", e)
+            logger.error("generate_llm_chat: LLM call failed: %s", e)
             return f"Error during generation: {e}"
 
 
-def generate_cloudflare_chat_stream(
+def generate_llm_chat_stream(
     prompt: str,
     max_tokens: Optional[int] = None,
     operation: str = "chat_generation_stream",
     request_id: Optional[str] = None,
 ) -> Iterator[str]:
     """
-    Streaming counterpart to generate_cloudflare_chat() - see that function's
-    docstring and this module's Cloudflare section docstring for scope.
+    Streaming counterpart to generate_llm_chat() - see that function's
+    docstring and this module's chat-generation section docstring for scope.
 
     Once a chunk has actually been yielded, a later mid-stream failure is
     logged and simply ends the stream rather than appending the
@@ -575,7 +576,7 @@ def generate_cloudflare_chat_stream(
     that case, not an exception - the explicit `finally` records that.
     """
     messages = [{"role": "user", "content": f"You are an intelligent AI assistant.\n\n{prompt}"}]
-    with track_ai_call("cloudflare", settings.cloudflare_model, operation, request_id=request_id) as span:
+    with track_ai_call("openai_compatible", settings.llm_model, operation, request_id=request_id) as span:
         span.record_request(
             {
                 **summarize_messages(messages),
@@ -587,7 +588,7 @@ def generate_cloudflare_chat_stream(
         yielded_any = False
         cancelled = False
         try:
-            stream = _cloudflare_chat_completion(
+            stream = _llm_chat_completion(
                 messages=messages,
                 max_tokens=max_tokens if max_tokens is not None else settings.generation_max_tokens,
                 temperature=settings.generation_temperature,
@@ -606,9 +607,9 @@ def generate_cloudflare_chat_stream(
             span.outcome = "error"
             span.error_category = span.error_category or type(e).__name__
             if yielded_any:
-                logger.error("generate_cloudflare_chat_stream: Cloudflare call failed mid-stream: %s", e)
+                logger.error("generate_llm_chat_stream: LLM call failed mid-stream: %s", e)
                 return
-            logger.error("generate_cloudflare_chat_stream: Cloudflare call failed before any output: %s", e)
+            logger.error("generate_llm_chat_stream: LLM call failed before any output: %s", e)
             yield f"Error during generation: {e}"
             return
         finally:
@@ -617,8 +618,8 @@ def generate_cloudflare_chat_stream(
 
         if not yielded_any:
             span.outcome = "empty_response"
-            logger.warning("generate_cloudflare_chat_stream: Cloudflare returned an empty response")
-            yield "Error during generation: Cloudflare Workers AI returned an empty response"
+            logger.warning("generate_llm_chat_stream: LLM endpoint returned an empty response")
+            yield "Error during generation: the configured LLM endpoint returned an empty response"
 
 
 def _extract_json_block(text: str) -> Optional[str]:
@@ -661,7 +662,7 @@ def _extract_json_block(text: str) -> Optional[str]:
     return None
 
 
-def generate_cloudflare_json(
+def generate_llm_json(
     prompt: str,
     max_tokens: Optional[int] = None,
     temperature: float = 0.0,
@@ -669,10 +670,10 @@ def generate_cloudflare_json(
     request_id: Optional[str] = None,
 ) -> Optional[dict]:
     """
-    Generates a JSON-shaped result via Cloudflare Workers AI, for callers
+    Generates a JSON-shaped result via the configured LLM endpoint, for callers
     that need a reliably parseable structured output but can't lean on a
     server-enforced schema the way generate_structured_response() did on
-    Gemini (see this module's Cloudflare section docstring) -
+    Gemini (see this module's chat-generation section docstring) -
     retrieval/reranker.py's relevance scores, evaluation/judge.py's
     faithfulness score, conversation_service.py's title generation. The
     prompt passed in must itself instruct the model to output JSON in
@@ -685,10 +686,10 @@ def generate_cloudflare_json(
 
     `operation` is one of "reranking" / "faithfulness_judging" /
     "title_generation" today (see each caller) - distinguishes these
-    otherwise-identical-looking Cloudflare calls in ai_tracker.py's log.
+    otherwise-identical-looking LLM calls in ai_tracker.py's log.
     """
     messages = [{"role": "user", "content": prompt}]
-    with track_ai_call("cloudflare", settings.cloudflare_model, operation, request_id=request_id) as span:
+    with track_ai_call("openai_compatible", settings.llm_model, operation, request_id=request_id) as span:
         span.record_request(
             {
                 **summarize_messages(messages),
@@ -697,7 +698,7 @@ def generate_cloudflare_json(
             }
         )
         try:
-            response = _cloudflare_chat_completion(
+            response = _llm_chat_completion(
                 messages=messages,
                 max_tokens=max_tokens if max_tokens is not None else settings.generation_max_tokens,
                 temperature=temperature,
@@ -707,7 +708,7 @@ def generate_cloudflare_json(
             raw_text = response.choices[0].message.content if response.choices else None
             if not raw_text:
                 span.outcome = "empty_response"
-                logger.warning("generate_cloudflare_json: Cloudflare returned an empty response")
+                logger.warning("generate_llm_json: LLM endpoint returned an empty response")
                 return None
             if response.usage:
                 span.record_tokens(response.usage.prompt_tokens, response.usage.completion_tokens)
@@ -715,19 +716,19 @@ def generate_cloudflare_json(
             block = _extract_json_block(raw_text)
             if block is None:
                 span.outcome = "unparseable_response"
-                logger.warning("generate_cloudflare_json: no JSON block found in the response")
+                logger.warning("generate_llm_json: no JSON block found in the response")
                 return None
 
             return json.loads(block)
         except (json.JSONDecodeError, ValueError) as e:
             span.outcome = "unparseable_response"
             span.error_category = type(e).__name__
-            logger.warning("generate_cloudflare_json: response was not valid JSON: %s", e)
+            logger.warning("generate_llm_json: response was not valid JSON: %s", e)
             return None
         except Exception as e:
             span.outcome = "error"
             span.error_category = span.error_category or type(e).__name__
-            logger.error("generate_cloudflare_json: Cloudflare call failed: %s", e)
+            logger.error("generate_llm_json: LLM call failed: %s", e)
             return None
 
 
@@ -784,7 +785,7 @@ def generate_structured_response(
     Only used by src/graph.py's entity-graph extraction now (disabled by
     default via ENABLE_ENTITY_GRAPH - see this module's Gemini section
     comment) - reranking, faithfulness judging, and title generation
-    moved to generate_cloudflare_json() above, which has no server-
+    moved to generate_llm_json() above, which has no server-
     enforced schema and parses the same way graph.py's extraction used
     to before this function existed.
 

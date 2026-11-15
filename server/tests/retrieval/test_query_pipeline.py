@@ -56,7 +56,7 @@ def _run_pipeline(
             side_effect=(lambda query, chunks, **kw: compress_return if compress_return is not None else chunks),
         ),
         patch("src.query_pipeline.decompose_into_subqueries", return_value=[]),
-        patch("src.query_pipeline.generate_cloudflare_chat", return_value=generate_return),
+        patch("src.query_pipeline.generate_llm_chat", return_value=generate_return),
         patch("src.query_pipeline.score_faithfulness", return_value=faithfulness_return),
         patch("src.query_pipeline.log_query_event"),
     ):
@@ -85,7 +85,7 @@ def test_a_stage_failure_is_logged_distinctly_before_propagating(caplog):
             patch("src.query_pipeline.grade_retrieved_chunks", side_effect=lambda query, chunks, **kw: chunks),
             patch("src.query_pipeline.compress_context_chunks", side_effect=lambda query, chunks, **kw: chunks),
             patch("src.query_pipeline.decompose_into_subqueries", return_value=[]),
-            patch("src.query_pipeline.generate_cloudflare_chat", side_effect=RuntimeError("cloudflare is down")),
+            patch("src.query_pipeline.generate_llm_chat", side_effect=RuntimeError("the llm endpoint is down")),
         ):
             with pytest.raises(RuntimeError):
                 qp.process_chat_query("What grease should I use?", advanced_mode=True)
@@ -281,7 +281,7 @@ def test_generation_prompt_frames_chunks_as_untrusted_data():
         patch("src.query_pipeline.compress_context_chunks", side_effect=lambda query, chunks, **kw: chunks),
         patch("src.query_pipeline.decompose_into_subqueries", return_value=[]),
         patch(
-            "src.query_pipeline.generate_cloudflare_chat", return_value="Apply lithium-based grease every 600 hours."
+            "src.query_pipeline.generate_llm_chat", return_value="Apply lithium-based grease every 600 hours."
         ) as mock_generate,
         patch("src.query_pipeline.score_faithfulness", return_value=None),
         patch("src.query_pipeline.log_query_event"),
@@ -306,9 +306,7 @@ def _run_pipeline_with_fixed_embedding(embedding, history=None):
         patch("src.query_pipeline.grade_retrieved_chunks", side_effect=lambda query, chunks, **kw: chunks),
         patch("src.query_pipeline.compress_context_chunks", side_effect=lambda query, chunks, **kw: chunks),
         patch("src.query_pipeline.decompose_into_subqueries", return_value=[]),
-        patch(
-            "src.query_pipeline.generate_cloudflare_chat", return_value="Apply lithium-based grease every 600 hours."
-        ),
+        patch("src.query_pipeline.generate_llm_chat", return_value="Apply lithium-based grease every 600 hours."),
         patch(
             "src.query_pipeline.score_faithfulness", return_value={"faithfulness_score": 1.0, "unsupported_claims": []}
         ),
@@ -329,7 +327,7 @@ def test_a_repeated_query_hits_the_cache_and_skips_the_pipeline():
     embedding = [1.0, 0.0, 0.0]
 
     first_result, first_mocks = _run_pipeline_with_fixed_embedding(embedding)
-    assert first_mocks["generate_cloudflare_chat"].call_count == 1
+    assert first_mocks["generate_llm_chat"].call_count == 1
     assert first_result["telemetry"]["cache_hit"] is False
 
     second_result, second_mocks = _run_pipeline_with_fixed_embedding(embedding)
@@ -337,7 +335,7 @@ def test_a_repeated_query_hits_the_cache_and_skips_the_pipeline():
     # miss - asserting 0 here is what actually proves the cache hit
     # skipped generation/rewriting/judging entirely, not just that the
     # answer happened to match.
-    assert second_mocks["generate_cloudflare_chat"].call_count == 0
+    assert second_mocks["generate_llm_chat"].call_count == 0
     assert second_mocks["rewrite_query"].call_count == 0
     assert second_mocks["score_faithfulness"].call_count == 0
     assert second_result["telemetry"]["cache_hit"] is True
@@ -348,7 +346,7 @@ def test_a_dissimilar_query_does_not_hit_the_cache():
     _run_pipeline_with_fixed_embedding([1.0, 0.0, 0.0])
 
     _, second_mocks = _run_pipeline_with_fixed_embedding([0.0, 1.0, 0.0])
-    assert second_mocks["generate_cloudflare_chat"].call_count == 1
+    assert second_mocks["generate_llm_chat"].call_count == 1
 
 
 def test_a_followup_turn_with_history_never_consults_the_cache():
@@ -361,7 +359,7 @@ def test_a_followup_turn_with_history_never_consults_the_cache():
 
     history = [{"role": "user", "content": "earlier turn"}, {"role": "assistant", "content": "earlier reply"}]
     result, second_mocks = _run_pipeline_with_fixed_embedding(embedding, history=history)
-    assert second_mocks["generate_cloudflare_chat"].call_count == 1
+    assert second_mocks["generate_llm_chat"].call_count == 1
     assert "cache_hit" not in result["telemetry"]
 
 
@@ -376,7 +374,7 @@ def test_a_faithfulness_gated_result_is_not_cached():
         patch("src.query_pipeline.grade_retrieved_chunks", side_effect=lambda query, chunks, **kw: chunks),
         patch("src.query_pipeline.compress_context_chunks", side_effect=lambda query, chunks, **kw: chunks),
         patch("src.query_pipeline.decompose_into_subqueries", return_value=[]),
-        patch("src.query_pipeline.generate_cloudflare_chat", return_value="Apply ceramic grease every 2000 hours."),
+        patch("src.query_pipeline.generate_llm_chat", return_value="Apply ceramic grease every 2000 hours."),
         patch(
             "src.query_pipeline.score_faithfulness",
             return_value={"faithfulness_score": 0.3, "unsupported_claims": ["x"]},
@@ -395,7 +393,7 @@ def test_a_faithfulness_gated_result_is_not_cached():
     # A second, identical-embedding call must still run the real pipeline
     # rather than serve the withheld answer from cache.
     _, second_mocks = _run_pipeline_with_fixed_embedding(embedding)
-    assert second_mocks["generate_cloudflare_chat"].call_count == 1
+    assert second_mocks["generate_llm_chat"].call_count == 1
 
 
 # --- _sanitize_citation_markers (#inline citations) -------------------------
@@ -458,7 +456,7 @@ def _run_pipeline_stream(
         patch("src.query_pipeline.grade_retrieved_chunks", side_effect=lambda query, chunks, **kw: chunks),
         patch("src.query_pipeline.compress_context_chunks", side_effect=lambda query, chunks, **kw: chunks),
         patch("src.query_pipeline.decompose_into_subqueries", return_value=[]),
-        patch("src.query_pipeline.generate_cloudflare_chat_stream", return_value=iter(generate_stream_return)),
+        patch("src.query_pipeline.generate_llm_chat_stream", return_value=iter(generate_stream_return)),
         patch("src.query_pipeline.score_faithfulness", return_value=faithfulness_return),
         patch("src.query_pipeline.log_query_event"),
     ):
@@ -474,7 +472,7 @@ def test_stream_yields_a_token_event_per_chunk_then_one_done_event():
 
 
 def test_stream_never_forwards_the_generation_error_sentinel_as_a_live_token():
-    """generate_cloudflare_chat_stream() yields its internal
+    """generate_llm_chat_stream() yields its internal
     "Error during generation: ..." sentinel (llm.py) as a single piece when
     the call fails before producing any real output - that string must
     never reach the client as a "token" event (it would flash on screen
@@ -482,7 +480,7 @@ def test_stream_never_forwards_the_generation_error_sentinel_as_a_live_token():
     fallback message."""
     events = _run_pipeline_stream(
         retrieve_return=[_base_chunk()],
-        generate_stream_return=("Error during generation: Cloudflare Workers AI returned an empty response",),
+        generate_stream_return=("Error during generation: LLM endpoint returned an empty response",),
     )
     assert [e["type"] for e in events] == ["done"]
     assert "unable to produce an answer" in events[-1]["result"]["reply"].lower()
@@ -501,8 +499,8 @@ def test_stream_concatenates_chunks_before_post_processing():
 
 def test_stream_emits_only_a_done_event_for_an_early_result():
     """Empty retrieval is an early-return path - there's no partial text to
-    stream, so generate_cloudflare_chat_stream() must never be called."""
-    with patch("src.query_pipeline.generate_cloudflare_chat_stream") as mock_stream:
+    stream, so generate_llm_chat_stream() must never be called."""
+    with patch("src.query_pipeline.generate_llm_chat_stream") as mock_stream:
         events = _run_pipeline_stream(retrieve_return=[])
     mock_stream.assert_not_called()
     assert [e["type"] for e in events] == ["done"]
