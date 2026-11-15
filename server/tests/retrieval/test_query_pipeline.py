@@ -114,10 +114,15 @@ def test_all_chunks_pruned_by_grading_returns_an_honest_reply():
 
 def test_generation_failure_is_reported_honestly_not_silently():
     result = _run_pipeline(retrieve_return=[_base_chunk()], generate_return="")
-    assert "unable to produce a reliable answer" in result["reply"].lower()
+    assert "unable to produce an answer" in result["reply"].lower()
     # Faithfulness scoring must be skipped entirely on a failed generation -
     # there's no real claim to judge, just the apology message.
     assert result["faithfulness"]["score"] is None
+    # No sources either - retrieval found chunks, but generation never
+    # turned them into any claim, so listing them as "relevant evidence"
+    # would be misleading (distinct from the abstention-gate case below,
+    # which keeps its sources since no generation was even attempted).
+    assert result["sources"] == []
 
 
 def test_repetition_loop_is_detected_as_a_generation_failure():
@@ -127,7 +132,7 @@ def test_repetition_loop_is_detected_as_a_generation_failure():
     # aren't recognized as the same template and wouldn't trip the detector.
     degenerate = ". ".join([f"In document chunk {i} there is a mention of grease" for i in range(10)])
     result = _run_pipeline(retrieve_return=[_base_chunk()], generate_return=degenerate)
-    assert "unable to produce a reliable answer" in result["reply"].lower()
+    assert "unable to produce an answer" in result["reply"].lower()
 
 
 def test_retrieval_confidence_gate_abstains_below_threshold(monkeypatch):
@@ -466,6 +471,21 @@ def test_stream_yields_a_token_event_per_chunk_then_one_done_event():
     assert events[0]["text"] == "Apply lithium-based "
     assert events[1]["text"] == "grease every 600 hours."
     assert events[-1]["result"]["reply"] == "Apply lithium-based grease every 600 hours."
+
+
+def test_stream_never_forwards_the_generation_error_sentinel_as_a_live_token():
+    """generate_cloudflare_chat_stream() yields its internal
+    "Error during generation: ..." sentinel (llm.py) as a single piece when
+    the call fails before producing any real output - that string must
+    never reach the client as a "token" event (it would flash on screen
+    as if the model said it), only the "done" event's already-replaced
+    fallback message."""
+    events = _run_pipeline_stream(
+        retrieve_return=[_base_chunk()],
+        generate_stream_return=("Error during generation: Cloudflare Workers AI returned an empty response",),
+    )
+    assert [e["type"] for e in events] == ["done"]
+    assert "unable to produce an answer" in events[-1]["result"]["reply"].lower()
 
 
 def test_stream_concatenates_chunks_before_post_processing():

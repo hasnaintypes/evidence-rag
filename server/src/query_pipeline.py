@@ -390,11 +390,18 @@ def _finalize_generation(
 
     if generation_failed:
         final_summary = (
-            "The model was unable to produce a reliable answer from the retrieved context "
-            "(generation failed or collapsed into a repetitive loop). Relevant document chunks "
-            "were found and are listed in the sources below - please retry the question, or "
-            "check the LLM client connection if this happens repeatedly."
+            "The model was unable to produce an answer (generation failed or collapsed into a "
+            "repetitive loop) - please retry the question, or check the LLM client connection if "
+            "this happens repeatedly."
         )
+        # No sources on a failed generation: prep["sources"] is whatever
+        # retrieval found, which generation never actually turned into an
+        # answer - listing them here would claim they're "relevant"
+        # evidence for a claim that doesn't exist. (The faithfulness-gated
+        # case just below is different and keeps its sources: there, a
+        # real answer was generated, judged, and withheld - "review the
+        # source chunks yourself" is a meaningful thing to offer there.)
+        sources = []
 
     # --- PHASE 6.5: Faithfulness scoring (LLM-as-judge) ---
     # Retrieval metrics above say the right chunks were found; this checks
@@ -574,6 +581,14 @@ def process_chat_query_stream(
                 prep["prompt"], operation="answer_generation", request_id=request_id
             ):
                 chunks_received.append(piece)
+                # Still appended above (so _finalize_generation's
+                # "error during generation" substring check below still
+                # catches it and swaps in the real failure message), but
+                # never forwarded live - this sentinel is llm.py's
+                # internal failure signal, not generated text, and must
+                # never flash on screen as if the model said it.
+                if piece.lower().startswith("error during generation"):
+                    continue
                 yield {"type": "token", "text": piece}
 
         raw_response = "".join(chunks_received)
