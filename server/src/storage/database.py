@@ -740,6 +740,36 @@ def get_shared_document_ids() -> List[str]:
         conn.close()
 
 
+def get_default_conversation_doc_ids(user_id: str) -> List[str]:
+    """
+    Resolves a conversation started with no document explicitly attached:
+    this user's own already-indexed documents (most recently ingested
+    first, capped at MAX_CONVERSATION_DOCS same as every other path that
+    builds a doc_ids list) if they have any ready ones, otherwise the
+    shared/demo corpus - so starting a chat never requires picking a
+    document first when the user already has something of their own to
+    ask about, and a brand-new account with nothing uploaded yet still
+    gets the demo corpus instead of a dead end.
+    """
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        ph = _ph(1)
+        cursor.execute(
+            f"""
+            SELECT doc_id FROM documents
+            WHERE user_id = {ph} AND status = 'ready'
+            ORDER BY ingested_at DESC
+            LIMIT {MAX_CONVERSATION_DOCS}
+        """,
+            (user_id,),
+        )
+        own_doc_ids = [dict(row)["doc_id"] for row in cursor.fetchall()]
+    finally:
+        conn.close()
+    return own_doc_ids if own_doc_ids else get_shared_document_ids()[:MAX_CONVERSATION_DOCS]
+
+
 def list_documents(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Returns a user's own uploaded documents plus shared/demo documents

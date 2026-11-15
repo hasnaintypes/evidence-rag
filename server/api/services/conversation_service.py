@@ -24,7 +24,7 @@ from src.storage.database import (
     delete_conversation,
     delete_messages_after,
     get_conversation_messages,
-    get_shared_document_ids,
+    get_default_conversation_doc_ids,
     insert_message,
     list_conversations,
     replace_fallback_title,
@@ -75,15 +75,17 @@ class ConversationService:
     @staticmethod
     def create(doc_ids: List[str], user: CurrentUser) -> Dict[str, Any]:
         """
-        No document attached (doc_ids empty) resolves to the shared/demo
-        corpus instead of requiring the caller to pick one first - see
-        get_shared_document_ids()'s docstring for why that's a real doc_id
-        list rather than passing doc_ids=None through to retrieval.
+        No document attached (doc_ids empty) resolves to this user's own
+        already-indexed documents if they have any, so starting a chat
+        never requires picking one first - see
+        get_default_conversation_doc_ids()'s docstring for the full
+        fallback chain (own documents, then the shared/demo corpus for a
+        brand-new account with nothing uploaded yet).
         """
         if not doc_ids:
-            doc_ids = get_shared_document_ids()
+            doc_ids = get_default_conversation_doc_ids(user.id)
             if not doc_ids:
-                raise HTTPException(status_code=400, detail="No shared documents are available to chat about yet.")
+                raise HTTPException(status_code=400, detail="No documents are available to chat about yet.")
         elif not all_documents_accessible(doc_ids, user.id):
             raise HTTPException(status_code=404, detail="One or more documents were not found.")
         conversation_id = uuid.uuid4().hex

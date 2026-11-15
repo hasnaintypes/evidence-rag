@@ -30,18 +30,13 @@ import {
 import { ChatHeader } from "@/components/chat/chat-header";
 import { SourceCountBadge } from "@/components/chat/source-count-badge";
 import { AttachmentProgressRing } from "@/components/chat/attachment-progress-ring";
-import { AttachExistingDocumentPicker } from "@/components/chat/attach-existing-document-picker";
 import { createConversation, subscribeToDocumentStatus, uploadDocument } from "@/lib/api";
 import { stashPendingFirstMessage } from "@/lib/pending-first-message";
 import { useAuth } from "@/hooks/use-auth";
 import { useAdvancedMode } from "@/hooks/use-advanced-mode";
 import { useConversationsStore } from "@/stores/conversations-store";
 import { useDocumentsStore } from "@/stores/documents-store";
-import {
-  ACCEPTED_DOCUMENT_EXTENSIONS,
-  MAX_CONVERSATION_DOCS,
-  type DocumentRecord,
-} from "@/lib/types";
+import { ACCEPTED_DOCUMENT_EXTENSIONS, MAX_CONVERSATION_DOCS } from "@/lib/types";
 import { Paperclip } from "lucide-react";
 
 type PendingAttachment = {
@@ -178,27 +173,6 @@ export function ChatComposer() {
     setAttachments((prev) => prev.filter((a) => a.localId !== localId));
   }
 
-  function handleAttachExisting(doc: DocumentRecord) {
-    if (attachments.length >= MAX_CONVERSATION_DOCS) {
-      toast.error(`You can attach at most ${MAX_CONVERSATION_DOCS} documents per chat.`);
-      return;
-    }
-    // Already indexed (that's what made it selectable in the picker in
-    // the first place) - attaches straight in as "ready", no upload or
-    // status watch needed.
-    setAttachments((prev) => [
-      ...prev,
-      {
-        localId: doc.doc_id,
-        filename: doc.filename,
-        mediaType: "",
-        docId: doc.doc_id,
-        isUploading: false,
-        progress: null,
-      },
-    ]);
-  }
-
   async function handleSubmit({ text }: { text: string }) {
     if (isSubmitting) return;
     const trimmed = text.trim();
@@ -300,11 +274,6 @@ export function ChatComposer() {
                   >
                     <Paperclip className="size-4" />
                   </PromptInputButton>
-                  <AttachExistingDocumentPicker
-                    excludeDocIds={attachments.map((a) => a.docId).filter((id) => id !== null)}
-                    disabled={isSubmitting || attachments.length >= MAX_CONVERSATION_DOCS}
-                    onSelect={handleAttachExisting}
-                  />
                   <input
                     ref={fileInputRef}
                     type="file"

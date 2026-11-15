@@ -78,6 +78,19 @@ def test_conversation_creation_with_no_doc_ids_falls_back_to_the_shared_corpus(c
     assert response.json()["doc_ids"] == ["shared-doc"]
 
 
+def test_conversation_creation_with_no_doc_ids_prefers_the_callers_own_documents(client, app):
+    _seed_shared_document()
+    _seed_private_document(owner=OTHER)
+    override_current_user(app, OTHER)
+
+    response = client.post("/conversations", json={"doc_ids": []})
+    assert response.status_code == 201
+    # The caller's own already-indexed document wins over the shared
+    # corpus - starting a chat with nothing attached should let them ask
+    # about what they already uploaded, not just the demo set.
+    assert response.json()["doc_ids"] == ["doc-1"]
+
+
 def test_conversation_creation_with_doc_ids_omitted_also_falls_back(client, app):
     _seed_shared_document()
     override_current_user(app, OTHER)
