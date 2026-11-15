@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "@/hooks/use-toast";
-import { FileText, Network, Share2 } from "lucide-react";
-import { GraphView } from "@/components/graph/graph-view";
+import { FileText, Network, RotateCcw, Share2 } from "lucide-react";
+import { GraphView, type GraphViewHandle } from "@/components/graph/graph-view";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,7 @@ import {
 import { getGraphData, getGraphSection } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
 import { useDocumentsStore } from "@/stores/documents-store";
+import { colorForDocId, distinctDocIds, withAlpha } from "@/lib/graph-colors";
 import type { GraphData, GraphSection } from "@/lib/types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
@@ -44,6 +45,18 @@ export default function GraphPage() {
   const [panelOpen, setPanelOpen] = useState(false);
   const [selectedSection, setSelectedSection] = useState<GraphSection | null>(null);
   const [selectedLabel, setSelectedLabel] = useState<string>("");
+  const [selectedDocIdForEntity, setSelectedDocIdForEntity] = useState<string | null>(null);
+  const graphViewRef = useRef<GraphViewHandle>(null);
+
+  const legend = useMemo(() => {
+    if (!graphData) return [];
+    const docIds = distinctDocIds(graphData.nodes.map((n) => n.doc_id));
+    return docIds.map((docId) => ({
+      docId,
+      color: colorForDocId(docId, docIds),
+      filename: documents.find((d) => d.doc_id === docId)?.filename ?? docId,
+    }));
+  }, [graphData, documents]);
 
   useEffect(() => {
     if (!isAuthLoading && !session) {
@@ -81,6 +94,7 @@ export default function GraphPage() {
     const node = graphData?.nodes.find((n) => n.id === entityId);
     if (!node) return;
     setSelectedLabel(node.label);
+    setSelectedDocIdForEntity(node.doc_id);
     setSelectedSection(null);
     setPanelOpen(true);
     try {
@@ -151,8 +165,35 @@ export default function GraphPage() {
           </div>
         ) : (
           <div className="h-full w-full p-4">
-            <div className="h-full w-full overflow-hidden rounded-xl border border-border bg-card/30">
-              <GraphView data={graphData} onNodeClick={handleNodeClick} />
+            <div className="relative h-full w-full overflow-hidden rounded-xl border border-border bg-card/30">
+              <div className="absolute top-3 left-3 z-10">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="bg-background/90 backdrop-blur-sm"
+                  onClick={() => graphViewRef.current?.reset()}
+                >
+                  <RotateCcw className="size-3.5" />
+                  Reset view
+                </Button>
+              </div>
+              <GraphView ref={graphViewRef} data={graphData} onNodeClick={handleNodeClick} />
+              {legend.length > 0 && (
+                <div className="absolute bottom-3 left-3 z-10 flex flex-wrap gap-3 rounded-lg border border-border bg-background/90 px-3 py-2 backdrop-blur-sm">
+                  {legend.map((entry) => (
+                    <span
+                      key={entry.docId}
+                      className="flex items-center gap-1.5 text-[11px] text-muted-foreground"
+                    >
+                      <span
+                        className="size-2.5 shrink-0 rounded-full"
+                        style={{ background: entry.color }}
+                      />
+                      <span className="max-w-32 truncate">{entry.filename}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -162,6 +203,24 @@ export default function GraphPage() {
         <SheetContent className="flex flex-col gap-0 p-0 sm:max-w-md">
           <SheetHeader className="border-b border-border">
             <SheetTitle>{selectedLabel}</SheetTitle>
+            {selectedDocIdForEntity &&
+              (() => {
+                const docIds = distinctDocIds(graphData?.nodes.map((n) => n.doc_id) ?? []);
+                const color = colorForDocId(selectedDocIdForEntity, docIds);
+                const filename =
+                  documents.find((d) => d.doc_id === selectedDocIdForEntity)?.filename ??
+                  selectedDocIdForEntity;
+                return (
+                  <Badge
+                    variant="outline"
+                    className="w-fit border-transparent"
+                    style={{ background: withAlpha(color, 15), color }}
+                  >
+                    <span className="size-1.5 rounded-full" style={{ background: color }} />
+                    {filename}
+                  </Badge>
+                );
+              })()}
             <SheetDescription>Where this entity appears in your documents</SheetDescription>
           </SheetHeader>
           <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
