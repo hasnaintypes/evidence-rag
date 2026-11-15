@@ -265,6 +265,11 @@ export async function sendMessage(
 type ChatStreamEvent =
   | { type: "token"; text: string }
   | { type: "done"; message: ConversationMessage }
+  // Trails a few hundred ms after "done" on a first turn only - the
+  // server generates the real chat title AFTER the reply is already on
+  // the wire instead of blocking it (see conversation_service.py's
+  // send_message_stream() docstring), then sends this as its own event.
+  | { type: "title"; title: string }
   | { type: "error"; detail: string };
 
 /**
@@ -278,7 +283,11 @@ type ChatStreamEvent =
  *
  * Calls onToken for each chunk of generated text as it arrives, then
  * resolves with the final persisted message once the server sends its
- * "done" event - the same shape sendMessage() resolves with.
+ * "done" event - the same shape sendMessage() resolves with. Resolving
+ * here does NOT close the connection: on a first turn, a trailing
+ * "title" event still arrives a little later (see ChatStreamEvent above),
+ * and a detached continuation below keeps draining the same reader to
+ * catch it and call onTitle - without making the caller wait for it.
  */
 export async function sendMessageStream(
   conversationId: string,
@@ -286,6 +295,7 @@ export async function sendMessageStream(
   advancedMode: boolean,
   onToken: (text: string) => void,
   signal?: AbortSignal,
+  onTitle?: (title: string) => void,
 ): Promise<ConversationMessage> {
   const response = await apiFetch(
     `/conversations/${encodeURIComponent(conversationId)}/messages/stream`,
@@ -296,29 +306,68 @@ export async function sendMessageStream(
       signal,
     },
   );
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error("Streaming response had no body.");
+  const bodyReader = response.body?.getReader();
+  if (!bodyReader) throw new Error("Streaming response had no body.");
+  const reader: ReadableStreamDefaultReader<Uint8Array> = bodyReader;
 
   const decoder = new TextDecoder();
   let buffer = "";
+
+  function parseFrames(): ChatStreamEvent[] {
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    return frames
+      .map((frame) => frame.split("\n").find((line) => line.startsWith("data:")))
+      .filter((dataLine): dataLine is string => !!dataLine)
+      .map((dataLine) => JSON.parse(dataLine.slice(5).trim()) as ChatStreamEvent);
+  }
+
+  // Drains whatever's left of the stream after "done" has already
+  // resolved the outer promise, purely to catch a trailing "title" event
+  // - failures here are non-fatal (the reply itself already landed), so
+  // this never throws back into the caller.
+  async function drainForTitle() {
+    try {
+      for (;;) {
+        for (const event of parseFrames()) {
+          if (event.type === "title") {
+            onTitle?.(event.title);
+            return;
+          }
+        }
+        const { done, value } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+      }
+    } catch {
+      // connection already served its purpose - nothing to recover
+    }
+  }
+
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
 
-    const frames = buffer.split("\n\n");
-    buffer = frames.pop() ?? "";
-    for (const frame of frames) {
-      const dataLine = frame.split("\n").find((line) => line.startsWith("data:"));
-      if (!dataLine) continue;
-      const event = JSON.parse(dataLine.slice(5).trim()) as ChatStreamEvent;
+    let doneMessage: ConversationMessage | null = null;
+    // Don't return the instant "done" is seen - a "title" event for the
+    // same turn can arrive in this same batch, and returning early would
+    // skip right past it before the loop gets to it.
+    for (const event of parseFrames()) {
       if (event.type === "token") {
         onToken(event.text);
       } else if (event.type === "done") {
-        return event.message;
+        doneMessage = event.message;
+      } else if (event.type === "title") {
+        onTitle?.(event.title);
+        if (doneMessage) return doneMessage;
       } else {
         throw new Error(event.detail);
       }
+    }
+    if (doneMessage) {
+      if (onTitle) void drainForTitle();
+      return doneMessage;
     }
   }
   throw new Error("The reply stream ended unexpectedly.");

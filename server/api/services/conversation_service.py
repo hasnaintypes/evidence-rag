@@ -4,7 +4,8 @@ import uuid
 from typing import Any, Dict, Iterator, List, Optional
 
 import structlog
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
+from fastapi.encoders import jsonable_encoder
 
 from api.authz import get_owned_conversation
 from api.deps import CurrentUser
@@ -26,6 +27,7 @@ from src.storage.database import (
     get_shared_document_ids,
     insert_message,
     list_conversations,
+    replace_fallback_title,
     touch_conversation,
     update_conversation,
 )
@@ -148,7 +150,9 @@ class ConversationService:
         return {"messages": get_conversation_messages(conversation_id)}
 
     @staticmethod
-    def send_message(conversation_id: str, message: str, advanced_mode: bool, user: CurrentUser) -> Dict[str, Any]:
+    def send_message(
+        conversation_id: str, message: str, advanced_mode: bool, user: CurrentUser, background_tasks: BackgroundTasks
+    ) -> Dict[str, Any]:
         """
         Replaces the old flat POST /chat: scoped to one conversation's documents
         (doc_ids, up to 5), and folds recent turns into the prompt so follow-ups work.
@@ -196,7 +200,10 @@ class ConversationService:
                 )
                 raise HTTPException(status_code=500, detail="Failed to generate a response. Please try again.")
 
-        return ConversationService._persist_reply(conversation_id, message, history, result)
+        reply = ConversationService._persist_reply(conversation_id, message, history, result)
+        if len(history) == 0:
+            background_tasks.add_task(ConversationService._generate_and_apply_title, conversation_id, message)
+        return reply
 
     @staticmethod
     def send_message_stream(
@@ -251,7 +258,31 @@ class ConversationService:
                         reply_message = ConversationService._persist_reply(
                             conversation_id, message, history, event["result"]
                         )
-                        yield f"data: {json.dumps({'type': 'done', 'message': reply_message})}\n\n"
+                        # jsonable_encoder, not a bare json.dumps(reply_message) -
+                        # under STORAGE_MODE=supabase, insert_message()'s
+                        # RETURNING id, created_at gives psycopg2's native
+                        # datetime for created_at (SQLite's equivalent column
+                        # is already a string), which json.dumps can't
+                        # serialize on its own. The non-streaming
+                        # send_message() endpoint doesn't hit this because
+                        # response_model=ChatReplyOut already runs every
+                        # response through this same FastAPI encoder.
+                        payload = jsonable_encoder({"type": "done", "message": reply_message})
+                        yield f"data: {json.dumps(payload)}\n\n"
+                        # Title generation happens AFTER "done" is already on
+                        # the wire, not before it - the client has the real
+                        # answer and can render it immediately; this extra
+                        # Cloudflare call just trails a few hundred ms behind
+                        # on the same connection instead of sitting in front
+                        # of the answer (2026-11-15 performance audit finding
+                        # #1). No BackgroundTasks needed here since this
+                        # generator is still live - send_message()'s
+                        # non-streaming twin below uses BackgroundTasks
+                        # instead, since it has no way to send anything after
+                        # its one response.
+                        if len(history) == 0:
+                            title = ConversationService._generate_and_apply_title(conversation_id, message)
+                            yield f"data: {json.dumps({'type': 'title', 'title': title})}\n\n"
                 except Exception:
                     logger.exception(
                         "process_chat_query_stream failed for conversation_id=%s user_id=%s", conversation_id, user.id
@@ -264,9 +295,19 @@ class ConversationService:
     @staticmethod
     def _persist_reply(conversation_id: str, message: str, history: list, result: Dict[str, Any]) -> Dict[str, Any]:
         """Shared by send_message() and send_message_stream(): stores the
-        assistant turn and (first turn only) generates a real title - see
-        send_message()'s docstring for why a pipeline failure never
-        reaches this (nothing is persisted for a failed run)."""
+        assistant turn and (first turn only) sets a cheap fallback title -
+        see send_message()'s docstring for why a pipeline failure never
+        reaches this (nothing is persisted for a failed run).
+
+        Does NOT call the title-generation LLM itself anymore (2026-11-15
+        performance audit finding #1: that extra Cloudflare round trip was
+        blocking this request/stream's critical path for no good reason -
+        title is purely cosmetic and already has this same fallback for
+        when generation fails). The real title is generated afterward by
+        each caller - send_message_stream() inline after its "done" event
+        is already on the wire, send_message() via BackgroundTasks since
+        it has no way to send anything after its one response - both
+        through _generate_and_apply_title() below."""
         assistant_message = insert_message(
             conversation_id,
             role="assistant",
@@ -277,15 +318,12 @@ class ConversationService:
 
         # First turn only (history was fetched before this message's own
         # insert_message() call, so an empty history means nothing came
-        # before this one): ask the model for a real title instead of just
-        # truncating the raw question. touch_conversation only sets the
-        # title if it's still unset (COALESCE) either way, so later turns
-        # keep passing the truncated fallback safely, same as before.
+        # before this one). touch_conversation only sets the title if it's
+        # still unset (COALESCE), so later turns keep passing None safely.
         is_first_turn = len(history) == 0
-        generated_title = _generate_title(message) if is_first_turn else None
         touch_conversation(
             conversation_id,
-            title=generated_title if generated_title else message[:TITLE_MAX_CHARS],
+            title=message[:TITLE_MAX_CHARS] if is_first_turn else None,
         )
 
         return {
@@ -293,8 +331,24 @@ class ConversationService:
             "telemetry": result.get("telemetry", {}),
             "chunks_matrix": result.get("chunks_matrix", []),
             "thinking": result.get("thinking", ""),
-            "title": generated_title if is_first_turn else None,
+            "title": None,
         }
+
+    @staticmethod
+    def _generate_and_apply_title(conversation_id: str, message: str) -> str:
+        """Generates the real title and swaps it in for the fallback
+        truncation _persist_reply() already set, unless the user renamed
+        the conversation in the meantime (replace_fallback_title()'s own
+        guard against that race). Returns whichever title is now correct
+        - the generated one, or the fallback itself on any generation
+        failure - so send_message_stream() can report it to the client
+        without a second DB read."""
+        fallback_title = message[:TITLE_MAX_CHARS]
+        generated_title = _generate_title(message)
+        if generated_title and generated_title != fallback_title:
+            replace_fallback_title(conversation_id, fallback_title, generated_title)
+            return generated_title
+        return fallback_title
 
     @staticmethod
     def _refresh_source_tokens(messages: list, user: CurrentUser) -> list:

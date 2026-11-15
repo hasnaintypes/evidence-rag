@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from fastapi.responses import StreamingResponse
 
 from api.deps import get_current_user, get_rate_limited_chat_user, CurrentUser
@@ -69,14 +69,17 @@ def restore_checkpoint_endpoint(conversation_id: str, message_id: int, user: Cur
 
 @router.post("/conversations/{conversation_id}/messages", response_model=ChatReplyOut)
 def send_message_endpoint(
-    conversation_id: str, body: ChatMessageIn, user: CurrentUser = Depends(get_rate_limited_chat_user)
+    conversation_id: str,
+    body: ChatMessageIn,
+    background_tasks: BackgroundTasks,
+    user: CurrentUser = Depends(get_rate_limited_chat_user),
 ):
     """Non-streaming JSON reply - kept alongside the SSE route below for
     any caller that just wants the final answer in one response (the
     interactive API docs, scripts, other integrations). The web UI itself
     calls /messages/stream instead, for the perceived-latency win of
     showing tokens as they're generated."""
-    return ConversationService.send_message(conversation_id, body.message, body.advanced_mode, user)
+    return ConversationService.send_message(conversation_id, body.message, body.advanced_mode, user, background_tasks)
 
 
 @router.post("/conversations/{conversation_id}/messages/stream")

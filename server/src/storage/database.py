@@ -1635,6 +1635,27 @@ def touch_conversation(conversation_id: str, title: Optional[str] = None) -> Non
         conn.close()
 
 
+def replace_fallback_title(conversation_id: str, fallback_title: str, new_title: str) -> None:
+    """Overwrites a conversation's title with the LLM-generated one computed
+    after touch_conversation() already set the truncated fallback - guarded
+    by `AND title = fallback_title` so a manual rename made in the window
+    between those two writes wins instead of being silently clobbered.
+    Ownership was already checked earlier in the same request by whichever
+    endpoint triggered title generation; this is an internal follow-up
+    write, not a new user-facing mutation, so it doesn't re-check it."""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        ph = _ph(1)
+        cursor.execute(
+            f"UPDATE conversations SET title = {ph} WHERE id = {ph} AND title = {ph}",
+            (new_title, conversation_id, fallback_title),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def insert_message(
     conversation_id: str,
     role: str,

@@ -238,14 +238,17 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
           );
         },
         controller.signal,
+        // Title generation now happens after "done" is already on the
+        // wire (server-side latency fix) - this fires a little later, as
+        // its own trailing SSE event, instead of being part of `result`.
+        (title) => {
+          setConversation((prev) => (prev ? { ...prev, title } : prev));
+          useConversationsStore.getState().patch(conversationId, { title });
+        },
       );
       setMessages((prev) =>
         prev.map((m) => (m.id === pendingId ? { ...fromServerMessage(result), id: pendingId } : m)),
       );
-      if (result.title) {
-        setConversation((prev) => (prev ? { ...prev, title: result.title! } : prev));
-        useConversationsStore.getState().patch(conversationId, { title: result.title });
-      }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         // User-initiated cancel (see handleCancelSend) - drop the pending

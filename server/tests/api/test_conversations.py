@@ -77,7 +77,14 @@ def test_send_message_returns_the_real_reply_on_success(client, app):
         "chunks_matrix": [],
         "thinking": "",
     }
-    with patch("api.services.conversation_service.process_chat_query", return_value=fake_result):
+    # This conversation's history is empty, so it's a first turn - the
+    # title-generation BackgroundTask fires within this same call (see
+    # test_send_message_returns_llm_generated_title_on_first_turn_only),
+    # so it needs mocking too or this would make a real Cloudflare call.
+    with (
+        patch("api.services.conversation_service.process_chat_query", return_value=fake_result),
+        patch("api.services.conversation_service.generate_cloudflare_json", return_value=None),
+    ):
         response = client.post(f"/conversations/{conversation_id}/messages", json={"message": "hello"})
 
     assert response.status_code == 200
@@ -108,9 +115,16 @@ def test_send_message_returns_llm_generated_title_on_first_turn_only(client, app
             return_value={"title": "Retention Drivers This Quarter"},
         ),
     ):
+        # Title generation is deferred to a BackgroundTask (2026-11-15
+        # performance audit finding #1 - it used to block this response),
+        # so the response's own title field is always None now; the real
+        # title only shows up in the conversation row itself, applied
+        # after the response body was already built. TestClient runs
+        # queued background tasks before client.post() returns, so the
+        # conversation is already updated by the time this call returns.
         first = client.post(f"/conversations/{conversation_id}/messages", json={"message": "hello"})
         assert first.status_code == 200
-        assert first.json()["title"] == "Retention Drivers This Quarter"
+        assert first.json()["title"] is None
 
         # A second turn in the same conversation is not the first turn
         # anymore - no LLM title call should fire, and the response's
@@ -169,16 +183,23 @@ def test_send_message_stream_yields_tokens_then_a_done_event_with_the_real_reply
     conversation_id = _seed_conversation()
     override_current_user(app, OWNER)
 
-    with patch(
-        "api.services.conversation_service.process_chat_query_stream",
-        side_effect=lambda *args, **kwargs: _fake_stream_events(),
+    # This conversation's history is empty, so it's a first turn - the
+    # title-generation call that fires inline after "done" (see
+    # test_send_message_stream_generates_a_title_on_first_turn_only) needs
+    # mocking here too, or this test would make a real Cloudflare call.
+    with (
+        patch(
+            "api.services.conversation_service.process_chat_query_stream",
+            side_effect=lambda *args, **kwargs: _fake_stream_events(),
+        ),
+        patch("api.services.conversation_service.generate_cloudflare_json", return_value=None),
     ):
         response = client.post(f"/conversations/{conversation_id}/messages/stream", json={"message": "hello"})
 
     assert response.status_code == 200
     events = _parse_sse_events(response.text)
-    assert [e["type"] for e in events] == ["token", "token", "done"]
-    assert events[-1]["message"]["content"] == "a real answer"
+    assert [e["type"] for e in events] == ["token", "token", "done", "title"]
+    assert events[-2]["message"]["content"] == "a real answer"
 
     messages = get_conversation_messages(conversation_id)
     assert len(messages) == 2
@@ -221,12 +242,19 @@ def test_send_message_stream_generates_a_title_on_first_turn_only(client, app):
             return_value={"title": "Retention Drivers This Quarter"},
         ),
     ):
+        # Title generation now happens inline AFTER "done" is yielded
+        # (2026-11-15 performance audit finding #1), as its own trailing
+        # {"type": "title", ...} event - the "done" event's own
+        # message.title stays None.
         first = client.post(f"/conversations/{conversation_id}/messages/stream", json={"message": "hello"})
         first_events = _parse_sse_events(first.text)
-        assert first_events[-1]["message"]["title"] == "Retention Drivers This Quarter"
+        assert [e["type"] for e in first_events] == ["token", "token", "done", "title"]
+        assert first_events[-2]["message"]["title"] is None
+        assert first_events[-1]["title"] == "Retention Drivers This Quarter"
 
         second = client.post(f"/conversations/{conversation_id}/messages/stream", json={"message": "a follow-up"})
         second_events = _parse_sse_events(second.text)
+        assert [e["type"] for e in second_events] == ["token", "token", "done"]
         assert second_events[-1]["message"]["title"] is None
 
     conversation = get_conversation(conversation_id)
