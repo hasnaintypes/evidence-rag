@@ -340,6 +340,7 @@ def _init_db_with(conn) -> None:
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc ON document_chunks(doc_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_entities_doc ON entities(doc_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_edges_doc ON entity_edges(doc_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_documents_user_list ON documents(user_id, ingested_at, doc_id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id)")
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_conversations_user_list ON conversations(user_id, pinned, updated_at, id)"
@@ -759,6 +760,59 @@ def list_documents(user_id: Optional[str] = None) -> List[Dict[str, Any]]:
             cursor.execute("SELECT * FROM documents ORDER BY ingested_at DESC")
         rows = cursor.fetchall()
         return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def _encode_document_cursor(row: Dict[str, Any]) -> str:
+    """Opaque keyset-pagination cursor, same reasoning as
+    _encode_conversation_cursor: resuming on (ingested_at, doc_id) stays
+    correct even if a document is inserted/reingested between page
+    fetches, unlike OFFSET/LIMIT."""
+    payload = json.dumps([str(row["ingested_at"]), row["doc_id"]])
+    return base64.urlsafe_b64encode(payload.encode()).decode()
+
+
+def _decode_document_cursor(cursor: str) -> tuple:
+    payload = base64.urlsafe_b64decode(cursor.encode()).decode()
+    ingested_at, last_doc_id = json.loads(payload)
+    return ingested_at, last_doc_id
+
+
+def list_documents_paginated(user_id: str, limit: int = 30, cursor: Optional[str] = None) -> Dict[str, Any]:
+    """Paginated counterpart to list_documents() for the /documents route -
+    list_documents() itself stays unpaginated since api/authz.py's
+    get_owned_graph_scope() needs every doc_id a user can access, not one
+    page of them. Keyset-paginated on (ingested_at DESC, doc_id DESC), same
+    pattern as list_conversations()."""
+    conn = get_db_connection()
+    try:
+        cursor_obj = conn.cursor()
+        ph = _ph(1)
+        where_extra = ""
+        params: List[Any] = [user_id]
+        if cursor:
+            ingested_at, last_doc_id = _decode_document_cursor(cursor)
+            where_extra = f"""AND (
+                ingested_at < {ph} OR
+                (ingested_at = {ph} AND doc_id < {ph})
+            )"""
+            params += [ingested_at, ingested_at, last_doc_id]
+        params.append(limit + 1)  # fetch one extra row to know has_more without a second query
+        cursor_obj.execute(
+            f"""
+            SELECT * FROM documents
+            WHERE (user_id = {ph} OR user_id IS NULL) {where_extra}
+            ORDER BY ingested_at DESC, doc_id DESC
+            LIMIT {ph}
+        """,
+            params,
+        )
+        rows = [dict(r) for r in cursor_obj.fetchall()]
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        next_cursor = _encode_document_cursor(rows[-1]) if has_more and rows else None
+        return {"documents": rows, "next_cursor": next_cursor, "has_more": has_more}
     finally:
         conn.close()
 

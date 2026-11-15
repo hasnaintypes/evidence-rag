@@ -153,6 +153,11 @@ create index if not exists idx_chunks_parent on document_chunks(parent_id);
 create index if not exists idx_chunks_doc on document_chunks(doc_id);
 create index if not exists idx_entities_doc on entities(doc_id);
 create index if not exists idx_edges_doc on entity_edges(doc_id);
+-- Covers list_documents_paginated()'s keyset pagination (ORDER BY
+-- ingested_at DESC, doc_id DESC WHERE user_id = ... OR user_id IS NULL) -
+-- apply manually, this repo has no migration framework (see CLAUDE.md).
+create index if not exists idx_documents_user_list
+    on documents(user_id, ingested_at desc, doc_id desc);
 create index if not exists idx_conversations_user on conversations(user_id);
 -- Covers list_conversations()'s keyset pagination (ORDER BY pinned DESC,
 -- updated_at DESC, id DESC WHERE user_id = ...) - apply manually, this repo

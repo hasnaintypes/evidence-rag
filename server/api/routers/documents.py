@@ -1,3 +1,5 @@
+from typing import Optional
+
 from fastapi import APIRouter, BackgroundTasks, Depends, Response, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
 
@@ -9,8 +11,8 @@ router = APIRouter()
 
 
 @router.get("/documents")
-def documents_endpoint(user: CurrentUser = Depends(get_current_user)):
-    return DocumentService.list_for_user(user)
+def documents_endpoint(limit: int = 30, cursor: Optional[str] = None, user: CurrentUser = Depends(get_current_user)):
+    return DocumentService.list_for_user(user, limit=limit, cursor=cursor)
 
 
 @router.post("/upload")

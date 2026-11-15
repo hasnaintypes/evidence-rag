@@ -43,7 +43,7 @@ import {
 } from "@/lib/api";
 import type { DocumentRecord } from "@/lib/types";
 import { useAuth } from "@/hooks/use-auth";
-import { useDocuments } from "@/hooks/use-documents";
+import { useDocumentsStore } from "@/stores/documents-store";
 
 // One icon per supported format (ACCEPTED_DOCUMENT_EXTENSIONS) rather than
 // lumping everything under a single generic document icon - lucide has no
@@ -175,13 +175,24 @@ function DocumentCardSkeleton() {
 export default function DocumentsPage() {
   const router = useRouter();
   const { session, isLoading: isAuthLoading } = useAuth();
-  const { documents, isLoading, refresh, update, remove } = useDocuments();
+  const { documents, isLoading, hasMore, fetchInitial, loadMore, update, remove } =
+    useDocumentsStore();
   const statusUnsubscribes = useRef<Record<string, () => void>>({});
 
   const [query, setQuery] = useState("");
   const [renameTarget, setRenameTarget] = useState<DocumentRecord | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<DocumentRecord | null>(null);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+
+  async function handleLoadMore() {
+    setIsLoadingMore(true);
+    try {
+      await loadMore();
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }
 
   useEffect(() => {
     if (!isAuthLoading && !session) {
@@ -191,8 +202,8 @@ export default function DocumentsPage() {
 
   useEffect(() => {
     if (!session) return;
-    refresh();
-  }, [session, refresh]);
+    fetchInitial();
+  }, [session, fetchInitial]);
 
   useEffect(() => {
     const unsubscribes = statusUnsubscribes.current;
@@ -210,11 +221,11 @@ export default function DocumentsPage() {
     statusUnsubscribes.current[docId] = subscribeToDocumentStatus(docId, (status) => {
       if (status.status === "ready") {
         delete statusUnsubscribes.current[docId];
-        refresh();
+        fetchInitial({ force: true });
       } else if (status.status === "failed") {
         delete statusUnsubscribes.current[docId];
         onFailed();
-        refresh();
+        fetchInitial({ force: true });
       } else {
         update(docId, { chunks_indexed: status.chunks_indexed, chunks_total: status.chunks_total });
       }
@@ -254,7 +265,7 @@ export default function DocumentsPage() {
       await deleteDocument(target.doc_id);
     } catch {
       toast.error("Couldn't delete this document.");
-      refresh();
+      fetchInitial({ force: true });
     }
   }
 
@@ -265,7 +276,7 @@ export default function DocumentsPage() {
       watchUntilTerminal(docId, () => toast.error(`Couldn't re-index "${document.filename}".`));
     } catch {
       toast.error(`Couldn't re-index "${document.filename}".`);
-      refresh();
+      fetchInitial({ force: true });
     }
   }
 
@@ -322,18 +333,31 @@ export default function DocumentsPage() {
             No documents match &quot;{query}&quot;.
           </p>
         ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-            {filtered.map((document) => (
-              <DocumentCard
-                key={document.doc_id}
-                document={document}
-                isOwnDocument={document.user_id === session?.user.id}
-                onRename={() => openRename(document)}
-                onDelete={() => setDeleteTarget(document)}
-                onReingest={() => handleReingest(document)}
-              />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+              {filtered.map((document) => (
+                <DocumentCard
+                  key={document.doc_id}
+                  document={document}
+                  isOwnDocument={document.user_id === session?.user.id}
+                  onRename={() => openRename(document)}
+                  onDelete={() => setDeleteTarget(document)}
+                  onReingest={() => handleReingest(document)}
+                />
+              ))}
+            </div>
+            {hasMore && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="mx-auto w-fit"
+                onClick={handleLoadMore}
+                disabled={isLoadingMore}
+              >
+                {isLoadingMore ? "Loading…" : "Load more"}
+              </Button>
+            )}
+          </>
         )}
       </div>
 

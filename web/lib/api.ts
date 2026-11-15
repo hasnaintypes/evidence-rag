@@ -2,7 +2,7 @@ import type {
   Conversation,
   ConversationListPage,
   ConversationMessage,
-  DocumentRecord,
+  DocumentListPage,
   GraphData,
   GraphSection,
 } from "@/lib/types";
@@ -152,10 +152,13 @@ export function subscribeToDocumentStatus(
   return () => controller.abort();
 }
 
-export async function getDocuments(): Promise<DocumentRecord[]> {
-  const response = await apiFetch("/documents");
-  const data = (await response.json()) as { documents: DocumentRecord[] };
-  return data.documents;
+export async function getDocuments(cursor?: string, limit?: number): Promise<DocumentListPage> {
+  const params = new URLSearchParams();
+  if (cursor) params.set("cursor", cursor);
+  if (limit) params.set("limit", String(limit));
+  const qs = params.toString();
+  const response = await apiFetch(`/documents${qs ? `?${qs}` : ""}`);
+  return response.json() as Promise<DocumentListPage>;
 }
 
 export async function renameDocument(docId: string, filename: string): Promise<void> {

@@ -23,9 +23,10 @@ import {
   SheetTitle,
   SheetDescription,
 } from "@/components/ui/sheet";
-import { getDocuments, getGraphData, getGraphSection } from "@/lib/api";
+import { getGraphData, getGraphSection } from "@/lib/api";
 import { useAuth } from "@/hooks/use-auth";
-import type { DocumentRecord, GraphData, GraphSection } from "@/lib/types";
+import { useDocumentsStore } from "@/stores/documents-store";
+import type { GraphData, GraphSection } from "@/lib/types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000";
 const ALL_DOCS = "all";
@@ -34,7 +35,7 @@ export default function GraphPage() {
   const router = useRouter();
   const { session, isLoading: isAuthLoading } = useAuth();
 
-  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
+  const { documents, fetchInitial: fetchDocuments } = useDocumentsStore();
   const [selectedDocId, setSelectedDocId] = useState<string>(ALL_DOCS);
   const [graphData, setGraphData] = useState<GraphData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -52,13 +53,8 @@ export default function GraphPage() {
 
   useEffect(() => {
     if (!session) return;
-    getDocuments()
-      .then(setDocuments)
-      .catch(() => {
-        // Filter dropdown just stays empty (full-corpus view still works) -
-        // not worth a separate error state for a non-critical control.
-      });
-  }, [session]);
+    fetchDocuments();
+  }, [session, fetchDocuments]);
 
   useEffect(() => {
     if (!session) return;

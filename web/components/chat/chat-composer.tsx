@@ -36,6 +36,7 @@ import { stashPendingFirstMessage } from "@/lib/pending-first-message";
 import { useAuth } from "@/hooks/use-auth";
 import { useAdvancedMode } from "@/hooks/use-advanced-mode";
 import { useConversationsStore } from "@/stores/conversations-store";
+import { useDocumentsStore } from "@/stores/documents-store";
 import {
   ACCEPTED_DOCUMENT_EXTENSIONS,
   MAX_CONVERSATION_DOCS,
@@ -110,6 +111,13 @@ export function ChatComposer() {
       // subscribeToDocumentStatus's SSE stream instead of a client poll.
       const { docId, status } = await uploadDocument(file);
       if (removedIds.current.has(localId)) return;
+      // A brand-new document row now exists that the shared documents
+      // cache (Library page, the Graph doc filter, this composer's own
+      // "attach existing" picker) doesn't know about yet - invalidate it
+      // so the next page that reads it fetches instead of serving a stale
+      // snapshot. Doesn't force an immediate refetch here; nothing is
+      // necessarily mounted to show it right now.
+      useDocumentsStore.getState().reset();
 
       if (status === "ready") {
         setAttachments((prev) =>

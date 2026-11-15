@@ -60,6 +60,14 @@ export type DocumentRecord = {
   chunks_total: number;
 };
 
+// Mirrors GET /documents's top-level response shape (server/src/storage/
+// database.py's list_documents_paginated()).
+export type DocumentListPage = {
+  documents: DocumentRecord[];
+  next_cursor: string | null;
+  has_more: boolean;
+};
+
 // Shared with the Documents management page's upload button - kept in
 // sync with server/src/ingestion/pipeline.py's SUPPORTED_EXTENSIONS by
 // hand (this is just an OS file-picker hint; the server independently

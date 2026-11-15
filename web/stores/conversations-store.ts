@@ -7,11 +7,22 @@ type ConversationsState = {
   isLoading: boolean;
   hasMore: boolean;
   nextCursor: string | null;
-  fetchInitial: () => Promise<void>;
+  // True once fetchInitial() has completed at least once - lets
+  // fetchInitial() become a cache-hit no-op on every later mount (the
+  // sidebar remounts on every /chat <-> /documents <-> /graph navigation,
+  // since those are sibling route segments, not nested ones) instead of
+  // re-fetching data that insertOptimistic/patch/remove already keep in
+  // sync locally. Pass force:true to bypass the cache (the rollback-resync
+  // call below after a failed mutation genuinely needs a fresh fetch).
+  loaded: boolean;
+  fetchInitial: (opts?: { force?: boolean }) => Promise<void>;
   loadMore: () => Promise<void>;
   insertOptimistic: (conversation: ConversationListItem) => void;
   patch: (id: string, patch: Partial<ConversationListItem>) => void;
   remove: (id: string) => void;
+  // Called on sign-out/sign-in-as-a-different-user (stores/auth-store.ts)
+  // so the next session doesn't render through a previous user's cache.
+  reset: () => void;
 };
 
 // Module-level store (not a hook-local fetch) so a conversation created in
@@ -25,8 +36,10 @@ export const useConversationsStore = create<ConversationsState>((set, get) => ({
   isLoading: true,
   hasMore: false,
   nextCursor: null,
+  loaded: false,
 
-  fetchInitial: async () => {
+  fetchInitial: async (opts) => {
+    if (get().loaded && !opts?.force) return;
     set({ isLoading: true });
     try {
       const page = await listConversations();
@@ -35,9 +48,10 @@ export const useConversationsStore = create<ConversationsState>((set, get) => ({
         hasMore: page.has_more,
         nextCursor: page.next_cursor,
         isLoading: false,
+        loaded: true,
       });
     } catch {
-      set({ conversations: [], hasMore: false, nextCursor: null, isLoading: false });
+      set({ conversations: [], hasMore: false, nextCursor: null, isLoading: false, loaded: false });
     }
   },
 
@@ -65,4 +79,7 @@ export const useConversationsStore = create<ConversationsState>((set, get) => ({
     })),
 
   remove: (id) => set((s) => ({ conversations: s.conversations.filter((c) => c.id !== id) })),
+
+  reset: () =>
+    set({ conversations: [], isLoading: true, hasMore: false, nextCursor: null, loaded: false }),
 }));

@@ -1,7 +1,7 @@
 import os
 import time
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import BackgroundTasks, HTTPException, UploadFile
 
@@ -19,7 +19,7 @@ from src.storage.database import (
     filename_exists_elsewhere,
     filename_in_use_by_other,
     get_document_status,
-    list_documents,
+    list_documents_paginated,
     rename_document,
 )
 from src.storage.files import delete_file, get_source_path, rename_file, save_upload
@@ -37,10 +37,12 @@ class DocumentService:
     """
 
     @staticmethod
-    def list_for_user(user: CurrentUser) -> Dict[str, Any]:
-        """The caller's own uploaded documents plus shared/demo documents
-        (docs/fixtures/sample_docs), used by the UI sidebar."""
-        return {"documents": list_documents(user_id=user.id)}
+    def list_for_user(user: CurrentUser, limit: int = 30, cursor: Optional[str] = None) -> Dict[str, Any]:
+        """Paginated page of the caller's own uploaded documents plus
+        shared/demo documents (docs/fixtures/sample_docs), used by the
+        Library page. Clamps limit so a caller can't request an unbounded
+        page - same reasoning as ConversationService.list_for_user()."""
+        return list_documents_paginated(user.id, limit=max(1, min(limit, 100)), cursor=cursor)
 
     @staticmethod
     def upload(file: UploadFile, user: CurrentUser, background_tasks: BackgroundTasks) -> Dict[str, Any]:

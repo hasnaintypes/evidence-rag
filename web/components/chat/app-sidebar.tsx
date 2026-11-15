@@ -173,7 +173,7 @@ export function AppSidebar() {
       await deleteConversation(target.id);
     } catch {
       toast.error("Couldn't delete this chat.");
-      useConversationsStore.getState().fetchInitial(); // simplest correct rollback - resync from the server
+      useConversationsStore.getState().fetchInitial({ force: true }); // simplest correct rollback - resync from the server
     }
   }
 
