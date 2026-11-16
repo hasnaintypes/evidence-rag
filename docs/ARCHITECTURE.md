@@ -220,6 +220,6 @@ loading/error state so components don't duplicate fetch boilerplate.
 - The entity graph is exploration-only, not a retrieval signal, and costs one LLM call per
   section.
 - Every data route requires a signed-in Supabase user; there's no anonymous/read-only demo mode.
-- Streamed answers are fully visible before the faithfulness gate can hide them ([#71](../../issues/71)).
+- Streamed answers are fully visible before the faithfulness gate can hide them ([#71](../../../issues/71)).
 - The PDF table-misdetection fix's 50% filled-cell threshold may reject legitimately sparse real
-  tables ([#72](../../issues/72)).
+  tables ([#72](../../../issues/72)).
