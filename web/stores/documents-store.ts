@@ -14,6 +14,11 @@ type DocumentsState = {
   // fetchInitial() becomes a no-op once a page has already been loaded -
   // add()/update()/remove() below keep it in sync locally instead.
   loaded: boolean;
+  // Bumped by reset() - fetchAll()'s loop checks this to detect a
+  // concurrent reset (e.g. sign-out mid-fetch) instead of trusting
+  // get().hasMore alone, which reset() also sets to false and would
+  // otherwise read as "pagination finished" rather than "abandoned".
+  generation: number;
   fetchInitial: (opts?: { force?: boolean }) => Promise<void>;
   loadMore: () => Promise<void>;
   // Pages in loadMore() a page at a time until hasMore is false - for a
@@ -36,6 +41,7 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
   hasMore: false,
   nextCursor: null,
   loaded: false,
+  generation: 0,
 
   fetchInitial: async (opts) => {
     if (get().loaded && !opts?.force) return;
@@ -77,7 +83,15 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
   },
 
   fetchAll: async (opts) => {
+    // Captured before any await - if reset() fires while this is in
+    // flight (e.g. a concurrent sign-out or a document upload's own
+    // reset() call), get().generation will have moved on and every check
+    // below bails out instead of continuing to paginate into a store a
+    // different "session" now owns, or exiting the loop early believing
+    // pagination finished just because reset() also set hasMore: false.
+    const generation = get().generation;
     await get().fetchInitial(opts);
+    if (get().generation !== generation) return;
     // loadMore() swallows a failed request and leaves hasMore/nextCursor
     // unchanged for a manual retry - detect that here (no cursor
     // progress) and stop, rather than spinning forever retrying the
@@ -86,6 +100,7 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
     while (get().hasMore && get().nextCursor !== previousCursor) {
       previousCursor = get().nextCursor;
       await get().loadMore();
+      if (get().generation !== generation) return;
     }
   },
 
@@ -99,5 +114,12 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
   remove: (docId) => set((s) => ({ documents: s.documents.filter((d) => d.doc_id !== docId) })),
 
   reset: () =>
-    set({ documents: [], isLoading: true, hasMore: false, nextCursor: null, loaded: false }),
+    set((s) => ({
+      documents: [],
+      isLoading: true,
+      hasMore: false,
+      nextCursor: null,
+      loaded: false,
+      generation: s.generation + 1,
+    })),
 }));
