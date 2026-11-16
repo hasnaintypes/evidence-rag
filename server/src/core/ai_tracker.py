@@ -93,6 +93,12 @@ class AICallSpan:
         self.rate_limit_remaining: Optional[str] = None
         self.request_summary: Optional[Dict[str, Any]] = None
         self.outcome = "success"
+        # The provider's own stop reason ("stop", "length", "content_filter",
+        # ...) - "length" is what distinguishes a genuinely short answer
+        # from one that got cut off hitting max_tokens, which nothing in
+        # this app surfaced anywhere before (see the Gemini thinking-budget
+        # truncation this was added to diagnose).
+        self.finish_reason: Optional[str] = None
 
     def log_attempt(
         self,
@@ -125,6 +131,9 @@ class AICallSpan:
 
     def record_request(self, request_summary: Dict[str, Any]) -> None:
         self.request_summary = request_summary
+
+    def record_finish_reason(self, finish_reason: Optional[str]) -> None:
+        self.finish_reason = finish_reason
 
 
 @contextmanager
@@ -222,6 +231,7 @@ def track_ai_call(
             outcome=span.outcome,
             input_tokens=span.input_tokens,
             output_tokens=span.output_tokens,
+            finish_reason=span.finish_reason,
             request_summary=span.request_summary,
         )
         if telemetry is not None:
@@ -241,6 +251,7 @@ def _span_summary(span: AICallSpan, duration_ms: float) -> Dict[str, Any]:
         "outcome": span.outcome,
         "input_tokens": span.input_tokens,
         "output_tokens": span.output_tokens,
+        "finish_reason": span.finish_reason,
     }
 
 

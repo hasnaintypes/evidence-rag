@@ -139,6 +139,22 @@ class Settings(BaseSettings):
     llm_base_url: str = ""
     llm_api_key: str = ""
     llm_model: str = ""
+    # Gemini 2.5 models spend hidden "thinking" tokens out of the SAME
+    # max_tokens budget as the visible answer when called through this
+    # generic OpenAI-compatible Chat Completions path - there's no separate
+    # thinking-token parameter in the OpenAI schema itself. Observed in
+    # production: a short resume-lookup answer got cut off mid-sentence
+    # with no error, generation_max_tokens mostly consumed by reasoning
+    # the caller never sees. Only applied in src/core/llm.py when
+    # llm_base_url points at generativelanguage.googleapis.com (detected
+    # automatically - never sent to a non-Gemini endpoint, which wouldn't
+    # recognize the field); 0 disables thinking outright, matching this
+    # app's actual use of the final-answer/rerank/judge/title calls (direct
+    # citation-grounded generation, not open-ended reasoning). Raise this
+    # (or lower generation_max_tokens's effective headroom demand some
+    # other way) if a future prompt genuinely benefits from Gemini's
+    # thinking mode.
+    llm_gemini_thinking_budget: int = 0
 
     # --- Voyage AI (embeddings) ---
     voyage_api_key: str

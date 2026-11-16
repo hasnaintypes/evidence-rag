@@ -634,3 +634,73 @@ def test_generate_llm_json_returns_none_when_not_configured(monkeypatch):
     monkeypatch.setattr(settings, "llm_api_key", "")
     result = llm.generate_llm_json("some prompt")
     assert result is None
+
+
+def test_gemini_thinking_budget_kwargs_omitted_for_a_non_gemini_endpoint(monkeypatch):
+    monkeypatch.setattr(settings, "llm_base_url", "https://api.cloudflare.com/client/v4/accounts/x/ai/v1")
+    assert llm._gemini_thinking_budget_kwargs() == {}
+
+
+def test_gemini_thinking_budget_kwargs_added_for_geminis_openai_compatible_endpoint(monkeypatch):
+    monkeypatch.setattr(settings, "llm_base_url", "https://generativelanguage.googleapis.com/v1beta/openai/")
+    monkeypatch.setattr(settings, "llm_gemini_thinking_budget", 0)
+    kwargs = llm._gemini_thinking_budget_kwargs()
+    assert kwargs["extra_body"]["extra_body"]["google"]["thinking_config"]["thinking_budget"] == 0
+
+
+def test_generate_llm_chat_logs_a_warning_when_truncated_at_max_tokens(monkeypatch, caplog):
+    """finish_reason="length" means the model hit max_tokens mid-answer -
+    previously silent (see the Gemini thinking-budget truncation this was
+    added to diagnose), this must now surface in the logs."""
+    _configure_llm(monkeypatch)
+    fake_client = MagicMock()
+    message = MagicMock(content="a truncated answer that stops abruptly")
+    choice = MagicMock(message=message, finish_reason="length")
+    fake_client.chat.completions.create.return_value = MagicMock(choices=[choice], usage=None)
+
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        with caplog.at_level("WARNING", logger="evidence_rag.llm"):
+            result = llm.generate_llm_chat("some prompt")
+
+    assert result == "a truncated answer that stops abruptly"
+    assert any("finish_reason=length" in record.message for record in caplog.records)
+
+
+def test_get_embedding_retries_with_backoff_on_a_voyage_rate_limit_error():
+    """A 429 from Voyage must not be retried instantly - that's the
+    exact failure mode that can stall free-tier ingestion under
+    EMBED_CONCURRENCY (see get_embedding()'s rate-limit retry path)."""
+    import voyageai.error as voyage_error
+
+    class _FakeResult:
+        embeddings = [[0.1, 0.2]]
+
+    rate_limit_error = voyage_error.RateLimitError("rate limited", http_status=429, headers={})
+
+    with (
+        patch.object(llm.embedding_client, "embed", side_effect=[rate_limit_error, _FakeResult()]),
+        patch("time.sleep") as mock_sleep,
+    ):
+        result = llm.get_embedding("some text")
+
+    assert result == [0.1, 0.2]
+    mock_sleep.assert_called_once()
+    assert mock_sleep.call_args.args[0] > 0
+
+
+def test_get_embeddings_batch_retries_with_backoff_on_a_voyage_rate_limit_error():
+    import voyageai.error as voyage_error
+
+    class _FakeResult:
+        embeddings = [[0.1, 0.2], [0.3, 0.4]]
+
+    rate_limit_error = voyage_error.RateLimitError("rate limited", http_status=429, headers={"retry-after": "7"})
+
+    with (
+        patch.object(llm.embedding_client, "embed", side_effect=[rate_limit_error, _FakeResult()]),
+        patch("time.sleep") as mock_sleep,
+    ):
+        result = llm.get_embeddings_batch(["a", "b"])
+
+    assert result == [[0.1, 0.2], [0.3, 0.4]]
+    mock_sleep.assert_called_once_with(7.0)

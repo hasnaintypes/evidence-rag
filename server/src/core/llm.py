@@ -5,6 +5,7 @@ import time
 
 import openai
 import voyageai
+import voyageai.error
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
@@ -109,6 +110,28 @@ def _skip_reason(exc: Exception) -> str:
     return "quota/rate-limit" if _is_quota_or_rate_limit_error(exc) else "error"
 
 
+VOYAGE_RATE_LIMIT_RETRY_DEFAULT_SECONDS = 20.0
+
+
+def _voyage_retry_delay_seconds(exc: "voyageai.error.RateLimitError") -> float:
+    """Honors a Retry-After header when Voyage's 429 response sends one
+    (same convention as _llm_retry_after_seconds() below); otherwise a
+    conservative default + jitter sized for Voyage's free-tier limit
+    (~3 RPM, i.e. ~20s between calls). get_embedding()/
+    get_embeddings_batch()'s single retry used to fire immediately on ANY
+    failure including a 429 - harmless on a paid plan, but a real stall
+    risk on the free tier once EMBED_CONCURRENCY fires several batches at
+    once, since an instant retry just hits the same still-active rate
+    limit again."""
+    try:
+        header = (exc.headers or {}).get("retry-after")
+        if header:
+            return float(header)
+    except Exception:
+        pass
+    return VOYAGE_RATE_LIMIT_RETRY_DEFAULT_SECONDS + random.uniform(0, 2)
+
+
 def get_embedding(text: str, operation: str = "embedding", request_id: Optional[str] = None) -> List[float]:
     """
     Generates a vector embedding for the provided text via the Voyage AI API.
@@ -146,6 +169,13 @@ def get_embedding(text: str, operation: str = "embedding", request_id: Optional[
         try:
             result = embedding_client.embed([clean_text], **kwargs)
             span.log_attempt(1, "success")
+        except voyageai.error.RateLimitError as e:
+            delay = _voyage_retry_delay_seconds(e)
+            span.log_attempt(1, "retry", http_status=e.http_status, error_category="RateLimitError")
+            logger.warning("get_embedding: Voyage rate-limited, retrying in %.1fs", delay)
+            time.sleep(delay)
+            result = embedding_client.embed([clean_text], **kwargs)
+            span.log_attempt(2, "success")
         except Exception as e:
             span.log_attempt(1, "retry", error_category=type(e).__name__)
             result = embedding_client.embed([clean_text], **kwargs)
@@ -195,6 +225,13 @@ def get_embeddings_batch(
         try:
             result = embedding_client.embed(clean_texts, **kwargs)
             span.log_attempt(1, "success")
+        except voyageai.error.RateLimitError as e:
+            delay = _voyage_retry_delay_seconds(e)
+            span.log_attempt(1, "retry", http_status=e.http_status, error_category="RateLimitError")
+            logger.warning("get_embeddings_batch: Voyage rate-limited, retrying in %.1fs", delay)
+            time.sleep(delay)
+            result = embedding_client.embed(clean_texts, **kwargs)
+            span.log_attempt(2, "success")
         except Exception as e:
             span.log_attempt(1, "retry", error_category=type(e).__name__)
             result = embedding_client.embed(clean_texts, **kwargs)
@@ -410,6 +447,27 @@ def _llm_retry_after_seconds(exc: "openai.RateLimitError") -> float:
     return LLM_RATE_LIMIT_COOLDOWN_DEFAULT_SECONDS + random.uniform(0, 5)
 
 
+def _gemini_thinking_budget_kwargs() -> Dict[str, Any]:
+    """Caps Gemini's hidden "thinking" token spend when (and only when)
+    settings.llm_base_url actually points at Gemini's OpenAI-compatible
+    endpoint - see config.py's llm_gemini_thinking_budget docstring for
+    why this exists. Detected from the base URL rather than gated on a
+    separate "is this Gemini" setting so Cloudflare/OpenRouter/self-hosted
+    endpoints never receive a field they wouldn't recognize. The double
+    "extra_body" nesting below isn't a typo - it's the exact shape
+    Google's own OpenAI-compatibility docs document for this field; the
+    outer `extra_body` is the openai SDK's own passthrough kwarg, the
+    inner one is Gemini's wire-format key for it.
+    """
+    if "generativelanguage.googleapis.com" not in settings.llm_base_url:
+        return {}
+    return {
+        "extra_body": {
+            "extra_body": {"google": {"thinking_config": {"thinking_budget": settings.llm_gemini_thinking_budget}}}
+        }
+    }
+
+
 def _llm_chat_completion(messages: List[Dict[str, str]], max_tokens: int, temperature: float, stream: bool, span=None):
     """
     One logical request to the configured LLM endpoint's Chat Completions API for
@@ -450,6 +508,7 @@ def _llm_chat_completion(messages: List[Dict[str, str]], max_tokens: int, temper
                 max_tokens=max_tokens,
                 temperature=temperature,
                 stream=stream,
+                **_gemini_thinking_budget_kwargs(),
             )
             elapsed_ms = round((time.perf_counter() - start) * 1000, 1)
             logger.info(
@@ -545,6 +604,8 @@ def generate_llm_chat(
                 stream=False,
                 span=span,
             )
+            finish_reason = response.choices[0].finish_reason if response.choices else None
+            span.record_finish_reason(finish_reason)
             text = response.choices[0].message.content if response.choices else None
             if text:
                 if response.usage:
@@ -554,6 +615,8 @@ def generate_llm_chat(
                         response.usage.prompt_tokens,
                         response.usage.completion_tokens,
                     )
+                if finish_reason == "length":
+                    logger.warning("generate_llm_chat: response was truncated at max_tokens (finish_reason=length)")
                 return text
             span.outcome = "empty_response"
             logger.warning("generate_llm_chat: LLM endpoint returned an empty response")
@@ -613,10 +676,14 @@ def generate_llm_chat_stream(
                 span=span,
             )
             for chunk in stream:
+                if chunk.choices and chunk.choices[0].finish_reason:
+                    span.record_finish_reason(chunk.choices[0].finish_reason)
                 delta = chunk.choices[0].delta.content if chunk.choices else None
                 if delta:
                     yielded_any = True
                     yield delta
+            if span.finish_reason == "length":
+                logger.warning("generate_llm_chat_stream: response was truncated at max_tokens (finish_reason=length)")
         except GeneratorExit:
             cancelled = True
             raise
@@ -727,6 +794,8 @@ def generate_llm_json(
                 stream=False,
                 span=span,
             )
+            finish_reason = response.choices[0].finish_reason if response.choices else None
+            span.record_finish_reason(finish_reason)
             raw_text = response.choices[0].message.content if response.choices else None
             if not raw_text:
                 span.outcome = "empty_response"
@@ -738,7 +807,13 @@ def generate_llm_json(
             block = _extract_json_block(raw_text)
             if block is None:
                 span.outcome = "unparseable_response"
-                logger.warning("generate_llm_json: no JSON block found in the response")
+                if finish_reason == "length":
+                    logger.warning(
+                        "generate_llm_json: no JSON block found - response was truncated at max_tokens "
+                        "(finish_reason=length)"
+                    )
+                else:
+                    logger.warning("generate_llm_json: no JSON block found in the response")
                 return None
 
             return json.loads(block)
