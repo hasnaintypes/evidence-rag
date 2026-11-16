@@ -18,6 +18,15 @@ HEADING_PATTERN = re.compile(r"^(?P<num>\d+(\.\d+){0,4}|[A-Z]\.\d+)\s+(?P<title>
 WARNING_PATTERN = re.compile(r"^\s*(WARNING|UYARI|CAUTION|DİKKAT)\b", re.IGNORECASE)
 NOTE_PATTERN = re.compile(r"^\s*(NOTE|NOT)\b", re.IGNORECASE)
 
+# pdfplumber's find_tables() uses line/whitespace heuristics that can
+# misfire on a stylized, letter-spaced header (a resume's name/contact
+# line, a title page) by reading its wide gaps as column boundaries -
+# the result is a "table" where most cells are empty. A genuine table has
+# most of its cells filled; below this ratio, it's treated as a
+# misdetection and skipped so the normal text pass below extracts it as
+# plain text instead.
+MIN_TABLE_FILLED_CELL_RATIO = 0.5
+
 
 class PDFDocumentParser(BaseParser):
     """
@@ -48,8 +57,17 @@ class PDFDocumentParser(BaseParser):
                 #    onları tekrar paragraf gibi yutmasın
                 table_bboxes = []
                 for table_obj in page.find_tables():
+                    extracted_rows = table_obj.extract()
+                    if not self._looks_like_real_table(extracted_rows):
+                        # Misdetection (e.g. a letter-spaced header read as
+                        # a sparse table) - skip it, and deliberately don't
+                        # record its bbox, so the text pass below still
+                        # extracts this region as plain text instead of
+                        # having it silently dropped by
+                        # _drop_lines_inside_bboxes().
+                        continue
                     table_bboxes.append(table_obj.bbox)
-                    md_table = self._table_to_markdown(table_obj.extract())
+                    md_table = self._table_to_markdown(extracted_rows)
                     if not md_table:
                         continue
                     parent = heading_stack[-1] if heading_stack else None
@@ -65,7 +83,7 @@ class PDFDocumentParser(BaseParser):
                             page=page_num,
                             bbox=self._bbox_dict(table_obj.bbox),
                             order=order_counter,
-                            metadata={"rows": len(table_obj.extract())},
+                            metadata={"rows": len(extracted_rows)},
                         )
                     )
 
@@ -309,6 +327,14 @@ class PDFDocumentParser(BaseParser):
         return {"x0": x0, "y0": y0, "x1": x1, "y1": y1}
 
     @staticmethod
+    def _looks_like_real_table(rows: List[List[Optional[str]]]) -> bool:
+        cells = [c for row in rows for c in row]
+        if not cells:
+            return False
+        filled = sum(1 for c in cells if c and c.strip())
+        return (filled / len(cells)) >= MIN_TABLE_FILLED_CELL_RATIO
+
+    @staticmethod
     def _table_to_markdown(rows: List[List[Optional[str]]]) -> str:
         rows = [r for r in rows if any(c for c in r)]
         if not rows:
@@ -335,7 +361,10 @@ class PDFDocumentParser(BaseParser):
 
     @staticmethod
     def _group_words_into_lines(words: List[Dict[str, Any]]):
-        """pdfplumber word listesini y-koordinatına göre satırlara gruplar."""
+        """pdfplumber word listesini y-koordinatına göre satırlara gruplar.
+        Her satır için bbox da hesaplanır (x0, top, x1, bottom) -
+        _drop_lines_inside_bboxes() bunu table_obj.bbox ile aynı koordinat
+        uzayında karşılaştırmak için kullanır."""
         lines: List[Dict[str, Any]] = []
         current_y = None
         current_words: List[Dict[str, Any]] = []
@@ -355,13 +384,33 @@ class PDFDocumentParser(BaseParser):
             text = " ".join(w["text"] for w in line_words)
             avg_size = sum(w["size"] for w in line_words) / len(line_words)
             is_bold = any("bold" in w.get("fontname", "").lower() for w in line_words)
-            result.append((text, avg_size, is_bold))
+            bbox = (
+                min(w["x0"] for w in line_words),
+                min(w["top"] for w in line_words),
+                max(w["x1"] for w in line_words),
+                max(w["bottom"] for w in line_words),
+            )
+            result.append((text, avg_size, is_bold, bbox))
         return result
 
     @staticmethod
     def _drop_lines_inside_bboxes(lines, table_bboxes):
-        # basit versiyon: satır metnini tablo hücreleriyle karıştırmamak için
-        # bbox filtrelemesi şu an word-level koordinat taşımadığından
-        # (satırlar text+size+bold olarak sadeleştirildi) tam filtre sonraki iterasyonda
-        # word-level bbox taşıyarak eklenecek. Şimdilik pas geçiyoruz.
-        return lines
+        """Confirmed tables' cell text already got turned into a TABLE node
+        above (parse_to_tree()), so a line whose bbox center falls inside
+        one of those tables' bboxes gets dropped here to avoid emitting the
+        same content twice (once as a table node, once as a paragraph).
+        table_bboxes only ever contains tables that passed
+        _looks_like_real_table()'s fill-ratio check, so a misdetected
+        sparse "table" (e.g. a letter-spaced resume header) never causes
+        real text to be dropped - it was already skipped there and keeps
+        flowing through this plain-text pass instead."""
+        if not table_bboxes:
+            return [(text, avg_size, is_bold) for text, avg_size, is_bold, _bbox in lines]
+        kept = []
+        for text, avg_size, is_bold, bbox in lines:
+            x0, top, x1, bottom = bbox
+            cx, cy = (x0 + x1) / 2, (top + bottom) / 2
+            inside_table = any(tb[0] <= cx <= tb[2] and tb[1] <= cy <= tb[3] for tb in table_bboxes)
+            if not inside_table:
+                kept.append((text, avg_size, is_bold))
+        return kept
