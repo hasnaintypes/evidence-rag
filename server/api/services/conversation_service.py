@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import uuid
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -37,7 +38,21 @@ HISTORY_TURNS = 6  # prior turns folded into the generation prompt - bounded so 
 TITLE_MAX_CHARS = 60
 
 TITLE_PROMPT = """Generate a short, specific title (4-8 words, no quotes, no trailing \
-punctuation) for a chat that starts with this question:
+punctuation) for a chat conversation about the document(s) "{documents}", which starts with \
+this question:
+
+{question}
+
+The title must clearly relate to the specific topic of "{documents}" and the question above \
+- never a generic title like "Document Question", "Chat about PDF", or "General Discussion".
+
+Output ONLY a JSON object of this exact shape, no other text before or after it:
+{{"title": "<the title>"}}"""
+
+# Used only when no document filename could be resolved (shouldn't happen for a real
+# conversation, but _generate_title() is best-effort and must still degrade gracefully).
+TITLE_PROMPT_NO_DOCUMENT = """Generate a short, specific title (4-8 words, no quotes, no \
+trailing punctuation) for a chat that starts with this question:
 
 {question}
 
@@ -45,8 +60,30 @@ Output ONLY a JSON object of this exact shape, no other text before or after it:
 {{"title": "<the title>"}}"""
 
 
-def _generate_title(user_message: str) -> Optional[str]:
-    """LLM-generated short chat title from the first user turn. Best-
+def _format_document_names(filenames: List[Optional[str]]) -> str:
+    """Joins a conversation's document filenames into a short, readable
+    phrase for TITLE_PROMPT - e.g. ["Robot_Maintenance_Guide.pdf"] ->
+    "Robot Maintenance Guide", so the generated title reads as "about
+    this specific document" rather than a generic paraphrase of the
+    question alone. Works identically for a shared/demo document
+    (docs/fixtures/sample_docs) - filenames are resolved by doc_id
+    regardless of ownership, so the shared corpus gets just as specific
+    a title as a private upload. Drops any unresolved (None) entries."""
+    names = [os.path.splitext(f)[0].replace("_", " ").replace("-", " ").strip() for f in filenames if f]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return ", ".join(names[:-1]) + f", and {names[-1]}"
+
+
+def _generate_title(user_message: str, filenames: Optional[List[Optional[str]]] = None) -> Optional[str]:
+    """LLM-generated short chat title from the first user turn, anchored
+    to the conversation's actual document(s) (via TITLE_PROMPT) rather
+    than the question text alone - a vague first question ("what does
+    section 3 say?") would otherwise produce an equally vague title. Best-
     effort, same defensive isinstance-checked-before-use posture as
     evaluation/judge.py's score_faithfulness() - returns None on any
     failure (bad/missing API response, wrong type) so the caller falls
@@ -63,7 +100,13 @@ def _generate_title(user_message: str) -> Optional[str]:
     already known to fail."""
     if llm_cooldown_remaining_seconds() > 0:
         return None
-    result = generate_llm_json(TITLE_PROMPT.format(question=user_message), max_tokens=50, operation="title_generation")
+    document_names = _format_document_names(filenames or [])
+    prompt = (
+        TITLE_PROMPT.format(documents=document_names, question=user_message)
+        if document_names
+        else TITLE_PROMPT_NO_DOCUMENT.format(question=user_message)
+    )
+    result = generate_llm_json(prompt, max_tokens=50, operation="title_generation")
     if not isinstance(result, dict):
         return None
     title = result.get("title")
@@ -225,7 +268,13 @@ class ConversationService:
 
         reply = ConversationService._persist_reply(conversation_id, message, history, result)
         if len(history) == 0:
-            background_tasks.add_task(ConversationService._generate_and_apply_title, conversation_id, message, user.id)
+            background_tasks.add_task(
+                ConversationService._generate_and_apply_title,
+                conversation_id,
+                message,
+                user.id,
+                conversation["filenames"],
+            )
         return reply
 
     @staticmethod
@@ -304,7 +353,9 @@ class ConversationService:
                         # instead, since it has no way to send anything after
                         # its one response.
                         if len(history) == 0:
-                            title = ConversationService._generate_and_apply_title(conversation_id, message, user.id)
+                            title = ConversationService._generate_and_apply_title(
+                                conversation_id, message, user.id, conversation["filenames"]
+                            )
                             yield f"data: {json.dumps({'type': 'title', 'title': title})}\n\n"
                 except Exception:
                     logger.exception(
@@ -358,7 +409,9 @@ class ConversationService:
         }
 
     @staticmethod
-    def _generate_and_apply_title(conversation_id: str, message: str, user_id: str) -> str:
+    def _generate_and_apply_title(
+        conversation_id: str, message: str, user_id: str, filenames: Optional[List[Optional[str]]] = None
+    ) -> str:
         """Generates the real title and swaps it in for the fallback
         truncation _persist_reply() already set, unless the user renamed
         the conversation in the meantime (replace_fallback_title()'s own
@@ -376,7 +429,7 @@ class ConversationService:
         a repeat quota failure from making every new conversation's title
         just be whatever the user happened to type first."""
         fallback_title = message[:TITLE_MAX_CHARS]
-        generated_title = _generate_title(message)
+        generated_title = _generate_title(message, filenames)
         if generated_title and generated_title != fallback_title:
             replace_fallback_title(conversation_id, fallback_title, generated_title)
             return generated_title

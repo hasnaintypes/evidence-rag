@@ -138,6 +138,35 @@ def test_send_message_returns_llm_generated_title_on_first_turn_only(client, app
     assert conversation["title"] == "Retention Drivers This Quarter"
 
 
+def test_title_generation_prompt_names_the_conversation_document(client, app):
+    """The title prompt must name the actual document(s) the conversation
+    is scoped to (TITLE_PROMPT), not just paraphrase the question in
+    isolation - a vague first question should still produce a title tied
+    to the real document, not a generic one."""
+    conversation_id = _seed_conversation()  # doc-1 / "doc.md"
+    override_current_user(app, OWNER)
+
+    fake_result = {
+        "reply": "a real answer",
+        "sources": [],
+        "faithfulness": {"score": 0.9, "unsupported_claims": []},
+        "telemetry": {},
+        "chunks_matrix": [],
+        "thinking": "",
+    }
+    with (
+        patch("api.services.conversation_service.process_chat_query", return_value=fake_result),
+        patch(
+            "api.services.conversation_service.generate_llm_json", return_value={"title": "Doc Overview"}
+        ) as mock_generate_json,
+    ):
+        client.post(f"/conversations/{conversation_id}/messages", json={"message": "what does section 3 say?"})
+
+    prompt_sent = mock_generate_json.call_args.args[0]
+    assert "doc" in prompt_sent  # "doc.md" with its extension stripped
+    assert "generic" in prompt_sent  # the prompt explicitly forbids a generic title
+
+
 def test_send_message_falls_back_to_untitled_chat_when_llm_call_fails(client, app):
     """When title generation fails (bad JSON, 429, whatever - see
     _generate_title()'s docstring), the permanent title must not be left
