@@ -36,7 +36,7 @@ export default function GraphPage() {
   const router = useRouter();
   const { session, isLoading: isAuthLoading } = useAuth();
 
-  const { documents, fetchInitial: fetchDocuments } = useDocumentsStore();
+  const { documents, fetchAll: fetchDocuments } = useDocumentsStore();
   const [selectedDocId, setSelectedDocId] = useState<string>(ALL_DOCS);
   const [graphData, setGraphData] = useState<GraphData | null>(null);
   const [isLoading, setIsLoading] = useState(true);

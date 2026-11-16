@@ -16,6 +16,12 @@ type DocumentsState = {
   loaded: boolean;
   fetchInitial: (opts?: { force?: boolean }) => Promise<void>;
   loadMore: () => Promise<void>;
+  // Pages in loadMore() a page at a time until hasMore is false - for a
+  // consumer that genuinely needs every document (the Graph page's doc
+  // filter/filename lookups, which must resolve any document the user
+  // owns, not just the first page) rather than one paginated page at a
+  // time like the Library page's own "Load more" button.
+  fetchAll: (opts?: { force?: boolean }) => Promise<void>;
   add: (document: DocumentRecord) => void;
   update: (docId: string, patch: Partial<DocumentRecord>) => void;
   remove: (docId: string) => void;
@@ -49,17 +55,37 @@ export const useDocumentsStore = create<DocumentsState>((set, get) => ({
   },
 
   loadMore: async () => {
-    const { hasMore, nextCursor, documents } = get();
+    const { hasMore, nextCursor } = get();
     if (!hasMore || !nextCursor) return;
     try {
       const page = await getDocuments(nextCursor);
-      set({
-        documents: Array.isArray(page.documents) ? [...documents, ...page.documents] : documents,
+      // Reads `documents` fresh here, not from the closure captured
+      // before the await - add()/update()/remove()/reset() can all run
+      // on this store while this request is in flight, and a stale
+      // pre-await snapshot would silently discard whatever one of those
+      // did in the meantime.
+      set((s) => ({
+        documents: Array.isArray(page.documents)
+          ? [...s.documents, ...page.documents]
+          : s.documents,
         hasMore: page.has_more,
         nextCursor: page.next_cursor,
-      });
+      }));
     } catch {
       // leave hasMore/nextCursor as-is - the next "Load more" click retries
+    }
+  },
+
+  fetchAll: async (opts) => {
+    await get().fetchInitial(opts);
+    // loadMore() swallows a failed request and leaves hasMore/nextCursor
+    // unchanged for a manual retry - detect that here (no cursor
+    // progress) and stop, rather than spinning forever retrying the
+    // same failing request.
+    let previousCursor: string | null = null;
+    while (get().hasMore && get().nextCursor !== previousCursor) {
+      previousCursor = get().nextCursor;
+      await get().loadMore();
     }
   },
 

@@ -55,7 +55,10 @@ def _format_chunks_for_judge(context_chunks: List[Dict[str, Any]]) -> str:
 
 
 def score_faithfulness(
-    answer: str, context_chunks: List[Dict[str, Any]], request_id: Optional[str] = None
+    answer: str,
+    context_chunks: List[Dict[str, Any]],
+    request_id: Optional[str] = None,
+    telemetry: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Judges whether `answer` is faithful to `context_chunks` using a second,
@@ -77,7 +80,9 @@ def score_faithfulness(
     context_text = _format_chunks_for_judge(context_chunks)
     prompt = FAITHFULNESS_JUDGE_PROMPT.format(context=context_text, answer=answer.strip())
 
-    result = generate_llm_json(prompt, max_tokens=500, operation="faithfulness_judging", request_id=request_id)
+    result = generate_llm_json(
+        prompt, max_tokens=500, operation="faithfulness_judging", request_id=request_id, telemetry=telemetry
+    )
     if not isinstance(result, dict):
         return None
 

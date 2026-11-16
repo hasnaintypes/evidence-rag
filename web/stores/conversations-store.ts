@@ -56,15 +56,21 @@ export const useConversationsStore = create<ConversationsState>((set, get) => ({
   },
 
   loadMore: async () => {
-    const { hasMore, nextCursor, conversations } = get();
+    const { hasMore, nextCursor } = get();
     if (!hasMore || !nextCursor) return;
     try {
       const page = await listConversations(nextCursor);
-      set({
-        conversations: [...conversations, ...page.conversations],
+      // Reads `conversations` fresh here, not from the closure captured
+      // before the await - insertOptimistic()/patch()/remove() can all
+      // run on this store while this request is in flight, and a stale
+      // pre-await snapshot would silently discard whatever one of those
+      // did in the meantime (e.g. a newly created conversation vanishing
+      // from the sidebar).
+      set((s) => ({
+        conversations: [...s.conversations, ...page.conversations],
         hasMore: page.has_more,
         nextCursor: page.next_cursor,
-      });
+      }));
     } catch {
       // leave hasMore/nextCursor as-is - the next scroll-triggered call retries
     }

@@ -67,6 +67,15 @@ def _add_service_fields(logger, method_name, event_dict):
     return event_dict
 
 
+def _logger_name_matches(name: str, prefix: str) -> bool:
+    """`name` is `prefix` itself or one of its dotted children -
+    `record.name.startswith(prefix)` alone would also match an unrelated
+    sibling logger name that merely shares the prefix as a character
+    sequence (e.g. a future "evidence_rag.aiops" logger matching
+    "evidence_rag.ai")."""
+    return name == prefix or name.startswith(prefix + ".")
+
+
 class _LoggerNameFilter(logging.Filter):
     """Routes a file handler to only the logger names it owns, so
     structured AI-invocation/chat-summary events don't also duplicate
@@ -77,7 +86,7 @@ class _LoggerNameFilter(logging.Filter):
         self._prefixes = tuple(prefixes)
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return record.name.startswith(self._prefixes)
+        return any(_logger_name_matches(record.name, prefix) for prefix in self._prefixes)
 
 
 class _ExcludeLoggerNameFilter(logging.Filter):
@@ -86,7 +95,7 @@ class _ExcludeLoggerNameFilter(logging.Filter):
         self._prefixes = tuple(prefixes)
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return not record.name.startswith(self._prefixes)
+        return not any(_logger_name_matches(record.name, prefix) for prefix in self._prefixes)
 
 
 def _build_formatter(renderer) -> logging.Formatter:

@@ -427,6 +427,22 @@ def test_generate_llm_chat_returns_the_model_text_on_success(monkeypatch):
     assert call_kwargs["stream"] is False
 
 
+def test_generate_llm_chat_appends_to_the_callers_telemetry_dict_when_given_one(monkeypatch):
+    """telemetry["ai_calls"] is what request_summary.py's end-of-request
+    line reports from - a caller that passes its own telemetry dict must
+    see this call recorded in it."""
+    _configure_llm(monkeypatch)
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _fake_completion("the answer")
+    telemetry = {}
+
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        llm.generate_llm_chat("some prompt", telemetry=telemetry)
+
+    assert len(telemetry["ai_calls"]) == 1
+    assert telemetry["ai_calls"][0]["provider"] == "openai_compatible"
+
+
 def test_generate_llm_chat_reports_an_empty_response_honestly(monkeypatch):
     _configure_llm(monkeypatch)
     fake_client = MagicMock()

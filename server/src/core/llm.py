@@ -350,8 +350,9 @@ def generate_chat_response_stream(prompt: str, max_tokens: Optional[int] = None)
 # Instead: a single configured model (settings.llm_model) with a
 # process-local cooldown that activates on an HTTP 429 and is cleared
 # instead of retried - see _llm_cooldown_remaining()/_start_llm_cooldown()
-# below. A transient (non-429) failure - a timeout or connection reset -
-# gets a small number of retries with exponential backoff + jitter, since
+# below. A transient (non-429) failure - a timeout, connection reset, or
+# the endpoint's own 5xx - gets a small number of retries with exponential
+# backoff + jitter, since
 # those are the failures a brief retry can plausibly fix; a 429 never is,
 # since the model is already known to be out of quota and retrying it
 # immediately just burns another round trip for the same answer.
@@ -373,7 +374,7 @@ def _llm_client_or_raise() -> "openai.OpenAI":
     missing rather than a generic auth failure from the HTTP layer."""
     global _llm_client
     if _llm_client is None:
-        if not settings.llm_base_url or not settings.llm_api_key:
+        if not settings.llm_base_url or not settings.llm_api_key or not settings.llm_model:
             raise RuntimeError(
                 "The LLM endpoint is not configured - set LLM_BASE_URL, LLM_API_KEY, "
                 "and LLM_MODEL (see .env.example) before generate_llm_chat()/"
@@ -432,6 +433,7 @@ def _llm_chat_completion(messages: List[Dict[str, str]], max_tokens: int, temper
     remaining = _llm_cooldown_remaining()
     if remaining > 0:
         if span is not None:
+            span.error_category = "rate_limited"
             span.log_attempt(1, "cooldown_skipped", error_category="rate_limited")
         raise RuntimeError(
             f"the configured LLM endpoint is cooling down after a rate limit - retry in {remaining:.0f}s."
@@ -472,7 +474,7 @@ def _llm_chat_completion(messages: List[Dict[str, str]], max_tokens: int, temper
                 span.error_category = "rate_limited"
                 span.log_attempt(attempt + 1, "rate_limited", http_status=429, error_category="rate_limited")
             raise
-        except (openai.APIConnectionError, openai.APITimeoutError) as e:
+        except (openai.APIConnectionError, openai.APITimeoutError, openai.InternalServerError) as e:
             last_error = e
             status = getattr(getattr(e, "response", None), "status_code", None)
             if span is not None:
@@ -497,7 +499,11 @@ def _llm_chat_completion(messages: List[Dict[str, str]], max_tokens: int, temper
 
 
 def generate_llm_chat(
-    prompt: str, max_tokens: Optional[int] = None, operation: str = "chat_generation", request_id: Optional[str] = None
+    prompt: str,
+    max_tokens: Optional[int] = None,
+    operation: str = "chat_generation",
+    request_id: Optional[str] = None,
+    telemetry: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Generates free text via the configured LLM endpoint - query_pipeline.py's
@@ -513,10 +519,17 @@ def generate_llm_chat(
     `operation` distinguishes *why* this call happened (e.g.
     "answer_generation" vs "query_rewriting") for ai_tracker.py's
     invocation log - every caller of this function passes its own value
-    rather than this function guessing from the prompt text.
+    rather than this function guessing from the prompt text. `telemetry`,
+    when passed, is the caller's own per-request dict - track_ai_call()
+    appends this call's summary to telemetry["ai_calls"] so
+    request_summary.py's end-of-request line reports it; omitted by
+    callers with no per-request telemetry dict in scope (e.g. title
+    generation).
     """
     messages = [{"role": "user", "content": f"You are an intelligent AI assistant.\n\n{prompt}"}]
-    with track_ai_call("openai_compatible", settings.llm_model, operation, request_id=request_id) as span:
+    with track_ai_call(
+        "openai_compatible", settings.llm_model, operation, request_id=request_id, telemetry=telemetry
+    ) as span:
         span.record_request(
             {
                 **summarize_messages(messages),
@@ -557,10 +570,12 @@ def generate_llm_chat_stream(
     max_tokens: Optional[int] = None,
     operation: str = "chat_generation_stream",
     request_id: Optional[str] = None,
+    telemetry: Optional[Dict[str, Any]] = None,
 ) -> Iterator[str]:
     """
     Streaming counterpart to generate_llm_chat() - see that function's
-    docstring and this module's chat-generation section docstring for scope.
+    docstring and this module's chat-generation section docstring for
+    scope, including what `telemetry` does.
 
     Once a chunk has actually been yielded, a later mid-stream failure is
     logged and simply ends the stream rather than appending the
@@ -576,7 +591,9 @@ def generate_llm_chat_stream(
     that case, not an exception - the explicit `finally` records that.
     """
     messages = [{"role": "user", "content": f"You are an intelligent AI assistant.\n\n{prompt}"}]
-    with track_ai_call("openai_compatible", settings.llm_model, operation, request_id=request_id) as span:
+    with track_ai_call(
+        "openai_compatible", settings.llm_model, operation, request_id=request_id, telemetry=telemetry
+    ) as span:
         span.record_request(
             {
                 **summarize_messages(messages),
@@ -668,6 +685,7 @@ def generate_llm_json(
     temperature: float = 0.0,
     operation: str = "json_generation",
     request_id: Optional[str] = None,
+    telemetry: Optional[Dict[str, Any]] = None,
 ) -> Optional[dict]:
     """
     Generates a JSON-shaped result via the configured LLM endpoint, for callers
@@ -687,9 +705,13 @@ def generate_llm_json(
     `operation` is one of "reranking" / "faithfulness_judging" /
     "title_generation" today (see each caller) - distinguishes these
     otherwise-identical-looking LLM calls in ai_tracker.py's log.
+    `telemetry`, when passed, is the caller's own per-request dict - see
+    generate_llm_chat()'s docstring for what it's for.
     """
     messages = [{"role": "user", "content": prompt}]
-    with track_ai_call("openai_compatible", settings.llm_model, operation, request_id=request_id) as span:
+    with track_ai_call(
+        "openai_compatible", settings.llm_model, operation, request_id=request_id, telemetry=telemetry
+    ) as span:
         span.record_request(
             {
                 **summarize_messages(messages),

@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from src.core.llm import generate_llm_chat
 
@@ -20,7 +20,9 @@ Original question:
 Rewritten variants:"""
 
 
-def rewrite_query(original_query: str, request_id: Optional[str] = None) -> List[str]:
+def rewrite_query(
+    original_query: str, request_id: Optional[str] = None, telemetry: Optional[Dict[str, Any]] = None
+) -> List[str]:
     """
     Expands a query into multiple phrasings for multi-track hybrid
     retrieval, using the local/cloud chat model rather than a fixed
@@ -39,7 +41,9 @@ def rewrite_query(original_query: str, request_id: Optional[str] = None) -> List
         # long-form answer. Without this cap the call was taking ~27s
         # on local hardware because the model had headroom to keep
         # generating well past what was actually needed.
-        raw_response = generate_llm_chat(prompt, max_tokens=120, operation="query_rewriting", request_id=request_id)
+        raw_response = generate_llm_chat(
+            prompt, max_tokens=120, operation="query_rewriting", request_id=request_id, telemetry=telemetry
+        )
     except Exception:
         return [original_query]
 
@@ -78,7 +82,10 @@ Sub-questions:"""
 
 
 def decompose_into_subqueries(
-    original_query: str, num_subqueries: int = 2, request_id: Optional[str] = None
+    original_query: str,
+    num_subqueries: int = 2,
+    request_id: Optional[str] = None,
+    telemetry: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
     """
     Splits a complex question into simpler sub-questions for a follow-up
@@ -93,7 +100,9 @@ def decompose_into_subqueries(
 
     try:
         # Same reasoning as rewrite_query - short, bounded output expected.
-        raw_response = generate_llm_chat(prompt, max_tokens=120, operation="query_decomposition", request_id=request_id)
+        raw_response = generate_llm_chat(
+            prompt, max_tokens=120, operation="query_decomposition", request_id=request_id, telemetry=telemetry
+        )
     except Exception:
         return []
 

@@ -112,7 +112,9 @@ def _prepare_generation(
 
     # --- PHASE 2: Query expansion ---
     with traced_stage(request_id, "query_expansion", telemetry, user_id):
-        expanded_queries = rewrite_query(query, request_id=request_id) if advanced_mode else [query]
+        expanded_queries = (
+            rewrite_query(query, request_id=request_id, telemetry=telemetry) if advanced_mode else [query]
+        )
 
     # --- PHASE 3: Multi-track hybrid retrieval ---
     all_candidate_chunks = []
@@ -147,7 +149,9 @@ def _prepare_generation(
         telemetry["culling_and_compression_time_ms"] = 0.0
     else:
         with traced_stage(request_id, "rerank", telemetry, user_id):
-            reranked = rerank_chunks(query=query, chunks=all_candidate_chunks, top_n=6, request_id=request_id)
+            reranked = rerank_chunks(
+                query=query, chunks=all_candidate_chunks, top_n=6, request_id=request_id, telemetry=telemetry
+            )
 
         with traced_stage(request_id, "culling_and_compression", telemetry, user_id):
             graded = grade_retrieved_chunks(query=query, chunks=reranked)
@@ -188,7 +192,7 @@ def _prepare_generation(
     hop_count = 1
     with traced_stage(request_id, "followup_hop", telemetry, user_id):
         if advanced_mode and top_score <= 0.5 and len(final_context_chunks) > 0:
-            subqueries = decompose_into_subqueries(query, request_id=request_id)
+            subqueries = decompose_into_subqueries(query, request_id=request_id, telemetry=telemetry)
             if subqueries:
                 hop_count = 2
                 followup_candidates = []
@@ -204,7 +208,11 @@ def _prepare_generation(
 
                 if followup_candidates:
                     reranked_followup = rerank_chunks(
-                        query=query, chunks=followup_candidates, top_n=6, request_id=request_id
+                        query=query,
+                        chunks=followup_candidates,
+                        top_n=6,
+                        request_id=request_id,
+                        telemetry=telemetry,
                     )
                     graded_followup = grade_retrieved_chunks(query=query, chunks=reranked_followup)
                     compressed_followup = compress_context_chunks(query=query, chunks=graded_followup)
@@ -413,7 +421,7 @@ def _finalize_generation(
         faithfulness_result = (
             None
             if generation_failed
-            else score_faithfulness(final_summary, final_context_chunks, request_id=request_id)
+            else score_faithfulness(final_summary, final_context_chunks, request_id=request_id, telemetry=telemetry)
         )
 
     faithfulness_score = faithfulness_result["faithfulness_score"] if faithfulness_result else None
@@ -525,7 +533,9 @@ def process_chat_query(
             return result
 
         with traced_stage(request_id, "generation", telemetry, user_id):
-            raw_response = generate_llm_chat(prep["prompt"], operation="answer_generation", request_id=request_id)
+            raw_response = generate_llm_chat(
+                prep["prompt"], operation="answer_generation", request_id=request_id, telemetry=telemetry
+            )
 
         result = _finalize_generation(
             raw_response, prep, query, advanced_mode, doc_ids, history, user_id, request_id, telemetry
@@ -575,7 +585,9 @@ def process_chat_query_stream(
 
         chunks_received = []
         with traced_stage(request_id, "generation", telemetry, user_id):
-            for piece in generate_llm_chat_stream(prep["prompt"], operation="answer_generation", request_id=request_id):
+            for piece in generate_llm_chat_stream(
+                prep["prompt"], operation="answer_generation", request_id=request_id, telemetry=telemetry
+            ):
                 chunks_received.append(piece)
                 # Still appended above (so _finalize_generation's
                 # "error during generation" substring check below still

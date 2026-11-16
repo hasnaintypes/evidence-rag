@@ -67,7 +67,11 @@ def _format_chunks_for_scoring(chunks: List[Dict[str, Any]]) -> str:
 
 
 def rerank_chunks(
-    query: str, chunks: List[Dict[str, Any]], top_n: int = 4, request_id: Optional[str] = None
+    query: str,
+    chunks: List[Dict[str, Any]],
+    top_n: int = 4,
+    request_id: Optional[str] = None,
+    telemetry: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Re-scores and re-ranks retrieved chunks by relevance to `query`, via a
@@ -92,7 +96,9 @@ def rerank_chunks(
     # can still run to 20+ chunks - sized with headroom rather than the
     # ~500-800 token budget other JSON calls in this codebase use for a
     # handful of fields.
-    result = generate_llm_json(prompt, max_tokens=2000, operation="reranking", request_id=request_id)
+    result = generate_llm_json(
+        prompt, max_tokens=2000, operation="reranking", request_id=request_id, telemetry=telemetry
+    )
 
     scores_by_index: Dict[int, float] = {}
     if isinstance(result, dict) and isinstance(result.get("scores"), list):
