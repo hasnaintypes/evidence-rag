@@ -197,8 +197,8 @@ routed by logger name into `logs/application/app.jsonl` (everything else), `logs
 (`evidence_rag.ai`), `logs/chat/requests.jsonl` (`evidence_rag.chat`), and `logs/errors/errors.jsonl`
 (a deliberate mirror of any ERROR+ line, from any category) — rotated via `concurrent-log-handler`
 (safe across multiple OS processes, unlike stdlib's plain `RotatingFileHandler`) and swept for
-rotated-backup age (`LOG_RETENTION_DAYS`) once at startup. `logs/` is gitignored; only its four
-category `.gitkeep` files are committed.
+rotated-backup age (`LOG_RETENTION_DAYS`) once at startup. `logs/` is entirely gitignored, including
+its category subdirectories themselves - `logging_config.py` creates them on startup if missing.
 
 `src/core/ai_tracker.py`'s `track_ai_call()` wraps every real AI/embedding call site in `llm.py`
 (Voyage's `get_embedding()`/`get_embeddings_batch()`, the shared transport

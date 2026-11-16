@@ -47,8 +47,8 @@ prototypes/
 config.env
 
 # Local structured-log output (src/core/logging_config.py) - never
-# committed (may contain request/response metadata); .gitkeep files under
-# server/logs/*/ ARE committed so the directory structure exists before
-# the app ever runs.
+# committed (may contain request/response metadata). The server/logs/*/
+# subdirectories themselves aren't tracked either (no .gitkeep) -
+# logging_config.py creates them on startup if they don't already exist.
 server/logs/*/*.jsonl*
 server/logs/*/.__*.lock
