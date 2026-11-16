@@ -72,7 +72,8 @@ against its public JWKS endpoint, no shared secret.
 
 **Full design doc:** [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) (pipeline stages, the
 swappable-storage/fixed-pipeline split, the LLM-call architecture, observability, the authz layer).
-**Every route's contract:** [`docs/API.md`](./docs/API.md).
+**Every route's contract:** [`docs/API.md`](./docs/API.md). **Every env var:**
+[`docs/CONFIGURATION.md`](./docs/CONFIGURATION.md).
 
 ---
 
