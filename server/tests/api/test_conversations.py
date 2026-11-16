@@ -349,8 +349,38 @@ def test_send_message_stream_generates_a_title_on_first_turn_only(client, app):
         assert [e["type"] for e in second_events] == ["token", "token", "done"]
         assert second_events[-1]["message"]["title"] is None
 
+
+def test_send_message_stream_does_not_emit_an_error_event_when_title_generation_fails(client, app):
+    """Regression: a failure in title generation (which runs AFTER "done"
+    is already on the wire) used to fall into the same except Exception as
+    process_chat_query_stream() itself, emitting a misleading {"type":
+    "error"} event after the client already rendered a correct, complete
+    answer. It must now be isolated - the reply stays delivered, and the
+    title is just silently skipped for this turn."""
+    conversation_id = _seed_conversation()
+    override_current_user(app, OWNER)
+
+    with (
+        patch(
+            "api.services.conversation_service.process_chat_query_stream",
+            side_effect=lambda *args, **kwargs: _fake_stream_events(),
+        ),
+        patch(
+            "api.services.conversation_service.ConversationService._generate_and_apply_title",
+            side_effect=RuntimeError("transient DB write failure"),
+        ),
+    ):
+        response = client.post(f"/conversations/{conversation_id}/messages/stream", json={"message": "hello"})
+
+    events = _parse_sse_events(response.text)
+    assert [e["type"] for e in events] == ["token", "token", "done"]
+    assert events[-1]["message"]["content"] == "a real answer"
+
+    # Title generation never got a chance to run (the mock raised before
+    # doing anything), so the truncated fallback _persist_reply() already
+    # set is left exactly as it was - not overwritten, not an error state.
     conversation = get_conversation(conversation_id)
-    assert conversation["title"] == "Retention Drivers This Quarter"
+    assert conversation["title"] == "hello"
 
 
 # --- Add document to a conversation (#54) -----------------------------------
@@ -511,3 +541,12 @@ def test_list_conversations_cursor_is_stable_against_a_concurrent_rename(client,
         cursor = body["next_cursor"] if body["has_more"] else None
 
     assert collected == set(ids), "a rename mid-pagination caused a missing row"
+
+
+def test_list_conversations_400s_on_a_malformed_cursor(client, app):
+    """Same regression coverage as test_list_documents_400s_on_a_malformed_cursor
+    (test_documents_status.py) for the conversations cursor decode path."""
+    override_current_user(app, OWNER)
+
+    response = client.get("/conversations", params={"cursor": "not-valid-base64!!"})
+    assert response.status_code == 400

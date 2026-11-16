@@ -161,7 +161,10 @@ class ConversationService:
         filenames, see get_with_messages()/create() for the full shape a
         single conversation needs. Clamps limit so a caller can't request
         an unbounded page."""
-        return list_conversations(user.id, limit=max(1, min(limit, 100)), cursor=cursor)
+        try:
+            return list_conversations(user.id, limit=max(1, min(limit, 100)), cursor=cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     @staticmethod
     def get_with_messages(conversation_id: str, user: CurrentUser) -> Dict[str, Any]:
@@ -353,10 +356,27 @@ class ConversationService:
                         # instead, since it has no way to send anything after
                         # its one response.
                         if len(history) == 0:
-                            title = ConversationService._generate_and_apply_title(
-                                conversation_id, message, user.id, conversation["filenames"]
-                            )
-                            yield f"data: {json.dumps({'type': 'title', 'title': title})}\n\n"
+                            # Isolated from the outer except below: the real
+                            # answer is already on the wire at this point, so
+                            # a failure in title generation itself (e.g. a
+                            # transient DB write error in
+                            # replace_fallback_title()) must not emit a
+                            # misleading "error" event after a successful
+                            # "done" - the client would show a contradictory
+                            # error state over an answer it already rendered
+                            # correctly. Title is simply skipped for this
+                            # turn (the truncated fallback _persist_reply()
+                            # already set stands) rather than retried here.
+                            try:
+                                title = ConversationService._generate_and_apply_title(
+                                    conversation_id, message, user.id, conversation["filenames"]
+                                )
+                                yield f"data: {json.dumps({'type': 'title', 'title': title})}\n\n"
+                            except Exception:
+                                logger.exception(
+                                    "title generation failed for conversation_id=%s after a successful reply",
+                                    conversation_id,
+                                )
                 except Exception:
                     logger.exception(
                         "process_chat_query_stream failed for conversation_id=%s user_id=%s", conversation_id, user.id

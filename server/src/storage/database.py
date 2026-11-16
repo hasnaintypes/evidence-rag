@@ -805,8 +805,17 @@ def _encode_document_cursor(row: Dict[str, Any]) -> str:
 
 
 def _decode_document_cursor(cursor: str) -> tuple:
-    payload = base64.urlsafe_b64decode(cursor.encode()).decode()
-    ingested_at, last_doc_id = json.loads(payload)
+    """Raises ValueError (not whatever base64/json/unpacking exception
+    happens to fire) for a malformed cursor - a client-supplied value this
+    opaque has no server-side validation otherwise, so a stale bookmark, a
+    client bug, or tampering would otherwise surface as an unhandled 500
+    instead of a 400. The caller (list_documents_paginated() callers in
+    api/services/) maps ValueError to a 400."""
+    try:
+        payload = base64.urlsafe_b64decode(cursor.encode()).decode()
+        ingested_at, last_doc_id = json.loads(payload)
+    except Exception as exc:
+        raise ValueError("Invalid pagination cursor.") from exc
     return ingested_at, last_doc_id
 
 
@@ -1471,8 +1480,14 @@ def _encode_conversation_cursor(row: Dict[str, Any]) -> str:
 
 
 def _decode_conversation_cursor(cursor: str) -> tuple:
-    payload = base64.urlsafe_b64decode(cursor.encode()).decode()
-    pinned, updated_at, last_id = json.loads(payload)
+    """Same reasoning as _decode_document_cursor(): raises ValueError for a
+    malformed cursor instead of letting a base64/json/unpacking exception
+    surface as an unhandled 500."""
+    try:
+        payload = base64.urlsafe_b64decode(cursor.encode()).decode()
+        pinned, updated_at, last_id = json.loads(payload)
+    except Exception as exc:
+        raise ValueError("Invalid pagination cursor.") from exc
     return bool(pinned), updated_at, last_id
 
 

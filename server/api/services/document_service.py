@@ -42,7 +42,10 @@ class DocumentService:
         shared/demo documents (docs/fixtures/sample_docs), used by the
         Library page. Clamps limit so a caller can't request an unbounded
         page - same reasoning as ConversationService.list_for_user()."""
-        return list_documents_paginated(user.id, limit=max(1, min(limit, 100)), cursor=cursor)
+        try:
+            return list_documents_paginated(user.id, limit=max(1, min(limit, 100)), cursor=cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     @staticmethod
     def upload(file: UploadFile, user: CurrentUser, background_tasks: BackgroundTasks) -> Dict[str, Any]:

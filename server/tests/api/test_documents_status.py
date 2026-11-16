@@ -100,3 +100,17 @@ def test_status_stream_stops_at_failed_too():
 
     assert len(events) == 1
     assert '"status": "failed"' in events[0]
+
+
+# --- GET /documents - malformed pagination cursor -------------------------
+
+
+def test_list_documents_400s_on_a_malformed_cursor(client, app):
+    """A cursor that doesn't base64/JSON-decode (stale bookmark, client
+    bug, tampering) must 400, not crash with an unhandled 500 - regression
+    coverage for the decode functions' try/except in
+    src/storage/database.py."""
+    override_current_user(app, OWNER)
+
+    response = client.get("/documents", params={"cursor": "not-valid-base64!!"})
+    assert response.status_code == 400
