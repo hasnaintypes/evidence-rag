@@ -1,12 +1,17 @@
+import json
 import logging
+import os
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
-from fastapi import HTTPException
+import structlog
+from fastapi import BackgroundTasks, HTTPException
+from fastapi.encoders import jsonable_encoder
 
 from api.authz import get_owned_conversation
 from api.deps import CurrentUser
-from src.query_pipeline import process_chat_query
+from src.query_pipeline import process_chat_query, process_chat_query_stream
+from src.core.llm import generate_llm_json, llm_cooldown_remaining_seconds
 from src.core.security import generate_source_token
 
 # Same "inherits whatever handler the process entry point set up for the
@@ -20,14 +25,107 @@ from src.storage.database import (
     delete_conversation,
     delete_messages_after,
     get_conversation_messages,
+    get_default_conversation_doc_ids,
+    get_untitled_chat_numbers,
     insert_message,
     list_conversations,
+    replace_fallback_title,
     touch_conversation,
     update_conversation,
 )
 
 HISTORY_TURNS = 6  # prior turns folded into the generation prompt - bounded so the prompt doesn't grow unbounded over a long conversation
 TITLE_MAX_CHARS = 60
+
+TITLE_PROMPT = """Generate a short, specific title (4-8 words, no quotes, no trailing \
+punctuation) for a chat conversation about the document(s) "{documents}", which starts with \
+this question:
+
+{question}
+
+The title must clearly relate to the specific topic of "{documents}" and the question above \
+- never a generic title like "Document Question", "Chat about PDF", or "General Discussion".
+
+Output ONLY a JSON object of this exact shape, no other text before or after it:
+{{"title": "<the title>"}}"""
+
+# Used only when no document filename could be resolved (shouldn't happen for a real
+# conversation, but _generate_title() is best-effort and must still degrade gracefully).
+TITLE_PROMPT_NO_DOCUMENT = """Generate a short, specific title (4-8 words, no quotes, no \
+trailing punctuation) for a chat that starts with this question:
+
+{question}
+
+Output ONLY a JSON object of this exact shape, no other text before or after it:
+{{"title": "<the title>"}}"""
+
+
+def _format_document_names(filenames: List[Optional[str]]) -> str:
+    """Joins a conversation's document filenames into a short, readable
+    phrase for TITLE_PROMPT - e.g. ["Robot_Maintenance_Guide.pdf"] ->
+    "Robot Maintenance Guide", so the generated title reads as "about
+    this specific document" rather than a generic paraphrase of the
+    question alone. Works identically for a shared/demo document
+    (docs/fixtures/sample_docs) - filenames are resolved by doc_id
+    regardless of ownership, so the shared corpus gets just as specific
+    a title as a private upload. Drops any unresolved (None) entries."""
+    names = [os.path.splitext(f)[0].replace("_", " ").replace("-", " ").strip() for f in filenames if f]
+    if not names:
+        return ""
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return ", ".join(names[:-1]) + f", and {names[-1]}"
+
+
+def _generate_title(user_message: str, filenames: Optional[List[Optional[str]]] = None) -> Optional[str]:
+    """LLM-generated short chat title from the first user turn, anchored
+    to the conversation's actual document(s) (via TITLE_PROMPT) rather
+    than the question text alone - a vague first question ("what does
+    section 3 say?") would otherwise produce an equally vague title. Best-
+    effort, same defensive isinstance-checked-before-use posture as
+    evaluation/judge.py's score_faithfulness() - returns None on any
+    failure (bad/missing API response, wrong type) so the caller falls
+    back to an "Untitled chat" placeholder; never raises, never blocks
+    the real reply on this. No server-enforced JSON schema (see
+    src/core/llm.py's generate_llm_json() docstring) - the prompt above
+    asks for the shape in text instead.
+
+    Skips the call entirely (returns None immediately) if the shared LLM
+    endpoint is already cooling down from a 429 - this is the 5th call
+    for the same message (query rewriting, reranking, answer generation,
+    and faithfulness judging already ran), so it's the cheapest one to
+    give up on first instead of burning another round trip that's
+    already known to fail."""
+    if llm_cooldown_remaining_seconds() > 0:
+        return None
+    document_names = _format_document_names(filenames or [])
+    prompt = (
+        TITLE_PROMPT.format(documents=document_names, question=user_message)
+        if document_names
+        else TITLE_PROMPT_NO_DOCUMENT.format(question=user_message)
+    )
+    result = generate_llm_json(prompt, max_tokens=50, operation="title_generation")
+    if not isinstance(result, dict):
+        return None
+    title = result.get("title")
+    if not isinstance(title, str) or not title.strip():
+        return None
+    return title.strip()[:TITLE_MAX_CHARS]
+
+
+def _next_untitled_title(user_id: str) -> str:
+    """ "Untitled chat" for this user's first one, "Untitled chat 2"/"3"/...
+    after that - same incrementing-placeholder convention as a file
+    manager's "untitled folder"/"untitled folder 2", so a run of title-
+    generation failures (e.g. the free-tier quota exhaustion this project
+    keeps hitting) never shows the user their own raw prompt text back as
+    a permanent conversation title."""
+    used = get_untitled_chat_numbers(user_id)
+    if not used:
+        return "Untitled chat"
+    return f"Untitled chat {max(used) + 1}"
 
 
 class ConversationService:
@@ -40,16 +138,33 @@ class ConversationService:
 
     @staticmethod
     def create(doc_ids: List[str], user: CurrentUser) -> Dict[str, Any]:
-        if not all_documents_accessible(doc_ids, user.id):
+        """
+        No document attached (doc_ids empty) resolves to this user's own
+        already-indexed documents if they have any, so starting a chat
+        never requires picking one first - see
+        get_default_conversation_doc_ids()'s docstring for the full
+        fallback chain (own documents, then the shared/demo corpus for a
+        brand-new account with nothing uploaded yet).
+        """
+        if not doc_ids:
+            doc_ids = get_default_conversation_doc_ids(user.id)
+            if not doc_ids:
+                raise HTTPException(status_code=400, detail="No documents are available to chat about yet.")
+        elif not all_documents_accessible(doc_ids, user.id):
             raise HTTPException(status_code=404, detail="One or more documents were not found.")
         conversation_id = uuid.uuid4().hex
         return create_conversation(conversation_id, user_id=user.id, doc_ids=doc_ids)
 
     @staticmethod
-    def list_for_user(user: CurrentUser) -> Dict[str, Any]:
-        """Sidebar conversation list, newest-first, each with its
-        document's filename attached."""
-        return {"conversations": list_conversations(user.id)}
+    def list_for_user(user: CurrentUser, limit: int = 30, cursor: Optional[str] = None) -> Dict[str, Any]:
+        """Lightweight, paginated sidebar conversation list - no doc_ids/
+        filenames, see get_with_messages()/create() for the full shape a
+        single conversation needs. Clamps limit so a caller can't request
+        an unbounded page."""
+        try:
+            return list_conversations(user.id, limit=max(1, min(limit, 100)), cursor=cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     @staticmethod
     def get_with_messages(conversation_id: str, user: CurrentUser) -> Dict[str, Any]:
@@ -104,7 +219,9 @@ class ConversationService:
         return {"messages": get_conversation_messages(conversation_id)}
 
     @staticmethod
-    def send_message(conversation_id: str, message: str, advanced_mode: bool, user: CurrentUser) -> Dict[str, Any]:
+    def send_message(
+        conversation_id: str, message: str, advanced_mode: bool, user: CurrentUser, background_tasks: BackgroundTasks
+    ) -> Dict[str, Any]:
         """
         Replaces the old flat POST /chat: scoped to one conversation's documents
         (doc_ids, up to 5), and folds recent turns into the prompt so follow-ups work.
@@ -130,18 +247,161 @@ class ConversationService:
 
         insert_message(conversation_id, role="user", content=message)
 
-        try:
-            result = process_chat_query(
-                message,
-                advanced_mode=advanced_mode,
-                doc_ids=conversation["doc_ids"],
-                history=history,
-                user_id=user.id,
-            )
-        except Exception:
-            logger.exception("process_chat_query failed for conversation_id=%s user_id=%s", conversation_id, user.id)
-            raise HTTPException(status_code=500, detail="Failed to generate a response. Please try again.")
+        # Binds chat_session_id to this request's log context (via
+        # structlog.contextvars) for the duration of the pipeline call -
+        # every event logged anywhere during process_chat_query(),
+        # including ai_tracker.py's per-call events and
+        # request_summary.py's end-of-request line, picks this up
+        # automatically without query_pipeline.py needing to know or
+        # pass a conversation id at all.
+        with structlog.contextvars.bound_contextvars(chat_session_id=conversation_id):
+            try:
+                result = process_chat_query(
+                    message,
+                    advanced_mode=advanced_mode,
+                    doc_ids=conversation["doc_ids"],
+                    history=history,
+                    user_id=user.id,
+                )
+            except Exception:
+                logger.exception(
+                    "process_chat_query failed for conversation_id=%s user_id=%s", conversation_id, user.id
+                )
+                raise HTTPException(status_code=500, detail="Failed to generate a response. Please try again.")
 
+        reply = ConversationService._persist_reply(conversation_id, message, history, result)
+        if len(history) == 0:
+            background_tasks.add_task(
+                ConversationService._generate_and_apply_title,
+                conversation_id,
+                message,
+                user.id,
+                conversation["filenames"],
+            )
+        return reply
+
+    @staticmethod
+    def send_message_stream(
+        conversation_id: str, message: str, advanced_mode: bool, user: CurrentUser
+    ) -> Iterator[str]:
+        """
+        SSE counterpart to send_message(): same ownership check, history
+        fold-in, and user-message insert, but streams the answer back as
+        it's generated (via process_chat_query_stream()) instead of
+        blocking until generation AND the faithfulness judge both finish.
+
+        Yields Server-Sent Events lines ("data: {json}\\n\\n") of two
+        shapes: {"type": "token", "text": str} for each chunk of
+        generated text, and exactly one final {"type": "done",
+        "message": {...}} carrying the same shape send_message() returns
+        as its JSON body. A pipeline failure becomes {"type": "error",
+        "detail": ...} instead of an HTTP 500 - by the time any of this
+        has streamed, response headers (and likely some body) are already
+        sent, so a mid-stream failure can only be reported inside the
+        stream itself, never as a different status code (same reasoning
+        as send_message()'s docstring for #52, applied to a path that
+        can't raise an HTTPException partway through).
+        """
+        conversation = get_owned_conversation(conversation_id, user)
+
+        history_rows = get_conversation_messages(conversation_id, limit=HISTORY_TURNS)
+        history = [{"role": m["role"], "content": m["content"]} for m in history_rows]
+
+        insert_message(conversation_id, role="user", content=message)
+
+        def _events() -> Iterator[str]:
+            # Bound for the entire generator body, including every yield
+            # below - not just the process_chat_query_stream() call - so
+            # chat_session_id stays attached to every log line emitted
+            # while the SSE consumer is actively pulling tokens (same
+            # intent as send_message()'s plain `with` block above; this
+            # one just can't be a single `with` wrapping only the call,
+            # since the call itself is a generator this function also
+            # yields through).
+            with structlog.contextvars.bound_contextvars(chat_session_id=conversation_id):
+                try:
+                    for event in process_chat_query_stream(
+                        message,
+                        advanced_mode=advanced_mode,
+                        doc_ids=conversation["doc_ids"],
+                        history=history,
+                        user_id=user.id,
+                    ):
+                        if event["type"] == "token":
+                            yield f"data: {json.dumps({'type': 'token', 'text': event['text']})}\n\n"
+                            continue
+                        reply_message = ConversationService._persist_reply(
+                            conversation_id, message, history, event["result"]
+                        )
+                        # jsonable_encoder, not a bare json.dumps(reply_message) -
+                        # under STORAGE_MODE=supabase, insert_message()'s
+                        # RETURNING id, created_at gives psycopg2's native
+                        # datetime for created_at (SQLite's equivalent column
+                        # is already a string), which json.dumps can't
+                        # serialize on its own. The non-streaming
+                        # send_message() endpoint doesn't hit this because
+                        # response_model=ChatReplyOut already runs every
+                        # response through this same FastAPI encoder.
+                        payload = jsonable_encoder({"type": "done", "message": reply_message})
+                        yield f"data: {json.dumps(payload)}\n\n"
+                        # Title generation happens AFTER "done" is already on
+                        # the wire, not before it - the client has the real
+                        # answer and can render it immediately; this extra
+                        # LLM call just trails a few hundred ms behind
+                        # on the same connection instead of sitting in front
+                        # of the answer (2026-11-15 performance audit finding
+                        # #1). No BackgroundTasks needed here since this
+                        # generator is still live - send_message()'s
+                        # non-streaming twin below uses BackgroundTasks
+                        # instead, since it has no way to send anything after
+                        # its one response.
+                        if len(history) == 0:
+                            # Isolated from the outer except below: the real
+                            # answer is already on the wire at this point, so
+                            # a failure in title generation itself (e.g. a
+                            # transient DB write error in
+                            # replace_fallback_title()) must not emit a
+                            # misleading "error" event after a successful
+                            # "done" - the client would show a contradictory
+                            # error state over an answer it already rendered
+                            # correctly. Title is simply skipped for this
+                            # turn (the truncated fallback _persist_reply()
+                            # already set stands) rather than retried here.
+                            try:
+                                title = ConversationService._generate_and_apply_title(
+                                    conversation_id, message, user.id, conversation["filenames"]
+                                )
+                                yield f"data: {json.dumps({'type': 'title', 'title': title})}\n\n"
+                            except Exception:
+                                logger.exception(
+                                    "title generation failed for conversation_id=%s after a successful reply",
+                                    conversation_id,
+                                )
+                except Exception:
+                    logger.exception(
+                        "process_chat_query_stream failed for conversation_id=%s user_id=%s", conversation_id, user.id
+                    )
+                    error_payload = {"type": "error", "detail": "Failed to generate a response. Please try again."}
+                    yield f"data: {json.dumps(error_payload)}\n\n"
+
+        return _events()
+
+    @staticmethod
+    def _persist_reply(conversation_id: str, message: str, history: list, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Shared by send_message() and send_message_stream(): stores the
+        assistant turn and (first turn only) sets a cheap fallback title -
+        see send_message()'s docstring for why a pipeline failure never
+        reaches this (nothing is persisted for a failed run).
+
+        Does NOT call the title-generation LLM itself anymore (2026-11-15
+        performance audit finding #1: that extra LLM round trip was
+        blocking this request/stream's critical path for no good reason -
+        title is purely cosmetic and already has this same fallback for
+        when generation fails). The real title is generated afterward by
+        each caller - send_message_stream() inline after its "done" event
+        is already on the wire, send_message() via BackgroundTasks since
+        it has no way to send anything after its one response - both
+        through _generate_and_apply_title() below."""
         assistant_message = insert_message(
             conversation_id,
             role="assistant",
@@ -150,16 +410,54 @@ class ConversationService:
             faithfulness_score=(result.get("faithfulness") or {}).get("score"),
         )
 
-        # touch_conversation only sets the title if it's still unset (COALESCE),
-        # so it's safe to pass a candidate title on every message, not just the first.
-        touch_conversation(conversation_id, title=message[:TITLE_MAX_CHARS])
+        # First turn only (history was fetched before this message's own
+        # insert_message() call, so an empty history means nothing came
+        # before this one). touch_conversation only sets the title if it's
+        # still unset (COALESCE), so later turns keep passing None safely.
+        is_first_turn = len(history) == 0
+        touch_conversation(
+            conversation_id,
+            title=message[:TITLE_MAX_CHARS] if is_first_turn else None,
+        )
 
         return {
             **assistant_message,
             "telemetry": result.get("telemetry", {}),
             "chunks_matrix": result.get("chunks_matrix", []),
             "thinking": result.get("thinking", ""),
+            "title": None,
         }
+
+    @staticmethod
+    def _generate_and_apply_title(
+        conversation_id: str, message: str, user_id: str, filenames: Optional[List[Optional[str]]] = None
+    ) -> str:
+        """Generates the real title and swaps it in for the fallback
+        truncation _persist_reply() already set, unless the user renamed
+        the conversation in the meantime (replace_fallback_title()'s own
+        guard against that race). Returns whichever title is now correct
+        - the generated one, the fallback itself if it was never
+        replaced, or a fresh "Untitled chat"/"Untitled chat N" placeholder
+        if generation failed outright - so send_message_stream() can
+        report it to the client without a second DB read.
+
+        The LLM title call can fail for two different reasons seen in
+        production (rate-limited 429, or an unparseable JSON response) -
+        either way _generate_title() returns None, and this used to leave
+        the truncated raw prompt as the permanent title forever. Swapping
+        that to an incrementing "Untitled chat" placeholder instead keeps
+        a repeat quota failure from making every new conversation's title
+        just be whatever the user happened to type first."""
+        fallback_title = message[:TITLE_MAX_CHARS]
+        generated_title = _generate_title(message, filenames)
+        if generated_title and generated_title != fallback_title:
+            replace_fallback_title(conversation_id, fallback_title, generated_title)
+            return generated_title
+        if not generated_title:
+            untitled_title = _next_untitled_title(user_id)
+            replace_fallback_title(conversation_id, fallback_title, untitled_title)
+            return untitled_title
+        return fallback_title
 
     @staticmethod
     def _refresh_source_tokens(messages: list, user: CurrentUser) -> list:

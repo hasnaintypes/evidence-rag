@@ -16,7 +16,7 @@ project's own convention overrides that default.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env            # set GEMINI_API_KEY, STORAGE_MODE, SUPABASE_URL at minimum
+cp .env.example .env            # set GEMINI_API_KEY, VOYAGE_API_KEY, STORAGE_MODE, SUPABASE_URL at minimum
 python scripts/ingest.py        # index docs/fixtures/sample_docs/ as shared (user_id NULL) documents
 uvicorn api.app:app --reload    # http://127.0.0.1:8000/docs for interactive API docs
 ```
@@ -92,23 +92,42 @@ rather than working against raw chunk text.
 `process_chat_query()` is the single entry point conversations call into, and it is doc-scoped (every
 retrieval call is filtered to one `doc_id`, not a global search). Flow: LLM query rewriting
 (`retrieval/query_rewriter.py`) → hybrid retrieval — BM25 + dense + Reciprocal Rank Fusion
-(`retrieval/hybrid.py`) → LLM-based reranking (`retrieval/reranker.py`, one batched Gemini call
-scoring every candidate chunk's relevance 0.0-1.0 — not a locally-hosted cross-encoder; see that
-module's docstring and #20) → relevance grading + Jaccard dedup (`retrieval/grader.py`) → context
-compression + parent-section reconstruction (`retrieval/compression.py`) → an adaptive context budget
-(2/4/5 blocks based on top score) → a **confidence gate**: below `RETRIEVAL_CONFIDENCE_THRESHOLD` the
-pipeline abstains instead of generating, returning the closest chunks as `sources` with no synthesized
-claim → if confident but a follow-up looks warranted, **one bounded additional retrieval hop** (never
-an open-ended loop) → grounded generation → faithfulness scoring (`evaluation/judge.py`, a second
-cheap LLM call checking the answer against its own cited chunks) → **faithfulness hard gate**: below
+(`retrieval/hybrid.py`) → LLM-based reranking (`retrieval/reranker.py`, one batched call scoring every
+candidate chunk's relevance 0.0-1.0 — not a locally-hosted cross-encoder; see that module's docstring
+and #20) → relevance grading + Jaccard dedup (`retrieval/grader.py`) → context compression +
+parent-section reconstruction (`retrieval/compression.py`) → an adaptive context budget (2/4/5 blocks
+based on top score) → a **confidence gate**: below `RETRIEVAL_CONFIDENCE_THRESHOLD` the pipeline
+abstains instead of generating, returning the closest chunks as `sources` with no synthesized claim →
+if confident but a follow-up looks warranted, **one bounded additional retrieval hop** (never an
+open-ended loop) → grounded generation (`generate_llm_chat()`/`generate_llm_chat_stream()`,
+`server/src/core/llm.py`) → faithfulness scoring (`evaluation/judge.py`, a second cheap LLM call
+checking the answer against its own cited chunks) → **faithfulness hard gate**: below
 `FAITHFULNESS_GATE_THRESHOLD` the generated answer is withheld and replaced with an explicit "did not
 pass the faithfulness check" message (still listing sources/unsupported claims) rather than returned
 as-is → telemetry (`telemetry.py`) logs every stage's latency. The retrieval-confidence gate only runs
 in "advanced mode" — naive mode skips reranking entirely and always attempts an answer — but the
 faithfulness gate runs in both modes, since the judge call doesn't depend on reranking.
-`FAITHFULNESS_GATE_THRESHOLD` (default 0.7, see `config.py`) was set from a small probe against real
-`docs/eval/eval_set.json` content rather than a full `run_eval.py` pass, due to free-tier Gemini API quota
-limits — revisit once issue #24 is resolved.
+
+**Every LLM call in this flow — query rewriting, reranking, judging, and the final answer — runs on
+a configured OpenAI-compatible endpoint (`LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL`), not Gemini.**
+Gemini's free-tier quota repeatedly exhausted every candidate in its own fallback chain during real
+use (both for the final answer and for the comparatively light judge/reranker/title calls), so the
+whole active call surface moved off Gemini's native SDK onto the `openai` SDK client pointed at
+whichever OpenAI-compatible Chat Completions server is configured — Cloudflare Workers AI's free tier
+(300 RPM, 10,000 Neurons/day, no payment method required) was this project's original choice, but
+Gemini's own OpenAI-compatible endpoint (`generativelanguage.googleapis.com/v1beta/openai/`, reusing
+the same `GEMINI_API_KEY`) or any other OpenAI-compatible server (a self-hosted vLLM/Ollama instance,
+OpenRouter, a personal gateway) works identically, since it's the same client/retry/cooldown/tracking
+code regardless of which endpoint `LLM_BASE_URL` points at. The only code that still calls Gemini's
+native SDK directly (not through this OpenAI-compatible path) is `src/graph.py`'s
+entity-graph extraction (**disabled by default** via `ENABLE_ENTITY_GRAPH` — see below) and
+`scripts/test_connection.py`'s connectivity check; `GEMINI_API_KEY` is still a required setting but only
+needs to be any non-empty placeholder string if entity graph stays off, since `google-genai`'s client
+validates non-emptiness (not validity) at construction and the key is never sent to Google unless that
+feature is turned on. `FAITHFULNESS_GATE_THRESHOLD` (default 0.7, see `config.py`) was set from a small
+probe against real `docs/eval/eval_set.json` content rather than a full `run_eval.py` pass, due to the
+free-tier quota limits that motivated this migration in the first place — revisit once issue #24 is
+resolved.
 
 Every stage above runs inside `src/core/observability.py`'s `traced_stage()`, which logs that stage's
 start/completion (with elapsed ms)/failure through the standard `logging` module under a per-request
@@ -122,19 +141,32 @@ Action, `pg_cron`) depends on deployment specifics this project doesn't hardcode
 `POST /conversations/{id}/messages` and `POST /upload` additionally sit behind
 `src/core/rate_limiter.py`'s per-user sliding-window limiter (`api/deps.py`'s
 `get_rate_limited_chat_user`/`get_rate_limited_upload_user`), so a single client can't exhaust the
-app's Gemini quota through repeated requests (#15). Both are in-memory/per-process, same limitation
-as `response_cache.py`/`hybrid.py`'s index cache below.
+app's configured LLM endpoint's quota through repeated requests (#15). Both are in-memory/per-process,
+same limitation as `response_cache.py`/`hybrid.py`'s index cache below.
 
-Chat/structured generation calls (`src/core/llm.py`) walk a configured chat-model chain until one
-succeeds — a real mitigation, not just theoretical: this project hit the free tier's daily quota
-mid-session while tuning the faithfulness threshold above. The chain defaults to the 2-element
-`GEMINI_CHAT_MODEL`/`GEMINI_FALLBACK_CHAT_MODEL` pair, but `GEMINI_CHAT_MODEL_CHAIN` (comma-separated)
-overrides it with an arbitrary-length list — each extra model is a separate free-tier quota bucket.
-`scripts/list_available_models.py` lists which model ids a given key can actually call right now
-(filtered by name heuristic to exclude TTS/image/music/agent-product models that also expose the
-same `generateContent` action) to build that value from, rather than guessing. Failures are logged
-through the `evidence_rag.llm` logger with whether the skip was quota/rate-limit-shaped or some
-other error, same "inherits the root logger's handler" pattern as `src/core/observability.py`.
+`src/core/llm.py` has three functions covering every active call path against the configured
+OpenAI-compatible endpoint: `generate_llm_chat()`/`generate_llm_chat_stream()` for free text (the
+final RAG answer, query rewriting/decomposition) and `generate_llm_json()` for JSON-shaped output
+(reranking, judging, title generation). The latter has no server-enforced schema — not every
+OpenAI-compatible endpoint documents reliable JSON-mode support across models — so the prompt itself
+asks for JSON text and the response is parsed defensively (`_extract_json_block()`: the first balanced
+`{...}`/`[...]` block, tolerant of stray text around it, `None` on any parse failure so the caller
+degrades gracefully). All three share one call path (`_llm_chat_completion()`) with a process-local
+cooldown that activates on an HTTP 429 (honoring `Retry-After` when the endpoint sends one) and is
+cleared, not retried, until it expires — deliberately not a blind "retry every candidate every time"
+loop, since this project watched exactly that pattern burn several minutes retrying two
+already-exhausted Gemini models on every single call during a reingest. A transient (non-429) failure
+gets a small number of retries with exponential backoff + jitter instead. Lazily configured (no error
+at import time without credentials) so the rest of the app, including every test in this repo, boots
+and runs without `LLM_BASE_URL`/`LLM_API_KEY` set — only an actual call raises, with a specific "not
+configured" message, if they're missing.
+
+The Gemini-backed functions above these (`generate_chat_response()`/`generate_structured_response()`)
+still exist, walking a configured chat-model chain until one succeeds (`GEMINI_CHAT_MODEL`/
+`GEMINI_FALLBACK_CHAT_MODEL`, or `GEMINI_CHAT_MODEL_CHAIN` for an arbitrary-length override —
+`scripts/list_available_models.py` lists which model ids a given key can actually call right now,
+filtered by name heuristic to exclude TTS/image/music/agent-product models), but only `src/graph.py`'s
+entity-graph extraction (disabled by default) and `scripts/test_connection.py` call them.
 Embedding calls retry the same model instead (no chain), since `document_chunks.embedding` is a
 fixed-width pgvector column tied to one embedding model's output dimension.
 
@@ -153,6 +185,63 @@ follow-up depends on prior turns, so caching it under the bare query embedding r
 stale/wrong-context answer. In-memory/per-process, same as `retrieval/hybrid.py`'s index cache — not
 shared across workers or persisted across a restart.
 
+### Observability: structured logging, AI-call tracking, chat-request summaries
+
+`src/core/logging_config.py` wraps the stdlib `logging` module (every existing
+`logging.getLogger("evidence_rag.*")` call site — `observability.py`'s `traced_stage()`, `llm.py`,
+`telemetry.py` — keeps working unchanged) with `structlog`, so every log line, old call sites and new
+structured ones alike, renders as one JSON event: UTC ISO-8601 `timestamp`, `level`, `service`,
+`environment`, `logger`, `event`, plus whatever structured fields a call site added. `LOG_FORMAT`
+controls `console` (colorized, for local dev) vs `json` rendering; file output (`LOG_TO_FILE`) is
+routed by logger name into `logs/application/app.jsonl` (everything else), `logs/ai/invocations.jsonl`
+(`evidence_rag.ai`), `logs/chat/requests.jsonl` (`evidence_rag.chat`), and `logs/errors/errors.jsonl`
+(a deliberate mirror of any ERROR+ line, from any category) — rotated via `concurrent-log-handler`
+(safe across multiple OS processes, unlike stdlib's plain `RotatingFileHandler`) and swept for
+rotated-backup age (`LOG_RETENTION_DAYS`) once at startup. `logs/` is entirely gitignored, including
+its category subdirectories themselves - `logging_config.py` creates them on startup if missing.
+
+`src/core/ai_tracker.py`'s `track_ai_call()` wraps every real AI/embedding call site in `llm.py`
+(Voyage's `get_embedding()`/`get_embeddings_batch()`, the shared transport
+`_llm_chat_completion()` behind `generate_llm_chat()`/`_stream()`/`_json()`, and the
+dormant Gemini `generate_chat_response()`/`generate_structured_response()` chain) with one
+`ai.invocation.*` event per *logical* call, tagged with an `operation` string each caller passes
+explicitly (`"answer_generation"`, `"query_rewriting"`, `"reranking"`, `"faithfulness_judging"`,
+`"title_generation"`, `"entity_extraction"`, `"document_ingestion"`, …) — this is what distinguishes
+otherwise-identical-looking LLM calls in the log. A separate `ai.http_attempt` event fires per
+*actual* outbound HTTP attempt (every retry in `_llm_chat_completion()`'s bounded backoff loop,
+every candidate in the Gemini fallback chain), so "1 logical invocation → N HTTP attempts" is visible
+instead of collapsed into a single pass/fail line. Token usage is only ever reported from a provider's
+own response (`response.usage`) — never estimated or fabricated; Voyage's `embed()` doesn't return
+token counts today, so embedding invocations simply omit the field. `summarize_messages()` is the only
+thing ever logged about a request payload — message count/roles/char length/system-prompt presence,
+never message content — so no raw prompt, document content, or credential ever reaches a log line.
+
+`src/core/request_summary.py`'s `build_request_summary()`/`log_request_summary()` reduce one request's
+accumulated `telemetry` dict (per-stage `traced_stage()` timings, `cache_hit`, `injection_flags`, and
+the `ai_calls` list `track_ai_call(telemetry=...)` appends to) into exactly one `chat.request.*` event
+— success, early-return (cache hit/empty retrieval/confidence-gate abstention), faithfulness-gated,
+cancelled (SSE client disconnected mid-stream), or failed — logged once per `process_chat_query()`/
+`process_chat_query_stream()` call, never per stage or per retry. `chat_session_id` is bound via
+`structlog.contextvars.bound_contextvars()` in `api/services/conversation_service.py` around the
+pipeline call, so it — and every AI invocation logged during that call — carries the conversation id
+automatically without `query_pipeline.py` needing to know about conversations at all.
+
+`scripts/inspect_logs.py` (`chats --last N`, `session <id>`, `request <id>`, `stats [--today]`,
+`errors --last N [--verbose]`) reads the JSONL files directly — no new dependency — to answer "how
+many AI calls did this chat message make, and why" without hand-grepping raw log lines.
+
+**Production log export**: disabled by default. Setting `BETTER_STACK_SOURCE_TOKEN` adds a
+`QueueHandler`/`QueueListener`-backed exporter (`logging_config.py`'s `_maybe_add_better_stack_handler()`)
+that ships the same JSON lines to Better Stack's Logs ingestion endpoint on a background thread — a
+request thread only ever enqueues a string, never waits on the network, and any export failure is
+swallowed (never breaks a chat response). Better Stack was chosen over Grafana Cloud/Sentry for this
+project's scale: free tier is 3GB logs/traces retained for 3 days (verify current numbers at
+betterstack.com/pricing before relying on them — this was last checked 2026-11-12), no payment method
+required to start, native structured-JSON ingestion, and a dashboard that needs no separate
+OpenTelemetry Collector to stand up first. To enable: create a Logs source in the Better Stack
+dashboard (Telemetry → Sources → Connect source), set `BETTER_STACK_SOURCE_TOKEN` to its token, and
+redeploy — nothing else in the app changes.
+
 ### Storage is swappable, pipeline logic is not
 
 `STORAGE_MODE` (`local` vs `supabase`) only changes `server/src/storage/{database,files}.py` — SQLite
@@ -169,11 +258,17 @@ similarity against an in-memory, L2-normalized embedding matrix built from the f
 `supabase` mode it instead calls `src/storage/database.py`'s `dense_ann_search()`, a real
 approximate-nearest-neighbor SQL query against `document_chunks.embedding` that uses
 `scripts/supabase_schema.sql`'s `idx_chunks_embedding` HNSW index (#17) — built on
-`(embedding::halfvec(3072))` with `halfvec_cosine_ops`, not on `embedding` directly, since pgvector's
-HNSW index caps at 2000 dimensions and `gemini-embedding-001` produces 3072-dim vectors; every query
-against the index (including `dense_ann_search()`) must apply the identical `::halfvec(3072)` cast on
-both sides of `<=>`, or the planner silently falls back to a full sequential scan instead of using the
-index. `dense_ann_search()` also filters by `doc_ids` directly in SQL (`WHERE doc_id = ANY(...)`)
+`(embedding::halfvec(N))` with `halfvec_cosine_ops` (`N` = `VOYAGE_EMBEDDING_DIMENSION`, 1024 by
+default), not on `embedding` directly, since pgvector's HNSW index caps at 2000 dimensions for the
+plain `vector` type (`halfvec` raises that to 4000 — relevant if `N` is ever raised above 2000, e.g.
+Voyage's `voyage-3-large` at 2048); every query against the index (including `dense_ann_search()`)
+must apply the identical `::halfvec(N)` cast on both sides of `<=>`, or the planner silently falls
+back to a full sequential scan instead of using the index. Embeddings are Voyage AI's (`get_embedding()`/
+`get_embeddings_batch()` in `src/core/llm.py`, asymmetric `input_type="query"` vs `"document"`), kept
+independent of chat generation (still Gemini) — swapping either provider doesn't require touching the
+other, though an embedding-model/dimension change needs `scripts/supabase_schema.sql` re-applied and
+every document reingested from scratch (`get_indexed_embedding_models()` in `database.py` exists to
+flag exactly this kind of mismatch). `dense_ann_search()` also filters by `doc_ids` directly in SQL (`WHERE doc_id = ANY(...)`)
 rather than post-filtering a full-corpus ranking. The sparse/BM25 layer is scoped the same way now
 too (#27, closed): whenever `doc_ids` is given (every real chat request — conversations are always
 scoped to 1-5 documents), `retrieval/hybrid.py` builds its BM25 index (and, in local/SQLite mode, the
@@ -222,8 +317,16 @@ wrappers with loading/error state so components don't duplicate fetch boilerplat
 
 ## Documentation
 
-Project documentation (PRD, architecture, security findings, roadmap, decisions) lives in the Obsidian
-vault at `~/Vaults/Main/Projects/EvidenceRAG/`, not in this repo. `docs/` here is split into
-`docs/fixtures/` (the `sample_docs/` demo corpus) and `docs/eval/` (eval harness I/O —
-`eval_set.json`, `eval_baseline.json`, `eval_report.md`, `eval_metrics.json`) — see GitHub issue #19
-and `06-Roadmap.md` in the vault.
+Public-facing reference docs live in this repo under `docs/`: `docs/ARCHITECTURE.md` (system design —
+pipeline stages, the swappable-storage/fixed-pipeline split, observability, the LLM-call
+architecture) and `docs/API.md` (every route's auth/rate-limit requirements and request/response
+shapes, kept in sync with `api/routers/`+`api/schemas.py` by hand, not auto-generated from
+OpenAPI). README.md stays a pitch + quickstart + eval-numbers summary and links to both rather than
+inlining their detail.
+
+Everything else (PRD, security findings, roadmap, decisions, and any doc requiring editorial
+judgment rather than reading code) stays in the Obsidian vault at
+`~/Vaults/Main/Projects/EvidenceRAG/`, not in this repo. `docs/` otherwise holds
+`docs/fixtures/` (the `sample_docs/` demo corpus), `docs/eval/` (eval harness I/O — `eval_set.json`,
+`eval_baseline.json`, `eval_report.md`, `eval_metrics.json`), and `docs/assets/` (README images) —
+see GitHub issue #19 and `06-Roadmap.md` in the vault.

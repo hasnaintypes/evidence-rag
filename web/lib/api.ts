@@ -1,7 +1,8 @@
 import type {
   Conversation,
+  ConversationListPage,
   ConversationMessage,
-  DocumentRecord,
+  DocumentListPage,
   GraphData,
   GraphSection,
 } from "@/lib/types";
@@ -151,10 +152,13 @@ export function subscribeToDocumentStatus(
   return () => controller.abort();
 }
 
-export async function getDocuments(): Promise<DocumentRecord[]> {
-  const response = await apiFetch("/documents");
-  const data = (await response.json()) as { documents: DocumentRecord[] };
-  return data.documents;
+export async function getDocuments(cursor?: string, limit?: number): Promise<DocumentListPage> {
+  const params = new URLSearchParams();
+  if (cursor) params.set("cursor", cursor);
+  if (limit) params.set("limit", String(limit));
+  const qs = params.toString();
+  const response = await apiFetch(`/documents${qs ? `?${qs}` : ""}`);
+  return response.json() as Promise<DocumentListPage>;
 }
 
 export async function renameDocument(docId: string, filename: string): Promise<void> {
@@ -190,10 +194,10 @@ export async function getGraphSection(nodeId: string): Promise<GraphSection> {
   return response.json() as Promise<GraphSection>;
 }
 
-export async function listConversations(): Promise<Conversation[]> {
-  const response = await apiFetch("/conversations");
-  const data = (await response.json()) as { conversations: Conversation[] };
-  return data.conversations;
+export async function listConversations(cursor?: string): Promise<ConversationListPage> {
+  const qs = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+  const response = await apiFetch(`/conversations${qs}`);
+  return response.json() as Promise<ConversationListPage>;
 }
 
 export async function createConversation(docIds: string[]): Promise<Conversation> {
@@ -247,13 +251,126 @@ export async function sendMessage(
   conversationId: string,
   message: string,
   advancedMode: boolean,
+  signal?: AbortSignal,
 ): Promise<ConversationMessage> {
   const response = await apiFetch(`/conversations/${encodeURIComponent(conversationId)}/messages`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message, advanced_mode: advancedMode }),
+    signal,
   });
   return response.json() as Promise<ConversationMessage>;
+}
+
+type ChatStreamEvent =
+  | { type: "token"; text: string }
+  | { type: "done"; message: ConversationMessage }
+  // Trails a few hundred ms after "done" on a first turn only - the
+  // server generates the real chat title AFTER the reply is already on
+  // the wire instead of blocking it (see conversation_service.py's
+  // send_message_stream() docstring), then sends this as its own event.
+  | { type: "title"; title: string }
+  | { type: "error"; detail: string };
+
+/**
+ * Streaming counterpart to sendMessage() - POST /conversations/{id}/messages/stream
+ * returns Server-Sent Events instead of one blocking JSON response, so the
+ * reply shows up token-by-token instead of only once generation AND the
+ * faithfulness judge call after it have both finished server-side (the
+ * longest stretch of chat-pipeline.py's request). Same manual fetch +
+ * stream-reader approach as subscribeToDocumentStatus() above, for the same
+ * reason (EventSource can't send the Authorization header this API needs).
+ *
+ * Calls onToken for each chunk of generated text as it arrives, then
+ * resolves with the final persisted message once the server sends its
+ * "done" event - the same shape sendMessage() resolves with. Resolving
+ * here does NOT close the connection: on a first turn, a trailing
+ * "title" event still arrives a little later (see ChatStreamEvent above),
+ * and a detached continuation below keeps draining the same reader to
+ * catch it and call onTitle - without making the caller wait for it.
+ */
+export async function sendMessageStream(
+  conversationId: string,
+  message: string,
+  advancedMode: boolean,
+  onToken: (text: string) => void,
+  signal?: AbortSignal,
+  onTitle?: (title: string) => void,
+): Promise<ConversationMessage> {
+  const response = await apiFetch(
+    `/conversations/${encodeURIComponent(conversationId)}/messages/stream`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, advanced_mode: advancedMode }),
+      signal,
+    },
+  );
+  const bodyReader = response.body?.getReader();
+  if (!bodyReader) throw new Error("Streaming response had no body.");
+  const reader: ReadableStreamDefaultReader<Uint8Array> = bodyReader;
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  function parseFrames(): ChatStreamEvent[] {
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    return frames
+      .map((frame) => frame.split("\n").find((line) => line.startsWith("data:")))
+      .filter((dataLine): dataLine is string => !!dataLine)
+      .map((dataLine) => JSON.parse(dataLine.slice(5).trim()) as ChatStreamEvent);
+  }
+
+  // Drains whatever's left of the stream after "done" has already
+  // resolved the outer promise, purely to catch a trailing "title" event
+  // - failures here are non-fatal (the reply itself already landed), so
+  // this never throws back into the caller.
+  async function drainForTitle() {
+    try {
+      for (;;) {
+        for (const event of parseFrames()) {
+          if (event.type === "title") {
+            onTitle?.(event.title);
+            return;
+          }
+        }
+        const { done, value } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+      }
+    } catch {
+      // connection already served its purpose - nothing to recover
+    }
+  }
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let doneMessage: ConversationMessage | null = null;
+    // Don't return the instant "done" is seen - a "title" event for the
+    // same turn can arrive in this same batch, and returning early would
+    // skip right past it before the loop gets to it.
+    for (const event of parseFrames()) {
+      if (event.type === "token") {
+        onToken(event.text);
+      } else if (event.type === "done") {
+        doneMessage = event.message;
+      } else if (event.type === "title") {
+        onTitle?.(event.title);
+        if (doneMessage) return doneMessage;
+      } else {
+        throw new Error(event.detail);
+      }
+    }
+    if (doneMessage) {
+      if (onTitle) void drainForTitle();
+      return doneMessage;
+    }
+  }
+  throw new Error("The reply stream ended unexpectedly.");
 }
 
 export async function restoreCheckpoint(

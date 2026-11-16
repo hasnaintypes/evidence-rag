@@ -13,8 +13,11 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.core.logging_config import configure_logging
 from src.core.config import settings
 from src.storage.database import get_db_connection
+
+configure_logging()
 
 # Order doesn't matter functionally (no FK constraints are declared in
 # this schema today), but child-before-parent reads more clearly and

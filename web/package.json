@@ -23,6 +23,7 @@
     "cmdk": "^1.1.1",
     "cn": "^0.4.0",
     "embla-carousel-react": "^8.6.0",
+    "katex": "^0.16.27",
     "lucide-react": "^1.48.0",
     "motion": "^13.4.4",
     "nanoid": "^6.0.1",

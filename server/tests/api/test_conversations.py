@@ -8,6 +8,7 @@ api/authz.py's get_owned_conversation() like every other mutation,
 instead of add_document_to_conversation()'s own inline check.
 """
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -17,9 +18,22 @@ from src.storage.database import (
     MAX_CONVERSATION_DOCS,
     add_document_to_conversation,
     create_conversation,
+    get_conversation,
     get_conversation_messages,
     upsert_document_record,
 )
+
+
+def _parse_sse_events(body: str) -> list[dict]:
+    """Parses the "data: {json}\\n\\n" frames send_message_stream() emits
+    back into a list of event dicts, in order."""
+    events = []
+    for frame in body.split("\n\n"):
+        for line in frame.split("\n"):
+            if line.startswith("data:"):
+                events.append(json.loads(line[len("data:") :].strip()))
+    return events
+
 
 OWNER = "owner-user"
 OTHER = "other-user"
@@ -63,7 +77,14 @@ def test_send_message_returns_the_real_reply_on_success(client, app):
         "chunks_matrix": [],
         "thinking": "",
     }
-    with patch("api.services.conversation_service.process_chat_query", return_value=fake_result):
+    # This conversation's history is empty, so it's a first turn - the
+    # title-generation BackgroundTask fires within this same call (see
+    # test_send_message_returns_llm_generated_title_on_first_turn_only),
+    # so it needs mocking too or this would make a real LLM call.
+    with (
+        patch("api.services.conversation_service.process_chat_query", return_value=fake_result),
+        patch("api.services.conversation_service.generate_llm_json", return_value=None),
+    ):
         response = client.post(f"/conversations/{conversation_id}/messages", json={"message": "hello"})
 
     assert response.status_code == 200
@@ -73,6 +94,293 @@ def test_send_message_returns_the_real_reply_on_success(client, app):
     assert len(messages) == 2
     assert messages[1]["role"] == "assistant"
     assert messages[1]["content"] == "a real answer"
+
+
+def test_send_message_returns_llm_generated_title_on_first_turn_only(client, app):
+    conversation_id = _seed_conversation()
+    override_current_user(app, OWNER)
+
+    fake_result = {
+        "reply": "a real answer",
+        "sources": [],
+        "faithfulness": {"score": 0.9, "unsupported_claims": []},
+        "telemetry": {},
+        "chunks_matrix": [],
+        "thinking": "",
+    }
+    with (
+        patch("api.services.conversation_service.process_chat_query", return_value=fake_result),
+        patch(
+            "api.services.conversation_service.generate_llm_json",
+            return_value={"title": "Retention Drivers This Quarter"},
+        ),
+    ):
+        # Title generation is deferred to a BackgroundTask (2026-11-15
+        # performance audit finding #1 - it used to block this response),
+        # so the response's own title field is always None now; the real
+        # title only shows up in the conversation row itself, applied
+        # after the response body was already built. TestClient runs
+        # queued background tasks before client.post() returns, so the
+        # conversation is already updated by the time this call returns.
+        first = client.post(f"/conversations/{conversation_id}/messages", json={"message": "hello"})
+        assert first.status_code == 200
+        assert first.json()["title"] is None
+
+        # A second turn in the same conversation is not the first turn
+        # anymore - no LLM title call should fire, and the response's
+        # title field should be None even though the mock would still
+        # happily return one if called.
+        second = client.post(f"/conversations/{conversation_id}/messages", json={"message": "a follow-up"})
+        assert second.status_code == 200
+        assert second.json()["title"] is None
+
+    conversation = get_conversation(conversation_id)
+    assert conversation["title"] == "Retention Drivers This Quarter"
+
+
+def test_title_generation_prompt_names_the_conversation_document(client, app):
+    """The title prompt must name the actual document(s) the conversation
+    is scoped to (TITLE_PROMPT), not just paraphrase the question in
+    isolation - a vague first question should still produce a title tied
+    to the real document, not a generic one."""
+    conversation_id = _seed_conversation()  # doc-1 / "doc.md"
+    override_current_user(app, OWNER)
+
+    fake_result = {
+        "reply": "a real answer",
+        "sources": [],
+        "faithfulness": {"score": 0.9, "unsupported_claims": []},
+        "telemetry": {},
+        "chunks_matrix": [],
+        "thinking": "",
+    }
+    with (
+        patch("api.services.conversation_service.process_chat_query", return_value=fake_result),
+        patch(
+            "api.services.conversation_service.generate_llm_json", return_value={"title": "Doc Overview"}
+        ) as mock_generate_json,
+    ):
+        client.post(f"/conversations/{conversation_id}/messages", json={"message": "what does section 3 say?"})
+
+    prompt_sent = mock_generate_json.call_args.args[0]
+    assert "doc" in prompt_sent  # "doc.md" with its extension stripped
+    assert "generic" in prompt_sent  # the prompt explicitly forbids a generic title
+
+
+def test_send_message_falls_back_to_untitled_chat_when_llm_call_fails(client, app):
+    """When title generation fails (bad JSON, 429, whatever - see
+    _generate_title()'s docstring), the permanent title must not be left
+    as the user's own raw truncated prompt forever - it swaps to an
+    "Untitled chat" placeholder instead (#conversation title fallback)."""
+    conversation_id = _seed_conversation()
+    override_current_user(app, OWNER)
+
+    fake_result = {
+        "reply": "a real answer",
+        "sources": [],
+        "faithfulness": {"score": 0.9, "unsupported_claims": []},
+        "telemetry": {},
+        "chunks_matrix": [],
+        "thinking": "",
+    }
+    with (
+        patch("api.services.conversation_service.process_chat_query", return_value=fake_result),
+        patch("api.services.conversation_service.generate_llm_json", return_value=None),
+    ):
+        response = client.post(f"/conversations/{conversation_id}/messages", json={"message": "a fresh question"})
+
+    assert response.status_code == 200
+    assert response.json()["title"] is None  # nothing new was generated, so nothing to animate
+
+    conversation = get_conversation(conversation_id)
+    assert conversation["title"] == "Untitled chat"  # not the raw "a fresh question" prompt
+
+
+def test_send_message_numbers_successive_untitled_chats_per_user(client, app):
+    """A second, third, etc. conversation that also fails title generation
+    for the same user gets "Untitled chat 2", "Untitled chat 3" - not
+    another colliding bare "Untitled chat"."""
+    upsert_document_record(
+        doc_id="doc-untitled", filename="doc.md", file_hash="h", node_count=1, chunk_count=1, user_id=OWNER
+    )
+    conv_a = create_conversation("conv-untitled-a", user_id=OWNER, doc_ids=["doc-untitled"])["id"]
+    conv_b = create_conversation("conv-untitled-b", user_id=OWNER, doc_ids=["doc-untitled"])["id"]
+    override_current_user(app, OWNER)
+
+    fake_result = {
+        "reply": "a real answer",
+        "sources": [],
+        "faithfulness": {"score": 0.9, "unsupported_claims": []},
+        "telemetry": {},
+        "chunks_matrix": [],
+        "thinking": "",
+    }
+    with (
+        patch("api.services.conversation_service.process_chat_query", return_value=fake_result),
+        patch("api.services.conversation_service.generate_llm_json", return_value=None),
+    ):
+        client.post(f"/conversations/{conv_a}/messages", json={"message": "first question"})
+        client.post(f"/conversations/{conv_b}/messages", json={"message": "second question"})
+
+    assert get_conversation(conv_a)["title"] == "Untitled chat"
+    assert get_conversation(conv_b)["title"] == "Untitled chat 2"
+
+
+def test_title_generation_is_skipped_outright_during_an_active_llm_cooldown(client, app):
+    """_generate_title() must not even attempt the LLM call while the
+    shared endpoint is cooling down from an earlier 429 - it should fall
+    back to "Untitled chat" without calling generate_llm_json() at all."""
+    conversation_id = _seed_conversation()
+    override_current_user(app, OWNER)
+
+    fake_result = {
+        "reply": "a real answer",
+        "sources": [],
+        "faithfulness": {"score": 0.9, "unsupported_claims": []},
+        "telemetry": {},
+        "chunks_matrix": [],
+        "thinking": "",
+    }
+    with (
+        patch("api.services.conversation_service.process_chat_query", return_value=fake_result),
+        patch("api.services.conversation_service.llm_cooldown_remaining_seconds", return_value=45.0),
+        patch("api.services.conversation_service.generate_llm_json") as mock_generate_json,
+    ):
+        response = client.post(f"/conversations/{conversation_id}/messages", json={"message": "a fresh question"})
+
+    assert response.status_code == 200
+    mock_generate_json.assert_not_called()
+
+    conversation = get_conversation(conversation_id)
+    assert conversation["title"] == "Untitled chat"
+
+
+def _fake_stream_events(reply="a real answer"):
+    yield {"type": "token", "text": "a real "}
+    yield {"type": "token", "text": "answer"}
+    yield {
+        "type": "done",
+        "result": {
+            "reply": reply,
+            "sources": [],
+            "faithfulness": {"score": 0.9, "unsupported_claims": []},
+            "telemetry": {"request_id": "abc"},
+            "chunks_matrix": [],
+            "thinking": "",
+        },
+    }
+
+
+def test_send_message_stream_yields_tokens_then_a_done_event_with_the_real_reply(client, app):
+    conversation_id = _seed_conversation()
+    override_current_user(app, OWNER)
+
+    # This conversation's history is empty, so it's a first turn - the
+    # title-generation call that fires inline after "done" (see
+    # test_send_message_stream_generates_a_title_on_first_turn_only) needs
+    # mocking here too, or this test would make a real LLM call.
+    with (
+        patch(
+            "api.services.conversation_service.process_chat_query_stream",
+            side_effect=lambda *args, **kwargs: _fake_stream_events(),
+        ),
+        patch("api.services.conversation_service.generate_llm_json", return_value=None),
+    ):
+        response = client.post(f"/conversations/{conversation_id}/messages/stream", json={"message": "hello"})
+
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    assert [e["type"] for e in events] == ["token", "token", "done", "title"]
+    assert events[-2]["message"]["content"] == "a real answer"
+
+    messages = get_conversation_messages(conversation_id)
+    assert len(messages) == 2
+    assert messages[1]["role"] == "assistant"
+    assert messages[1]["content"] == "a real answer"
+
+
+def test_send_message_stream_reports_an_error_event_and_persists_no_fake_reply_on_pipeline_failure(client, app):
+    conversation_id = _seed_conversation()
+    override_current_user(app, OWNER)
+
+    def _raising_stream(*args, **kwargs):
+        raise RuntimeError("quota exceeded")
+        yield  # pragma: no cover - makes this a generator function
+
+    with patch("api.services.conversation_service.process_chat_query_stream", side_effect=_raising_stream):
+        response = client.post(f"/conversations/{conversation_id}/messages/stream", json={"message": "hello"})
+
+    events = _parse_sse_events(response.text)
+    assert len(events) == 1
+    assert events[0]["type"] == "error"
+    assert "quota exceeded" not in events[0]["detail"]
+
+    messages = get_conversation_messages(conversation_id)
+    assert len(messages) == 1
+    assert messages[0]["role"] == "user"
+
+
+def test_send_message_stream_generates_a_title_on_first_turn_only(client, app):
+    conversation_id = _seed_conversation()
+    override_current_user(app, OWNER)
+
+    with (
+        patch(
+            "api.services.conversation_service.process_chat_query_stream",
+            side_effect=lambda *args, **kwargs: _fake_stream_events(),
+        ),
+        patch(
+            "api.services.conversation_service.generate_llm_json",
+            return_value={"title": "Retention Drivers This Quarter"},
+        ),
+    ):
+        # Title generation now happens inline AFTER "done" is yielded
+        # (2026-11-15 performance audit finding #1), as its own trailing
+        # {"type": "title", ...} event - the "done" event's own
+        # message.title stays None.
+        first = client.post(f"/conversations/{conversation_id}/messages/stream", json={"message": "hello"})
+        first_events = _parse_sse_events(first.text)
+        assert [e["type"] for e in first_events] == ["token", "token", "done", "title"]
+        assert first_events[-2]["message"]["title"] is None
+        assert first_events[-1]["title"] == "Retention Drivers This Quarter"
+
+        second = client.post(f"/conversations/{conversation_id}/messages/stream", json={"message": "a follow-up"})
+        second_events = _parse_sse_events(second.text)
+        assert [e["type"] for e in second_events] == ["token", "token", "done"]
+        assert second_events[-1]["message"]["title"] is None
+
+
+def test_send_message_stream_does_not_emit_an_error_event_when_title_generation_fails(client, app):
+    """Regression: a failure in title generation (which runs AFTER "done"
+    is already on the wire) used to fall into the same except Exception as
+    process_chat_query_stream() itself, emitting a misleading {"type":
+    "error"} event after the client already rendered a correct, complete
+    answer. It must now be isolated - the reply stays delivered, and the
+    title is just silently skipped for this turn."""
+    conversation_id = _seed_conversation()
+    override_current_user(app, OWNER)
+
+    with (
+        patch(
+            "api.services.conversation_service.process_chat_query_stream",
+            side_effect=lambda *args, **kwargs: _fake_stream_events(),
+        ),
+        patch(
+            "api.services.conversation_service.ConversationService._generate_and_apply_title",
+            side_effect=RuntimeError("transient DB write failure"),
+        ),
+    ):
+        response = client.post(f"/conversations/{conversation_id}/messages/stream", json={"message": "hello"})
+
+    events = _parse_sse_events(response.text)
+    assert [e["type"] for e in events] == ["token", "token", "done"]
+    assert events[-1]["message"]["content"] == "a real answer"
+
+    # Title generation never got a chance to run (the mock raised before
+    # doing anything), so the truncated fallback _persist_reply() already
+    # set is left exactly as it was - not overwritten, not an error state.
+    conversation = get_conversation(conversation_id)
+    assert conversation["title"] == "hello"
 
 
 # --- Add document to a conversation (#54) -----------------------------------
@@ -147,3 +455,98 @@ def test_add_document_succeeds_for_the_owner(client, app):
     response = client.post(f"/conversations/{conversation_id}/documents", json={"doc_id": "doc-2"})
     assert response.status_code == 200
     assert "doc-2" in response.json()["doc_ids"]
+
+
+def _seed_many_conversations(n: int, owner=OWNER) -> list[str]:
+    upsert_document_record(
+        doc_id="doc-many", filename="doc.md", file_hash="h", node_count=1, chunk_count=1, user_id=owner
+    )
+    return [create_conversation(f"conv-many-{i}", user_id=owner, doc_ids=["doc-many"])["id"] for i in range(n)]
+
+
+def test_list_conversations_returns_lightweight_shape(client, app):
+    """GET /conversations's per-row shape should be the lightweight
+    ConversationListItemOut - no doc_ids/filenames (those need a second
+    batched query only the detail view should pay for)."""
+    _seed_many_conversations(1)
+    override_current_user(app, OWNER)
+
+    response = client.get("/conversations")
+    assert response.status_code == 200
+    body = response.json()
+    assert "next_cursor" in body
+    assert "has_more" in body
+    row = body["conversations"][0]
+    assert set(row.keys()) == {"id", "title", "pinned", "created_at", "updated_at"}
+
+
+def test_list_conversations_paginates_without_gaps_or_duplicates(client, app):
+    ids = set(_seed_many_conversations(5))
+    override_current_user(app, OWNER)
+
+    seen: set[str] = set()
+    cursor = None
+    pages = 0
+    while True:
+        response = client.get("/conversations", params={"limit": 2, **({"cursor": cursor} if cursor else {})})
+        assert response.status_code == 200
+        body = response.json()
+        page_ids = {c["id"] for c in body["conversations"]}
+        assert not (page_ids & seen), "a page re-returned a conversation from an earlier page"
+        seen |= page_ids
+        pages += 1
+        if not body["has_more"]:
+            assert body["next_cursor"] is None
+            break
+        cursor = body["next_cursor"]
+        assert cursor is not None
+        assert pages < 10, "pagination never terminated"
+
+    assert seen == ids
+    assert pages >= 3  # 5 conversations at 2/page: at least 3 pages
+
+
+def test_list_conversations_cursor_is_stable_against_a_concurrent_rename(client, app):
+    """The property keyset pagination is bought for over OFFSET/LIMIT:
+    a conversation being renamed between two page fetches - title isn't
+    part of the ORDER BY, so its position is unaffected - must not cause
+    the next page to skip or duplicate a row. (A concurrent pin or new
+    message is a different kind of churn: those change the row's sort key
+    and can move it to before the page boundary already fetched, which no
+    forward-only pagination scheme retroactively surfaces - the real
+    sidebar handles that case by patching its already-rendered list
+    in place client-side instead of relying on a re-fetch.)"""
+    ids = _seed_many_conversations(5)
+    override_current_user(app, OWNER)
+
+    first = client.get("/conversations", params={"limit": 2})
+    assert first.status_code == 200
+    first_body = first.json()
+    first_ids = {c["id"] for c in first_body["conversations"]}
+    assert first_body["has_more"]
+
+    not_yet_returned = next(i for i in ids if i not in first_ids)
+    rename_response = client.patch(f"/conversations/{not_yet_returned}", json={"title": "Renamed mid-page"})
+    assert rename_response.status_code == 200
+
+    collected = set(first_ids)
+    cursor = first_body["next_cursor"]
+    while cursor:
+        response = client.get("/conversations", params={"limit": 2, "cursor": cursor})
+        assert response.status_code == 200
+        body = response.json()
+        page_ids = {c["id"] for c in body["conversations"]}
+        assert not (page_ids & collected), "a rename mid-pagination caused a duplicate row"
+        collected |= page_ids
+        cursor = body["next_cursor"] if body["has_more"] else None
+
+    assert collected == set(ids), "a rename mid-pagination caused a missing row"
+
+
+def test_list_conversations_400s_on_a_malformed_cursor(client, app):
+    """Same regression coverage as test_list_documents_400s_on_a_malformed_cursor
+    (test_documents_status.py) for the conversations cursor decode path."""
+    override_current_user(app, OWNER)
+
+    response = client.get("/conversations", params={"cursor": "not-valid-base64!!"})
+    assert response.status_code == 400

@@ -6,8 +6,16 @@ python-dotenv==1.0.1
 pydantic==2.12.5
 pydantic-settings==2.5.2
 
-# Gemini (chat generation + embeddings)
+# Gemini (query rewriting, reranking, faithfulness judging, entity-graph
+# extraction, conversation titling - NOT the final RAG answer, see Cloudflare below)
 google-genai==2.25.0
+
+# Cloudflare Workers AI (final RAG answer generation, via its OpenAI-
+# compatible endpoint - see src/core/llm.py's Cloudflare section docstring)
+openai==3.49.0
+
+# Voyage AI (embeddings)
+voyageai==0.6.0
 
 # Retrieval
 numpy==1.26.4
@@ -31,6 +39,15 @@ psycopg2-binary==2.9.9
 # Auth — verifying Supabase Auth JWTs (>=2.12.0 to satisfy supabase-auth's
 # own pyjwt[crypto] requirement, pulled in transitively via the supabase package)
 PyJWT[crypto]==2.12.0
+
+# Observability (src/core/logging_config.py, src/core/ai_tracker.py) -
+# structlog wraps the existing stdlib "evidence_rag.*" logger tree (no
+# call-site rewrite needed) to emit structured JSON events;
+# concurrent-log-handler rotates logs/*.jsonl safely even if this process
+# is ever run with multiple workers (plain RotatingFileHandler is not
+# safe for that - see logging_config.py's docstring).
+structlog==24.4.0
+concurrent-log-handler==0.9.25
 
 # Dev / test
 pytest==8.3.3

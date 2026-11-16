@@ -30,6 +30,49 @@ class Settings(BaseSettings):
 
     # --- App Settings ---
     app_name: str = "EvidenceRAG"
+    # Level for the "evidence_rag" logger tree (pipeline/llm/telemetry/api -
+    # see src/core/logging_config.py). Third-party loggers stay at root's
+    # WARNING default regardless of this value, so raising this to DEBUG
+    # won't flood the logs with e.g. httpx/google-genai request noise.
+    log_level: str = "INFO"
+    # Free-text label stamped onto every structured log event's
+    # "environment" field (see src/core/logging_config.py) - not used for
+    # branching behavior anywhere, purely so a centralized log viewer
+    # (once Phase 7's production exporter is turned on) can filter
+    # dev/staging/prod traffic apart.
+    environment: str = "development"
+    # --- Structured logging / observability (src/core/logging_config.py,
+    # src/core/ai_tracker.py) ---
+    # "json" for machine-readable JSONL (what the file sinks below always
+    # use regardless of this setting); "console" for a human-readable
+    # colorized renderer on stdout/stderr during local development.
+    log_format: str = "console"
+    log_to_console: bool = True
+    log_to_file: bool = True
+    # Relative paths resolve against the process cwd (normally server/),
+    # same convention as STORAGE_MODE=local's sqlite/file paths.
+    log_directory: str = "./logs"
+    log_max_file_size_mb: int = 20
+    log_retention_days: int = 7
+    # Per-category kill switches so a deployment that doesn't want the
+    # (lower-cardinality but still real) overhead of per-AI-call logging,
+    # or the end-of-request summary line, can turn either off without
+    # touching LOG_LEVEL.
+    log_ai_invocations: bool = True
+    log_chat_summaries: bool = True
+    # --- Production log export (Better Stack Telemetry - see
+    # CLAUDE.md's Observability section for why this provider was
+    # chosen and src/core/logging_config.py for the exporter itself).
+    # Disabled by default: leaving BETTER_STACK_SOURCE_TOKEN unset means
+    # this app never makes a single outbound call to Better Stack, same
+    # "lazily configured, no error without credentials" posture as
+    # llm_base_url/llm_api_key below. Get a source
+    # token by creating a Logs source in the Better Stack dashboard
+    # (Telemetry -> Sources -> Connect source) after you've reviewed the
+    # free-tier limits (3GB/3 days as of this writing - verify current
+    # numbers at betterstack.com/pricing before relying on them).
+    better_stack_source_token: str = ""
+    better_stack_ingesting_host: str = "in.logs.betterstack.com"
     top_k: int = 3
     chunk_size_tokens: int = 200
     chunk_overlap_tokens: int = 40
@@ -45,10 +88,11 @@ class Settings(BaseSettings):
     generation_max_tokens: int = 1000
     generation_temperature: float = 0.3
 
-    # --- Gemini (chat generation + embeddings) ---
+    # --- Gemini (query rewriting, reranking, faithfulness judging, entity-graph
+    # extraction, conversation titling - NOT the final RAG answer anymore,
+    # see llm_* below, and NOT embeddings, which are Voyage AI) ---
     gemini_api_key: str
     gemini_chat_model: str = "gemini-2.5-flash"
-    gemini_embedding_model: str = "gemini-embedding-001"
     # Same-provider fallback used by generate_chat_response()/
     # generate_structured_response() (src/core/llm.py) when the primary chat
     # model's call fails or rate-limits - a different model is often on a
@@ -56,11 +100,10 @@ class Settings(BaseSettings):
     # failure this session hit while tuning #10's faithfulness threshold
     # (20-requests/day free-tier exhaustion), not just a theoretical one.
     # Not applied to embeddings - document_chunks.embedding is a fixed-
-    # width pgvector column (vector(3072), matching gemini-embedding-001's
-    # output dimension - see supabase_schema.sql's comment), so swapping
-    # embedding models mid-request would produce a vector of the wrong
-    # width for the already-indexed corpus. get_embedding() retries the
-    # same model instead.
+    # width pgvector column (vector(voyage_embedding_dimension) below,
+    # see supabase_schema.sql's comment), so swapping embedding models
+    # mid-request would produce a vector of the wrong width for the
+    # already-indexed corpus. get_embedding() retries the same model instead.
     gemini_fallback_chat_model: str = "gemini-2.5-flash-lite"
     # Optional longer chain, comma-separated (e.g.
     # "gemini-2.5-flash,gemini-2.5-flash-lite,gemini-2.0-flash,gemini-2.0-flash-lite"),
@@ -73,6 +116,59 @@ class Settings(BaseSettings):
     # own - see scripts/list_available_models.py for discovering which
     # model ids this API key can actually call before putting them here.
     gemini_chat_model_chain: str = ""
+
+    # --- Chat generation (final RAG answer - see src/core/llm.py's
+    # chat-generation section docstring for why this moved off Gemini,
+    # and generate_llm_chat()/generate_llm_chat_stream()/generate_llm_json()
+    # for the actual calls) ---
+    # Any OpenAI-compatible Chat Completions server works here - the
+    # `openai` SDK client just needs a base_url + api_key + model id:
+    # Cloudflare Workers AI (base_url
+    # "https://api.cloudflare.com/client/v4/accounts/<account_id>/ai/v1",
+    # api_key your Cloudflare API token), a self-hosted vLLM/Ollama
+    # instance, OpenRouter, or Gemini's own OpenAI-compatible endpoint
+    # (base_url "https://generativelanguage.googleapis.com/v1beta/openai/",
+    # api_key the same key as gemini_api_key above - it's the identical
+    # key, just a different path, so you can run this whole app on one
+    # Gemini key with no second provider at all). No defaults (unlike
+    # gemini_api_key/voyage_api_key above) - all three are allowed to be
+    # unset at startup so the rest of the app (including every test in
+    # this repo) still boots without them; only an actual
+    # generate_llm_chat() call raises, with a specific "not configured"
+    # error, if they're missing.
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_model: str = ""
+    # Gemini 2.5 models spend hidden "thinking" tokens out of the SAME
+    # max_tokens budget as the visible answer when called through this
+    # generic OpenAI-compatible Chat Completions path - there's no separate
+    # thinking-token parameter in the OpenAI schema itself. Observed in
+    # production: a short resume-lookup answer got cut off mid-sentence
+    # with no error, generation_max_tokens mostly consumed by reasoning
+    # the caller never sees. Only applied in src/core/llm.py when
+    # llm_base_url points at generativelanguage.googleapis.com (detected
+    # automatically - never sent to a non-Gemini endpoint, which wouldn't
+    # recognize the field); 0 disables thinking outright, matching this
+    # app's actual use of the final-answer/rerank/judge/title calls (direct
+    # citation-grounded generation, not open-ended reasoning). Raise this
+    # (or lower generation_max_tokens's effective headroom demand some
+    # other way) if a future prompt genuinely benefits from Gemini's
+    # thinking mode.
+    llm_gemini_thinking_budget: int = 0
+
+    # --- Voyage AI (embeddings) ---
+    voyage_api_key: str
+    voyage_embedding_model: str = "voyage-3.5"
+    # Output vector width - must match document_chunks.embedding's pgvector
+    # column width and its HNSW index's halfvec cast exactly
+    # (scripts/supabase_schema.sql). voyage-3.5 defaults to 1024; Voyage's
+    # embed() also accepts 256/512/2048 via this same output_dimension
+    # parameter if you want to trade recall for storage/index size - either
+    # way, changing it requires re-running supabase_schema.sql's migration
+    # and a full reingest of every document (see get_indexed_embedding_models()
+    # in src/storage/database.py, which exists to catch exactly this kind of
+    # embedding-model mismatch).
+    voyage_embedding_dimension: int = 1024
 
     # --- Entity graph (opt-in, adds one LLM call per document section) ---
     enable_entity_graph: bool = False

@@ -5,11 +5,25 @@ failure across both models must still report honestly rather than raise."""
 
 from unittest.mock import MagicMock, patch
 
+import httpx
+import openai
 import pytest
 from google.genai import errors as genai_errors
 
 import src.core.llm as llm
 from src.core.config import settings
+
+
+@pytest.fixture(autouse=True)
+def _reset_llm_module_state():
+    """_llm_client/_llm_cooldown_until are process-global
+    (see llm.py's chat-generation section) so a cooldown or cached client set
+    by one test must never leak into another."""
+    llm._llm_client = None
+    llm._llm_cooldown_until = 0.0
+    yield
+    llm._llm_client = None
+    llm._llm_cooldown_until = 0.0
 
 
 class _FakeResponse:
@@ -94,6 +108,78 @@ def test_generate_chat_response_does_not_call_the_fallback_when_the_primary_succ
     assert calls == [settings.gemini_chat_model]
 
 
+# --- generate_chat_response_stream -------------------------------------------
+
+
+def test_generate_chat_response_stream_yields_each_chunk_in_order():
+    def fake_stream(model, contents, config):
+        return iter([_FakeResponse("Hello "), _FakeResponse("world")])
+
+    with patch.object(llm.client.models, "generate_content_stream", side_effect=fake_stream):
+        result = list(llm.generate_chat_response_stream("some prompt"))
+
+    assert result == ["Hello ", "world"]
+
+
+def test_generate_chat_response_stream_falls_back_when_the_primary_yields_nothing():
+    calls = []
+
+    def fake_stream(model, contents, config):
+        calls.append(model)
+        if model == settings.gemini_chat_model:
+            return iter([])
+        return iter([_FakeResponse("fallback answer")])
+
+    with patch.object(llm.client.models, "generate_content_stream", side_effect=fake_stream):
+        result = list(llm.generate_chat_response_stream("some prompt"))
+
+    assert result == ["fallback answer"]
+    assert calls == [settings.gemini_chat_model, settings.gemini_fallback_chat_model]
+
+
+def test_generate_chat_response_stream_falls_back_when_the_primary_raises_before_yielding():
+    calls = []
+
+    def fake_stream(model, contents, config):
+        calls.append(model)
+        if model == settings.gemini_chat_model:
+            raise RuntimeError("simulated primary model failure")
+        return iter([_FakeResponse("fallback answer")])
+
+    with patch.object(llm.client.models, "generate_content_stream", side_effect=fake_stream):
+        result = list(llm.generate_chat_response_stream("some prompt"))
+
+    assert result == ["fallback answer"]
+    assert calls == [settings.gemini_chat_model, settings.gemini_fallback_chat_model]
+
+
+def test_generate_chat_response_stream_stops_on_a_mid_stream_failure_without_a_fallback():
+    """Once the primary has already yielded partial text, a later failure
+    from that same candidate must not retry on the next one - the caller
+    has already shown the partial text, so silently swapping models would
+    mean a different model finishing a sentence it never started."""
+
+    def fake_stream(model, contents, config):
+        def generator():
+            yield _FakeResponse("Hello ")
+            raise RuntimeError("dropped mid-stream")
+
+        return generator()
+
+    with patch.object(llm.client.models, "generate_content_stream", side_effect=fake_stream):
+        result = list(llm.generate_chat_response_stream("some prompt"))
+
+    assert result == ["Hello "]
+
+
+def test_generate_chat_response_stream_reports_honest_failure_when_both_models_fail():
+    with patch.object(llm.client.models, "generate_content_stream", side_effect=RuntimeError("both down")):
+        result = list(llm.generate_chat_response_stream("some prompt"))
+
+    assert len(result) == 1
+    assert "error during generation" in result[0].lower()
+
+
 def test_generate_structured_response_falls_back_to_the_secondary_model_on_failure():
     calls = []
 
@@ -133,20 +219,36 @@ def test_generate_structured_response_tries_the_fallback_on_an_empty_primary_res
     assert calls == [settings.gemini_chat_model, settings.gemini_fallback_chat_model]
 
 
+def test_get_embedding_uses_query_input_type():
+    captured = {}
+
+    def fake_embed(texts, **kwargs):
+        captured.update(kwargs)
+        captured["texts"] = texts
+        result = MagicMock()
+        result.embeddings = [[0.1, 0.2, 0.3]]
+        return result
+
+    with patch.object(llm.embedding_client, "embed", side_effect=fake_embed):
+        result = llm.get_embedding("some text")
+
+    assert result == [0.1, 0.2, 0.3]
+    assert captured["texts"] == ["some text"]
+    assert captured["input_type"] == "query"
+
+
 def test_get_embedding_retries_once_on_the_same_model_before_raising():
     call_count = {"n": 0}
 
-    def fake_embed_content(model, contents):
+    def fake_embed(texts, **kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise RuntimeError("transient failure")
-        embedding = MagicMock()
-        embedding.values = [0.1, 0.2, 0.3]
         result = MagicMock()
-        result.embeddings = [embedding]
+        result.embeddings = [[0.1, 0.2, 0.3]]
         return result
 
-    with patch.object(llm.client.models, "embed_content", side_effect=fake_embed_content):
+    with patch.object(llm.embedding_client, "embed", side_effect=fake_embed):
         result = llm.get_embedding("some text")
 
     assert result == [0.1, 0.2, 0.3]
@@ -154,9 +256,52 @@ def test_get_embedding_retries_once_on_the_same_model_before_raising():
 
 
 def test_get_embedding_still_raises_if_both_attempts_fail():
-    with patch.object(llm.client.models, "embed_content", side_effect=RuntimeError("down")):
+    with patch.object(llm.embedding_client, "embed", side_effect=RuntimeError("down")):
         with pytest.raises(RuntimeError):
             llm.get_embedding("some text")
+
+
+def test_get_embeddings_batch_uses_document_input_type_and_sends_one_call():
+    captured = {}
+
+    def fake_embed(texts, **kwargs):
+        captured.update(kwargs)
+        captured["texts"] = texts
+        result = MagicMock()
+        result.embeddings = [[i, i + 1] for i in range(len(texts))]
+        return result
+
+    with patch.object(llm.embedding_client, "embed", side_effect=fake_embed) as mock:
+        result = llm.get_embeddings_batch(["a", "b", "c"])
+
+    assert mock.call_count == 1
+    assert captured["texts"] == ["a", "b", "c"]
+    assert captured["input_type"] == "document"
+    assert result == [[0, 1], [1, 2], [2, 3]]
+
+
+def test_get_embeddings_batch_retries_once_on_the_same_model_before_raising():
+    call_count = {"n": 0}
+
+    def fake_embed(texts, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("transient failure")
+        result = MagicMock()
+        result.embeddings = [[0.1, 0.2], [0.3, 0.4]]
+        return result
+
+    with patch.object(llm.embedding_client, "embed", side_effect=fake_embed):
+        result = llm.get_embeddings_batch(["x", "y"])
+
+    assert result == [[0.1, 0.2], [0.3, 0.4]]
+    assert call_count["n"] == 2
+
+
+def test_get_embeddings_batch_still_raises_if_both_attempts_fail():
+    with patch.object(llm.embedding_client, "embed", side_effect=RuntimeError("down")):
+        with pytest.raises(RuntimeError):
+            llm.get_embeddings_batch(["x", "y"])
 
 
 # --- Configurable chat model chain (GEMINI_CHAT_MODEL_CHAIN) ---------------
@@ -231,3 +376,331 @@ def test_generate_chat_response_logs_the_quota_skip_reason(monkeypatch, caplog):
 
     assert result == "answer"
     assert any("quota/rate-limit" in record.message for record in caplog.records)
+
+
+# --- generate_llm_chat / generate_llm_chat_stream (configured LLM endpoint) ---
+# query_pipeline.py's final RAG answer generation only - see llm.py's
+# chat-generation section docstring. Everything else (query rewriting,
+# reranking, judging, entity graph, titling) stays on Gemini and is
+# covered by the tests above.
+
+
+def _fake_completion(text, usage=None):
+    message = MagicMock(content=text)
+    choice = MagicMock(message=message)
+    response = MagicMock(choices=[choice], usage=usage)
+    return response
+
+
+def _fake_stream_chunks(*texts):
+    for text in texts:
+        delta = MagicMock(content=text)
+        choice = MagicMock(delta=delta)
+        yield MagicMock(choices=[choice])
+
+
+def _configure_llm(monkeypatch):
+    monkeypatch.setattr(settings, "llm_base_url", "https://test.invalid/v1")
+    monkeypatch.setattr(settings, "llm_api_key", "test-key")
+    monkeypatch.setattr(settings, "llm_model", "test-model")
+
+
+def test_generate_llm_chat_returns_an_honest_error_when_not_configured(monkeypatch):
+    monkeypatch.setattr(settings, "llm_base_url", "")
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    result = llm.generate_llm_chat("some prompt")
+    assert "error during generation" in result.lower()
+    assert "not configured" in result.lower()
+
+
+def test_generate_llm_chat_returns_the_model_text_on_success(monkeypatch):
+    _configure_llm(monkeypatch)
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _fake_completion("the answer")
+
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_chat("some prompt")
+
+    assert result == "the answer"
+    call_kwargs = fake_client.chat.completions.create.call_args.kwargs
+    assert call_kwargs["model"] == settings.llm_model
+    assert call_kwargs["stream"] is False
+
+
+def test_generate_llm_chat_appends_to_the_callers_telemetry_dict_when_given_one(monkeypatch):
+    """telemetry["ai_calls"] is what request_summary.py's end-of-request
+    line reports from - a caller that passes its own telemetry dict must
+    see this call recorded in it."""
+    _configure_llm(monkeypatch)
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _fake_completion("the answer")
+    telemetry = {}
+
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        llm.generate_llm_chat("some prompt", telemetry=telemetry)
+
+    assert len(telemetry["ai_calls"]) == 1
+    assert telemetry["ai_calls"][0]["provider"] == "openai_compatible"
+
+
+def test_generate_llm_chat_reports_an_empty_response_honestly(monkeypatch):
+    _configure_llm(monkeypatch)
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _fake_completion(None)
+
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_chat("some prompt")
+
+    assert "error during generation" in result.lower()
+
+
+def test_generate_llm_chat_starts_a_cooldown_on_a_429_and_reports_honestly(monkeypatch):
+    _configure_llm(monkeypatch)
+    request = httpx.Request("POST", "https://example.com")
+    response = httpx.Response(429, headers={"retry-after": "5"}, request=request)
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.side_effect = openai.RateLimitError(
+        "rate limited", response=response, body=None
+    )
+
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_chat("some prompt")
+
+    assert "error during generation" in result.lower()
+    assert llm._llm_cooldown_remaining() > 0
+
+
+def test_generate_llm_chat_skips_the_request_entirely_during_a_cooldown(monkeypatch):
+    _configure_llm(monkeypatch)
+    llm._start_llm_cooldown(30.0)
+    fake_client = MagicMock()
+
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_chat("some prompt")
+
+    assert "error during generation" in result.lower()
+    assert "cooling down" in result.lower()
+    fake_client.chat.completions.create.assert_not_called()
+
+
+def test_generate_llm_chat_retries_a_transient_failure_before_succeeding(monkeypatch):
+    _configure_llm(monkeypatch)
+    monkeypatch.setattr(llm, "LLM_MAX_TRANSIENT_RETRIES", 1)
+    request = httpx.Request("POST", "https://example.com")
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.side_effect = [
+        openai.APIConnectionError(request=request),
+        _fake_completion("recovered answer"),
+    ]
+
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client), patch("time.sleep"):
+        result = llm.generate_llm_chat("some prompt")
+
+    assert result == "recovered answer"
+    assert fake_client.chat.completions.create.call_count == 2
+
+
+def test_generate_llm_chat_stream_yields_each_chunk_in_order(monkeypatch):
+    _configure_llm(monkeypatch)
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _fake_stream_chunks("Hello ", "world")
+
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = list(llm.generate_llm_chat_stream("some prompt"))
+
+    assert result == ["Hello ", "world"]
+    assert fake_client.chat.completions.create.call_args.kwargs["stream"] is True
+
+
+def test_generate_llm_chat_stream_reports_honest_failure_before_any_output(monkeypatch):
+    _configure_llm(monkeypatch)
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.side_effect = RuntimeError("boom")
+
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = list(llm.generate_llm_chat_stream("some prompt"))
+
+    assert len(result) == 1
+    assert "error during generation" in result[0].lower()
+
+
+def test_generate_llm_chat_stream_does_not_append_an_error_after_partial_output():
+    """Once real text has streamed, a later failure must not glue a
+    fabricated error sentinel onto the end of it."""
+
+    def fake_stream(*args, **kwargs):
+        yield MagicMock(choices=[MagicMock(delta=MagicMock(content="partial text"))])
+        raise RuntimeError("dropped mid-stream")
+
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = fake_stream()
+
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = list(llm.generate_llm_chat_stream("some prompt"))
+
+    assert result == ["partial text"]
+
+
+# --- generate_llm_json / _extract_json_block --------------------------
+# Used by reranker.py, judge.py, and conversation_service.py's title
+# generation now that none of them get a server-enforced schema from
+# the configured LLM endpoint - the prompt asks for JSON in text, this parses it back out.
+
+
+def test_extract_json_block_finds_a_simple_object():
+    assert llm._extract_json_block('{"a": 1}') == '{"a": 1}'
+
+
+def test_extract_json_block_handles_nested_structures():
+    """A naive non-greedy regex (\\{.*?\\}) would stop at the first inner
+    closing brace - this must return the whole, correctly-balanced block."""
+    text = '{"scores": [{"index": 1, "relevance": 0.5}, {"index": 2, "relevance": 0.9}]}'
+    assert llm._extract_json_block(text) == text
+
+
+def test_extract_json_block_ignores_braces_inside_string_literals():
+    text = '{"title": "A chat about {braces} and [brackets]"}'
+    assert llm._extract_json_block(text) == text
+
+
+def test_extract_json_block_strips_stray_text_around_the_json():
+    text = 'Sure, here you go:\n{"title": "A Title"}\nHope that helps!'
+    assert llm._extract_json_block(text) == '{"title": "A Title"}'
+
+
+def test_extract_json_block_returns_none_when_no_json_present():
+    assert llm._extract_json_block("no json here at all") is None
+
+
+def test_generate_llm_json_returns_the_parsed_dict_on_success(monkeypatch):
+    _configure_llm(monkeypatch)
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _fake_completion('{"score": 0.8, "unsupported_claims": []}')
+
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_json("some prompt")
+
+    assert result == {"score": 0.8, "unsupported_claims": []}
+
+
+def test_generate_llm_json_parses_json_with_stray_text_around_it(monkeypatch):
+    _configure_llm(monkeypatch)
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _fake_completion(
+        'Here is the result:\n{"title": "A Title"}\nLet me know if you need anything else.'
+    )
+
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_json("some prompt")
+
+    assert result == {"title": "A Title"}
+
+
+def test_generate_llm_json_returns_none_on_an_empty_response(monkeypatch):
+    _configure_llm(monkeypatch)
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _fake_completion(None)
+
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_json("some prompt")
+
+    assert result is None
+
+
+def test_generate_llm_json_returns_none_when_no_json_block_is_found(monkeypatch):
+    _configure_llm(monkeypatch)
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _fake_completion("I'm not sure how to answer that.")
+
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_json("some prompt")
+
+    assert result is None
+
+
+def test_generate_llm_json_returns_none_on_invalid_json(monkeypatch):
+    _configure_llm(monkeypatch)
+    fake_client = MagicMock()
+    fake_client.chat.completions.create.return_value = _fake_completion('{"score": 0.8,}')
+
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        result = llm.generate_llm_json("some prompt")
+
+    assert result is None
+
+
+def test_generate_llm_json_returns_none_when_not_configured(monkeypatch):
+    monkeypatch.setattr(settings, "llm_base_url", "")
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    result = llm.generate_llm_json("some prompt")
+    assert result is None
+
+
+def test_gemini_thinking_budget_kwargs_omitted_for_a_non_gemini_endpoint(monkeypatch):
+    monkeypatch.setattr(settings, "llm_base_url", "https://api.cloudflare.com/client/v4/accounts/x/ai/v1")
+    assert llm._gemini_thinking_budget_kwargs() == {}
+
+
+def test_gemini_thinking_budget_kwargs_added_for_geminis_openai_compatible_endpoint(monkeypatch):
+    monkeypatch.setattr(settings, "llm_base_url", "https://generativelanguage.googleapis.com/v1beta/openai/")
+    monkeypatch.setattr(settings, "llm_gemini_thinking_budget", 0)
+    kwargs = llm._gemini_thinking_budget_kwargs()
+    assert kwargs["extra_body"]["extra_body"]["google"]["thinking_config"]["thinking_budget"] == 0
+
+
+def test_generate_llm_chat_logs_a_warning_when_truncated_at_max_tokens(monkeypatch, caplog):
+    """finish_reason="length" means the model hit max_tokens mid-answer -
+    previously silent (see the Gemini thinking-budget truncation this was
+    added to diagnose), this must now surface in the logs."""
+    _configure_llm(monkeypatch)
+    fake_client = MagicMock()
+    message = MagicMock(content="a truncated answer that stops abruptly")
+    choice = MagicMock(message=message, finish_reason="length")
+    fake_client.chat.completions.create.return_value = MagicMock(choices=[choice], usage=None)
+
+    with patch.object(llm, "_llm_client_or_raise", return_value=fake_client):
+        with caplog.at_level("WARNING", logger="evidence_rag.llm"):
+            result = llm.generate_llm_chat("some prompt")
+
+    assert result == "a truncated answer that stops abruptly"
+    assert any("finish_reason=length" in record.message for record in caplog.records)
+
+
+def test_get_embedding_retries_with_backoff_on_a_voyage_rate_limit_error():
+    """A 429 from Voyage must not be retried instantly - that's the
+    exact failure mode that can stall free-tier ingestion under
+    EMBED_CONCURRENCY (see get_embedding()'s rate-limit retry path)."""
+    import voyageai.error as voyage_error
+
+    class _FakeResult:
+        embeddings = [[0.1, 0.2]]
+
+    rate_limit_error = voyage_error.RateLimitError("rate limited", http_status=429, headers={})
+
+    with (
+        patch.object(llm.embedding_client, "embed", side_effect=[rate_limit_error, _FakeResult()]),
+        patch("time.sleep") as mock_sleep,
+    ):
+        result = llm.get_embedding("some text")
+
+    assert result == [0.1, 0.2]
+    mock_sleep.assert_called_once()
+    assert mock_sleep.call_args.args[0] > 0
+
+
+def test_get_embeddings_batch_retries_with_backoff_on_a_voyage_rate_limit_error():
+    import voyageai.error as voyage_error
+
+    class _FakeResult:
+        embeddings = [[0.1, 0.2], [0.3, 0.4]]
+
+    rate_limit_error = voyage_error.RateLimitError("rate limited", http_status=429, headers={"retry-after": "7"})
+
+    with (
+        patch.object(llm.embedding_client, "embed", side_effect=[rate_limit_error, _FakeResult()]),
+        patch("time.sleep") as mock_sleep,
+    ):
+        result = llm.get_embeddings_batch(["a", "b"])
+
+    assert result == [[0.1, 0.2], [0.3, 0.4]]
+    mock_sleep.assert_called_once_with(7.0)

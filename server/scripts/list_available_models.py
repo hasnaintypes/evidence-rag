@@ -1,8 +1,10 @@
 """
-Prints every model this GEMINI_API_KEY can actually call right now, split
-into likely text-chat candidates and embedding-capable models - the two
-categories src/core/llm.py's generate_chat_response()/
-generate_structured_response() and get_embedding() respectively depend on.
+Prints every model this GEMINI_API_KEY can actually call right now,
+split into likely text-chat candidates - what src/core/llm.py's
+generate_chat_response()/generate_structured_response() depend on.
+Embeddings are served by Voyage AI, not Gemini (see get_embedding()/
+VOYAGE_API_KEY in src/core/config.py), so there's no embedding-model
+listing here anymore.
 
 Use this to build GEMINI_CHAT_MODEL_CHAIN (see src/core/config.py) from
 real, currently-callable model ids instead of guessing from a marketing-
@@ -31,10 +33,12 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.core.logging_config import configure_logging  # noqa: E402
 from src.core.llm import client  # noqa: E402
 
+configure_logging()
+
 CHAT_ACTION = "generateContent"
-EMBED_ACTION = "embedContent"
 
 # Name fragments that reliably mean "not a plain text-in/text-out chat
 # model" on every model id/display name seen so far (TTS, image, music,
@@ -57,8 +61,8 @@ _NON_TEXT_CHAT_KEYWORDS = (
 
 def _short_id(model_name: str) -> str:
     # The API returns "models/gemini-2.5-flash" - config.py's
-    # gemini_chat_model/gemini_embedding_model settings expect the bare
-    # id without the "models/" prefix.
+    # gemini_chat_model setting expects the bare id without the
+    # "models/" prefix.
     return model_name.removeprefix("models/")
 
 
@@ -71,7 +75,6 @@ def main() -> None:
     models = list(client.models.list())
 
     chat_capable = [m for m in models if CHAT_ACTION in (m.supported_actions or [])]
-    embed_models = [m for m in models if EMBED_ACTION in (m.supported_actions or [])]
 
     likely_text_chat = [m for m in chat_capable if _looks_like_text_chat(m)]
     excluded = [m for m in chat_capable if not _looks_like_text_chat(m)]
@@ -82,10 +85,6 @@ def main() -> None:
 
     print(f"\nExcluded by the non-text-chat name filter ({len(excluded)} models) - verify before using:\n")
     for m in excluded:
-        print(f"  {_short_id(m.name):<40} {m.display_name or ''}")
-
-    print(f"\nEmbedding-capable models ({EMBED_ACTION}):\n")
-    for m in embed_models:
         print(f"  {_short_id(m.name):<40} {m.display_name or ''}")
 
     if likely_text_chat:

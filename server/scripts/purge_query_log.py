@@ -19,8 +19,11 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.core.logging_config import configure_logging
 from src.core.config import settings
 from src.core.telemetry import purge_query_log
+
+configure_logging()
 
 
 def _positive_int(value: str) -> int:

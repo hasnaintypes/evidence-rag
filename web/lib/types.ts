@@ -60,14 +60,23 @@ export type DocumentRecord = {
   chunks_total: number;
 };
 
+// Mirrors GET /documents's top-level response shape (server/src/storage/
+// database.py's list_documents_paginated()).
+export type DocumentListPage = {
+  documents: DocumentRecord[];
+  next_cursor: string | null;
+  has_more: boolean;
+};
+
 // Shared with the Documents management page's upload button - kept in
 // sync with server/src/ingestion/pipeline.py's SUPPORTED_EXTENSIONS by
 // hand (this is just an OS file-picker hint; the server independently
 // validates on upload regardless of what this allows through).
 export const ACCEPTED_DOCUMENT_EXTENSIONS = ".md,.pdf,.docx,.xlsx,.xls,.csv";
 
-// Mirrors GET /conversations and POST /conversations
-// (server/api/routers/conversations.py).
+// Mirrors POST /conversations and GET /conversations/{id} (full detail -
+// server/api/schemas.py's ConversationOut). GET /conversations (the
+// sidebar list) returns the lighter ConversationListItem below instead.
 export type Conversation = {
   id: string;
   doc_ids: string[];
@@ -76,6 +85,24 @@ export type Conversation = {
   title: string | null;
   created_at: string;
   updated_at: string;
+};
+
+// Mirrors GET /conversations's per-row shape (server/api/schemas.py's
+// ConversationListItemOut) - no doc_ids/filenames, see Conversation above
+// for the full shape a single opened conversation returns.
+export type ConversationListItem = {
+  id: string;
+  title: string | null;
+  pinned: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+// Mirrors GET /conversations's top-level response shape.
+export type ConversationListPage = {
+  conversations: ConversationListItem[];
+  next_cursor: string | null;
+  has_more: boolean;
 };
 
 // Mirrors a row from GET /conversations/{id} and the response shape of
@@ -93,6 +120,9 @@ export type ConversationMessage = {
   telemetry?: Record<string, number>;
   chunks_matrix?: unknown[];
   thinking?: string;
+  // Set only on the turn that just (re)generated the conversation's title
+  // (the first turn, when the LLM call succeeds) - null on every other turn.
+  title?: string | null;
 };
 
 // Mirrors GET /graph (see get_graph_data() in server/src/storage/database.py).

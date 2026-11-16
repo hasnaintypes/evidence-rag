@@ -1,17 +1,21 @@
 "use client";
 
+import { memo, useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import { BookOpenIcon } from "lucide-react";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { AttachmentChips } from "@/components/chat/attachment-chips";
-import { Reasoning, ReasoningTrigger, ReasoningContent } from "@/components/ai-elements/reasoning";
-import { Sources, SourcesTrigger, SourcesContent } from "@/components/ai-elements/sources";
-import {
-  InlineCitation,
-  InlineCitationCard,
-  InlineCitationCardBody,
-} from "@/components/ai-elements/inline-citation";
-import { Shimmer } from "@/components/ai-elements/shimmer";
+import { FaithfulnessCard, parseFaithfulnessGate } from "@/components/chat/faithfulness-card";
+import { ThinkingIndicator } from "@/components/chat/thinking-indicator";
 import { Badge } from "@/components/ui/badge";
-import { HoverCardTrigger } from "@/components/ui/hover-card";
+import { Button } from "@/components/ui/button";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import type { DocumentStatus } from "@/lib/api";
 import type { ChatMessage } from "@/lib/types";
@@ -26,20 +30,101 @@ function sourceHref(document: string, page: number | null, token: string | null)
   return page ? `${url}#page=${page}` : url;
 }
 
-export function ChatMessageBubble({
+const CITATION_MARKER_RE = /\[(\d+)\]/g;
+
+// The model is instructed (see query_pipeline.py's generation prompt
+// instruction 6) to inline [N] markers citing a numbered source - turns
+// each in-range one into a markdown link Streamdown already knows how to
+// parse as an anchor, which `CiteLink` below then intercepts instead of
+// letting it navigate. Bounds-checked here too (not just server-side,
+// see _sanitize_citation_markers) since a document's own text could
+// coincidentally contain a bracketed number that isn't really a citation.
+function linkifyCitations(content: string, maxIndex: number): string {
+  return content.replace(CITATION_MARKER_RE, (match, n) =>
+    Number(n) >= 1 && Number(n) <= maxIndex ? `[[${n}]](#cite-${n})` : match,
+  );
+}
+
+function CiteLink({
+  href,
+  children,
+  sources,
+  onSelectSource,
+}: {
+  href?: string;
+  children?: ReactNode;
+  sources: ChatMessage["sources"];
+  onSelectSource: (index: number) => void;
+}) {
+  const match = /^#cite-(\d+)$/.exec(href ?? "");
+  if (!match) {
+    // Not a citation link - a real markdown link in the answer text,
+    // render it normally.
+    return (
+      <a href={href} target="_blank" rel="noreferrer">
+        {children}
+      </a>
+    );
+  }
+  const index = Number(match[1]);
+  const exists = sources?.some((s) => s.index === index);
+  if (!exists) return <>{children}</>; // out-of-range already sanitized server-side, but guard anyway
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelectSource(index)}
+      className="citation-marker mx-0.5 inline-flex"
+    >
+      <Badge variant="secondary" className="rounded-full px-1.5 text-[10px]">
+        {index}
+      </Badge>
+    </button>
+  );
+}
+
+function ChatMessageBubbleImpl({
   message,
   docStatuses = {},
+  onRetry,
+  advancedMode = true,
 }: {
   message: ChatMessage;
-  docStatuses?: Record<string, DocumentStatus["status"]>;
+  docStatuses?: Record<string, DocumentStatus>;
+  onRetry?: () => void;
+  advancedMode?: boolean;
 }) {
   const isUser = message.role === "user";
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState<number | null>(null);
+  const sourceRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  const gate = !isUser ? parseFaithfulnessGate(message.content) : null;
+
+  function openSources(index: number | null) {
+    setHighlightedIndex(index);
+    setSheetOpen(true);
+  }
+
+  // Scrolls the clicked source into view once the sheet's content has
+  // actually mounted/settled - a plain scrollIntoView on click would run
+  // before the sheet's own open transition (components/ui/sheet.tsx's
+  // 200ms) has laid anything out.
+  useEffect(() => {
+    if (!sheetOpen || highlightedIndex == null) return;
+    const id = setTimeout(() => {
+      sourceRefs.current[highlightedIndex]?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+      });
+    }, 220);
+    return () => clearTimeout(id);
+  }, [sheetOpen, highlightedIndex]);
 
   if (message.pending) {
     return (
       <Message from="assistant">
         <MessageContent>
-          <Shimmer duration={1.2}>Thinking…</Shimmer>
+          <ThinkingIndicator advancedMode={advancedMode} />
         </MessageContent>
       </Message>
     );
@@ -51,56 +136,109 @@ export function ChatMessageBubble({
         <AttachmentChips attachments={message.attachments} statuses={docStatuses} />
       )}
 
-      <MessageContent className={cn(message.error && "bg-destructive/10 text-destructive")}>
-        <MessageResponse>{message.content}</MessageResponse>
-      </MessageContent>
-
-      {!isUser && message.thinking && (
-        <Reasoning defaultOpen={false}>
-          <ReasoningTrigger />
-          <ReasoningContent>{message.thinking}</ReasoningContent>
-        </Reasoning>
+      {gate ? (
+        <MessageContent>
+          <FaithfulnessCard
+            claims={gate.claims}
+            onRetry={onRetry}
+            onReviewSources={() => openSources(null)}
+            hasSources={!!message.sources?.length}
+          />
+        </MessageContent>
+      ) : (
+        <MessageContent
+          className={cn(
+            !isUser && "chat-prose",
+            message.error && "bg-destructive/10 text-destructive",
+          )}
+        >
+          <MessageResponse
+            components={{
+              a: (props) => (
+                <CiteLink {...props} sources={message.sources} onSelectSource={openSources} />
+              ),
+            }}
+          >
+            {linkifyCitations(message.content, message.sources?.length ?? 0)}
+          </MessageResponse>
+        </MessageContent>
       )}
 
       {!isUser && message.sources && message.sources.length > 0 && (
-        <Sources>
-          <SourcesTrigger count={message.sources.length} />
-          <SourcesContent>
-            {message.sources.map((source) => (
-              <InlineCitation key={source.index}>
-                <InlineCitationCard>
-                  <HoverCardTrigger
-                    render={
-                      <a
-                        href={sourceHref(source.document, source.page, source.source_token)}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="flex items-center gap-2 text-xs hover:text-foreground"
-                      />
-                    }
-                  >
-                    <Badge variant="secondary" className="rounded-full">
+        <button
+          type="button"
+          onClick={() => openSources(null)}
+          className="flex w-fit items-center gap-1.5 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <BookOpenIcon className="size-3.5" />
+          Used {message.sources.length} source{message.sources.length === 1 ? "" : "s"}
+        </button>
+      )}
+
+      <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
+        <SheetContent className="flex flex-col gap-0 p-0 sm:max-w-md">
+          <SheetHeader className="border-b border-border">
+            <SheetTitle>Sources</SheetTitle>
+            <SheetDescription>
+              {message.sources?.length ?? 0} passage
+              {(message.sources?.length ?? 0) === 1 ? "" : "s"} used for this answer
+            </SheetDescription>
+          </SheetHeader>
+          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
+            {message.sources?.map((source) => (
+              <div
+                key={source.index}
+                ref={(el) => {
+                  sourceRefs.current[source.index] = el;
+                }}
+                className={cn(
+                  "flex flex-col gap-2 rounded-lg border p-3 transition-colors",
+                  highlightedIndex === source.index
+                    ? "border-primary/50 bg-accent"
+                    : "border-border bg-card/40",
+                )}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="flex min-w-0 items-center gap-2 text-sm font-medium">
+                    <Badge variant="secondary" className="shrink-0 rounded-full">
                       {source.index}
                     </Badge>
-                    <span className="truncate font-medium">
+                    <span className="truncate">
                       {source.document}
                       {source.page != null ? ` · p.${source.page}` : ""}
                     </span>
-                  </HoverCardTrigger>
-                  <InlineCitationCardBody>
-                    <p className="mb-1 truncate text-sm font-medium leading-tight">
-                      {source.section}
-                    </p>
-                    <p className="line-clamp-4 text-sm leading-relaxed text-muted-foreground">
-                      {source.snippet}
-                    </p>
-                  </InlineCitationCardBody>
-                </InlineCitationCard>
-              </InlineCitation>
+                  </span>
+                </div>
+                {source.section && (
+                  <p className="truncate text-xs font-medium text-muted-foreground">
+                    {source.section}
+                  </p>
+                )}
+                <blockquote className="border-l-2 border-muted pl-3 text-xs leading-relaxed text-muted-foreground [&_*]:my-0">
+                  <MessageResponse>{source.snippet}</MessageResponse>
+                </blockquote>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-fit"
+                  nativeButton={false}
+                  render={
+                    <a
+                      href={sourceHref(source.document, source.page, source.source_token)}
+                      target="_blank"
+                      rel="noreferrer"
+                    />
+                  }
+                >
+                  Open source document
+                </Button>
+              </div>
             ))}
-          </SourcesContent>
-        </Sources>
-      )}
+          </div>
+        </SheetContent>
+      </Sheet>
     </Message>
   );
 }
+
+export const ChatMessageBubble = memo(ChatMessageBubbleImpl);

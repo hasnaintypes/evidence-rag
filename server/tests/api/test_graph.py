@@ -7,140 +7,135 @@ generation - see CLAUDE.md), so these tests only need to prove it builds
 and reads correctly, not that retrieval depends on it.
 """
 
-import json
 from unittest.mock import patch
-
-import pytest
 
 from tests.conftest import override_current_user
 from src.ingestion.parsers.base import KnowledgeNode, NodeType
 from src.storage.database import insert_nodes, upsert_document_record
-from src.graph import extract_entities_from_text, build_graph_for_section, build_document_graph
+from src.graph import extract_entities_batch, build_document_graph
 
 OWNER = "owner-user"
 OTHER = "other-user"
 
-LONG_ENOUGH_TEXT = "x" * 150  # extract_entities_from_text requires >= 100 chars
+LONG_ENOUGH_TEXT = "x" * 150  # build_document_graph requires >= 100 chars per section
 
 
-# --- extract_entities_from_text --------------------------------------------
+# --- extract_entities_batch --------------------------------------------
 
 
-def test_extract_entities_skips_short_text():
-    with patch("src.graph.generate_chat_response") as mock_generate:
-        result = extract_entities_from_text("too short")
+def test_extract_entities_batch_returns_empty_list_for_no_texts():
+    with patch("src.graph.generate_structured_response") as mock_generate:
+        result = extract_entities_batch([])
     assert result == []
     mock_generate.assert_not_called()
 
 
-def test_extract_entities_returns_empty_on_generation_exception():
-    with patch("src.graph.generate_chat_response", side_effect=RuntimeError("quota exceeded")):
-        result = extract_entities_from_text(LONG_ENOUGH_TEXT)
-    assert result == []
+def test_extract_entities_batch_returns_empty_lists_on_generation_failure():
+    with patch("src.graph.generate_structured_response", return_value=None):
+        result = extract_entities_batch(["section one text", "section two text"])
+    assert result == [[], []]
 
 
-def test_extract_entities_treats_an_error_response_as_no_entities():
-    with patch("src.graph.generate_chat_response", return_value="Error during generation: timeout"):
-        result = extract_entities_from_text(LONG_ENOUGH_TEXT)
-    assert result == []
+def test_extract_entities_batch_maps_results_back_by_index():
+    response = {
+        "sections": [
+            {"index": 1, "entities": ["Emergency Stop", "SCARA", "600 hours"]},
+            {"index": 2, "entities": []},
+        ]
+    }
+    with patch("src.graph.generate_structured_response", return_value=response):
+        result = extract_entities_batch(["section one text", "section two text"])
+    assert result == [["Emergency Stop", "SCARA", "600 hours"], []]
 
 
-def test_extract_entities_detects_a_repetition_loop():
-    degenerate = "\n".join(["JSON array: []"] * 10)
-    with patch("src.graph.generate_chat_response", return_value=degenerate):
-        result = extract_entities_from_text(LONG_ENOUGH_TEXT)
-    assert result == []
+def test_extract_entities_batch_defaults_a_missing_index_to_empty():
+    # The model omitting an entry for a section (rather than returning an
+    # explicit empty array) must fall back to [] instead of crashing or
+    # misaligning the rest of the results.
+    response = {"sections": [{"index": 2, "entities": ["Only section two"]}]}
+    with patch("src.graph.generate_structured_response", return_value=response):
+        result = extract_entities_batch(["section one text", "section two text"])
+    assert result == [[], ["Only section two"]]
 
 
-def test_extract_entities_returns_empty_when_no_array_found():
-    with patch("src.graph.generate_chat_response", return_value="no brackets here at all"):
-        result = extract_entities_from_text(LONG_ENOUGH_TEXT)
-    assert result == []
-
-
-def test_extract_entities_returns_empty_on_malformed_json():
-    with patch("src.graph.generate_chat_response", return_value='["unterminated'):
-        result = extract_entities_from_text(LONG_ENOUGH_TEXT)
-    assert result == []
-
-
-def test_extract_entities_parses_a_valid_array_embedded_in_extra_text():
-    response = 'Sure, here is the JSON array: ["Emergency Stop", "SCARA", "600 hours"]\nDone.'
-    with patch("src.graph.generate_chat_response", return_value=response):
-        result = extract_entities_from_text(LONG_ENOUGH_TEXT)
-    assert result == ["Emergency Stop", "SCARA", "600 hours"]
-
-
-def test_extract_entities_caps_at_eight():
+def test_extract_entities_batch_caps_at_eight_per_section():
     entities = [f"term-{i}" for i in range(12)]
-    with patch("src.graph.generate_chat_response", return_value=json.dumps(entities)):
-        result = extract_entities_from_text(LONG_ENOUGH_TEXT)
-    assert len(result) == 8
+    response = {"sections": [{"index": 1, "entities": entities}]}
+    with patch("src.graph.generate_structured_response", return_value=response):
+        result = extract_entities_batch(["section one text"])
+    assert len(result[0]) == 8
 
 
-def test_extract_entities_filters_non_scalar_entries():
-    # None/dict entries (a malformed-but-valid-JSON LLM response) must be
-    # dropped; str/int entries are kept (numbers coerced to str) - see
-    # extract_entities_from_text's isinstance() filter. No nested [...]
-    # here deliberately - the outer regex extraction is non-greedy, so a
-    # nested list/array would need its own dedicated test instead of
-    # muddying this one.
-    raw = '["Emergency Stop", 600, null, {"nested": "object"}, "SCARA"]'
-    with patch("src.graph.generate_chat_response", return_value=raw):
-        result = extract_entities_from_text(LONG_ENOUGH_TEXT)
-    assert result == ["Emergency Stop", "600", "SCARA"]
+def test_extract_entities_batch_filters_non_scalar_entries():
+    response = {"sections": [{"index": 1, "entities": ["Emergency Stop", 600, None, {"nested": "x"}, "SCARA"]}]}
+    with patch("src.graph.generate_structured_response", return_value=response):
+        result = extract_entities_batch(["section one text"])
+    assert result[0] == ["Emergency Stop", "600", "SCARA"]
 
 
-# --- build_graph_for_section / build_document_graph -------------------------
+# --- build_document_graph ---------------------------------------------------
 
 
-def _section_child(doc_id, content="Some section content."):
-    return {"content": content}
+def test_build_document_graph_skips_sections_with_no_content():
+    doc_id = "doc-graph-empty"
+    section = KnowledgeNode(doc_id=doc_id, type=NodeType.SECTION, heading_path="Intro")
+    insert_nodes([section])
 
+    with patch("src.graph.extract_entities_batch") as mock_extract:
+        processed = build_document_graph(doc_id, [section])
 
-def test_build_graph_for_section_skips_when_no_content():
-    with patch("src.graph.extract_entities_from_text") as mock_extract:
-        build_graph_for_section(doc_id="doc-1", section_node_id="sec-1", section_children=[{"content": ""}])
+    assert processed == 1
     mock_extract.assert_not_called()
 
 
-def test_build_graph_for_section_skips_when_fewer_than_two_entities():
+def test_build_document_graph_skips_when_fewer_than_two_entities():
+    doc_id = "doc-graph-one-entity"
+    section = KnowledgeNode(doc_id=doc_id, type=NodeType.SECTION, heading_path="Intro")
+    child = KnowledgeNode(doc_id=doc_id, parent_id=section.id, type=NodeType.PARAGRAPH, content=LONG_ENOUGH_TEXT)
+    insert_nodes([section, child])
+
     with (
-        patch("src.graph.extract_entities_from_text", return_value=["only-one"]),
+        patch("src.graph.extract_entities_batch", return_value=[["only-one"]]),
         patch("src.graph.upsert_entity") as mock_upsert_entity,
     ):
-        build_graph_for_section(doc_id="doc-1", section_node_id="sec-1", section_children=[_section_child("doc-1")])
+        build_document_graph(doc_id, [section])
     mock_upsert_entity.assert_not_called()
 
 
-def test_build_graph_for_section_upserts_entities_and_pairwise_edges():
+def test_build_document_graph_upserts_entities_and_pairwise_edges():
+    doc_id = "doc-graph-three-entities"
+    section = KnowledgeNode(doc_id=doc_id, type=NodeType.SECTION, heading_path="Intro")
+    child = KnowledgeNode(doc_id=doc_id, parent_id=section.id, type=NodeType.PARAGRAPH, content=LONG_ENOUGH_TEXT)
+    insert_nodes([section, child])
+
     with (
-        patch("src.graph.extract_entities_from_text", return_value=["A", "B", "C"]),
+        patch("src.graph.extract_entities_batch", return_value=[["A", "B", "C"]]),
         patch("src.graph.upsert_entity", side_effect=[1, 2, 3]) as mock_upsert_entity,
         patch("src.graph.upsert_edge") as mock_upsert_edge,
     ):
-        build_graph_for_section(doc_id="doc-1", section_node_id="sec-1", section_children=[_section_child("doc-1")])
+        build_document_graph(doc_id, [section])
 
     assert mock_upsert_entity.call_count == 3
     # 3 entities -> 3 pairwise edges (1-2, 1-3, 2-3).
     assert mock_upsert_edge.call_count == 3
 
 
-def test_build_document_graph_processes_every_section_via_get_children():
-    doc_id = "doc-graph-1"
-    section = KnowledgeNode(doc_id=doc_id, type=NodeType.SECTION, heading_path="Intro")
-    child = KnowledgeNode(doc_id=doc_id, parent_id=section.id, type=NodeType.PARAGRAPH, content=LONG_ENOUGH_TEXT)
-    insert_nodes([section, child])
+def test_build_document_graph_batches_many_sections_into_fewer_calls():
+    # GRAPH_BATCH_SIZE is 5 - 7 sections should take 2 extract_entities_batch
+    # calls (one call per batch, not one call per section).
+    doc_id = "doc-graph-many-sections"
+    sections = []
+    for i in range(7):
+        section = KnowledgeNode(doc_id=doc_id, type=NodeType.SECTION, heading_path=f"Section {i}")
+        child = KnowledgeNode(doc_id=doc_id, parent_id=section.id, type=NodeType.PARAGRAPH, content=LONG_ENOUGH_TEXT)
+        insert_nodes([section, child])
+        sections.append(section)
 
-    with patch("src.graph.build_graph_for_section") as mock_build_section:
-        processed = build_document_graph(doc_id, [section])
+    with patch("src.graph.extract_entities_batch", return_value=[[] for _ in range(5)]) as mock_extract:
+        processed = build_document_graph(doc_id, sections)
 
-    assert processed == 1
-    mock_build_section.assert_called_once()
-    _, kwargs = mock_build_section.call_args
-    assert kwargs["section_node_id"] == section.id
-    assert len(kwargs["section_children"]) == 1
-    assert kwargs["section_children"][0]["id"] == child.id
+    assert processed == 7
+    assert mock_extract.call_count == 2
 
 
 # --- GraphService / API routes ----------------------------------------------
@@ -205,14 +200,3 @@ def test_graph_endpoint_scopes_to_accessible_documents_when_doc_id_omitted(clien
     _, kwargs = mock_get_graph_data.call_args
     assert kwargs["doc_id"] is None
     assert kwargs["allowed_doc_ids"] == ["doc-1"]
-
-
-@pytest.mark.parametrize("entities", [["A"], []])
-def test_extract_entities_requires_at_least_two_to_build_anything(entities):
-    """Documents extract_entities_from_text's own floor (>=2 is checked by
-    build_graph_for_section, not extract_entities_from_text itself) -
-    fewer than 2 extracted names is a legitimate, common result (e.g. a
-    short or generic section) and must not raise."""
-    with patch("src.graph.generate_chat_response", return_value=json.dumps(entities)):
-        result = extract_entities_from_text(LONG_ENOUGH_TEXT)
-    assert result == entities

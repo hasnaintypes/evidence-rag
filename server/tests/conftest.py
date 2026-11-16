@@ -5,12 +5,23 @@ import sys
 # src...."/"from api...." imports to resolve, same requirement as api/app.py.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# src/core/config.py's Settings() requires GEMINI_API_KEY with no default, and is
-# instantiated at import time - CI has no server/.env file, so this has to
-# be set before any test file imports anything under src/. A placeholder is
-# fine: every test here mocks the Gemini call sites directly rather than
-# hitting the real API.
+# src/core/config.py's Settings() requires GEMINI_API_KEY and VOYAGE_API_KEY
+# with no default, and is instantiated at import time - CI has no
+# server/.env file, so these have to be set before any test file imports
+# anything under src/. Placeholders are fine: every test here mocks the
+# Gemini/Voyage call sites directly rather than hitting the real APIs.
 os.environ.setdefault("GEMINI_API_KEY", "test-key-not-a-real-credential")
+os.environ.setdefault("VOYAGE_API_KEY", "test-key-not-a-real-credential")
+
+# LOG_TO_FILE defaults to true (src/core/config.py) for real local dev, but
+# api/app.py calls configure_logging() at *import* time - before any
+# per-test fixture below gets a chance to monkeypatch settings - so without
+# this, every test run that imports api.app (most of tests/api/) would
+# write real files into server/logs/ on the developer's own machine.
+# test_logging_config.py covers the actual file-writing/routing behavior
+# directly, with its own tmp_path-based LOG_DIRECTORY override, so nothing
+# here loses coverage by disabling file output for the rest of the suite.
+os.environ.setdefault("LOG_TO_FILE", "false")
 
 import pytest  # noqa: E402
 
