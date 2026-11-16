@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/social-preview.png" alt="EvidenceRAG" width="640">
+
 # EvidenceRAG
 
 ### Structure-Aware Hybrid RAG for Technical Document Intelligence
