@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent } from "react";
 import { toast } from "@/hooks/use-toast";
 import {
@@ -183,6 +183,38 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
       Object.values(unsubscribes).forEach((unsubscribe) => unsubscribe());
     };
   }, []);
+
+  // Per-message slice of docStatuses, narrowed to each message's own
+  // attachments so a status update only changes the prop reference (and
+  // defeats ChatMessageBubble's memo()) for the message that actually
+  // cares, not every bubble in the list. Must be memoized with a cache
+  // that reuses the PREVIOUS per-message object when that message's own
+  // relevant values haven't changed - Object.fromEntries(...) inline in
+  // messages.map() below built a brand-new object on every render
+  // (including every streamed token), defeating the memo it was meant to
+  // preserve for every message, every time.
+  const relevantStatusesCacheRef = useRef<Map<string, Record<string, DocumentStatus>>>(new Map());
+  const relevantStatusesById = useMemo(() => {
+    const previous = relevantStatusesCacheRef.current;
+    const next = new Map<string, Record<string, DocumentStatus> | undefined>();
+    for (const message of messages) {
+      const entries = (message.attachments ?? [])
+        .filter((a) => a.docId in docStatuses)
+        .map((a): [string, DocumentStatus] => [a.docId, docStatuses[a.docId]]);
+      if (entries.length === 0) {
+        next.set(message.id, undefined);
+        continue;
+      }
+      const prev = previous.get(message.id);
+      const unchanged =
+        prev !== undefined &&
+        Object.keys(prev).length === entries.length &&
+        entries.every(([docId, status]) => prev[docId] === status);
+      next.set(message.id, unchanged ? prev : Object.fromEntries(entries));
+    }
+    relevantStatusesCacheRef.current = next as Map<string, Record<string, DocumentStatus>>;
+    return next;
+  }, [messages, docStatuses]);
 
   function watchDocumentStatus(docId: string, filename: string) {
     statusUnsubscribes.current[docId]?.();
@@ -442,17 +474,7 @@ export function ChatPanel({ conversationId }: { conversationId: string }) {
                     message.serverId !== undefined;
                   const isFinalMessage = index === messages.length - 1;
 
-                  // Narrowed to just this message's own attachments so a
-                  // docStatuses update only changes the prop reference (and
-                  // defeats ChatMessageBubble's memo) for the message that
-                  // actually cares, not every bubble in the list.
-                  const relevantStatuses = message.attachments
-                    ? Object.fromEntries(
-                        message.attachments
-                          .filter((a) => a.docId in docStatuses)
-                          .map((a) => [a.docId, docStatuses[a.docId]]),
-                      )
-                    : undefined;
+                  const relevantStatuses = relevantStatusesById.get(message.id);
 
                   const precedingUserMessage =
                     message.role === "assistant" ? messages[index - 1] : undefined;
