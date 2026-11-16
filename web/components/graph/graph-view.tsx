@@ -127,7 +127,23 @@ export const GraphView = forwardRef<GraphViewHandle, GraphViewProps>(function Gr
         const isDimmed =
           connectedNodeIds !== null &&
           !(connectedNodeIds.has(edge.from as number) && connectedNodeIds.has(edge.to as number));
-        edges.update({ id: edge.id, color: { color: isDimmed ? background : borderStrong } });
+        // vis-data's DataSet.update() replaces an item's entire `color`
+        // field wholesale rather than merging it into the network-level
+        // default (`edges.color` above, which also sets highlight/hover) -
+        // once an edge gets a per-item color override here, omitting
+        // highlight/hover would silently drop them for that edge's
+        // remaining lifetime (including after dimTo(null) "restores" it -
+        // that call still only sets `color`, so the loss would otherwise
+        // be permanent, not just while dimmed). Always include all three
+        // so an edge never loses its hover/highlight behavior.
+        edges.update({
+          id: edge.id,
+          color: {
+            color: isDimmed ? background : borderStrong,
+            highlight: foreground,
+            hover: mutedForeground,
+          },
+        });
       });
     }
 
