@@ -74,6 +74,7 @@ Workflow rules for anyone (human or agent) making code changes in this repositor
 
 ## Documentation
 
-- Project documentation (PRD, architecture, security findings, roadmap, decisions) lives
-  in the Obsidian vault, not in this repo — see `CLAUDE.md` for what stays local
-  (`README.md`, this file, code-level comments) versus what belongs in the vault.
+- Architecture and API reference live in this repo (`docs/ARCHITECTURE.md`, `docs/API.md`) and
+  should be kept in sync with the code they describe. PRD, roadmap, security findings, and other
+  decisions requiring editorial judgment still live in the Obsidian vault, not in this repo — see
+  `CLAUDE.md` for the full split.
