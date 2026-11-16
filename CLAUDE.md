@@ -317,8 +317,16 @@ wrappers with loading/error state so components don't duplicate fetch boilerplat
 
 ## Documentation
 
-Project documentation (PRD, architecture, security findings, roadmap, decisions) lives in the Obsidian
-vault at `~/Vaults/Main/Projects/EvidenceRAG/`, not in this repo. `docs/` here is split into
-`docs/fixtures/` (the `sample_docs/` demo corpus) and `docs/eval/` (eval harness I/O —
-`eval_set.json`, `eval_baseline.json`, `eval_report.md`, `eval_metrics.json`) — see GitHub issue #19
-and `06-Roadmap.md` in the vault.
+Public-facing reference docs live in this repo under `docs/`: `docs/ARCHITECTURE.md` (system design —
+pipeline stages, the swappable-storage/fixed-pipeline split, observability, the LLM-call
+architecture) and `docs/API.md` (every route's auth/rate-limit requirements and request/response
+shapes, kept in sync with `api/routers/`+`api/schemas.py` by hand, not auto-generated from
+OpenAPI). README.md stays a pitch + quickstart + eval-numbers summary and links to both rather than
+inlining their detail.
+
+Everything else (PRD, security findings, roadmap, decisions, and any doc requiring editorial
+judgment rather than reading code) stays in the Obsidian vault at
+`~/Vaults/Main/Projects/EvidenceRAG/`, not in this repo. `docs/` otherwise holds
+`docs/fixtures/` (the `sample_docs/` demo corpus), `docs/eval/` (eval harness I/O — `eval_set.json`,
+`eval_baseline.json`, `eval_report.md`, `eval_metrics.json`), and `docs/assets/` (README images) —
+see GitHub issue #19 and `06-Roadmap.md` in the vault.

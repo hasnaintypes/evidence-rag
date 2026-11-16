@@ -14,7 +14,7 @@ An explainable document question-answering system that parses technical document
 [![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Next.js](https://img.shields.io/badge/Next.js-Frontend-000000?style=flat-square&logo=next.js&logoColor=white)](https://nextjs.org/)
 [![Gemini](https://img.shields.io/badge/LLM-Gemini-107C10?style=flat-square)](#how-it-works)
-[![Supabase](https://img.shields.io/badge/Auth-Supabase-3ECF8E?style=flat-square&logo=supabase&logoColor=white)](#authentication--conversations)
+[![Supabase](https://img.shields.io/badge/Auth-Supabase-3ECF8E?style=flat-square&logo=supabase&logoColor=white)](./docs/ARCHITECTURE.md)
 
 **[Try the live demo →](https://evidence-rag.vercel.app)** — preloaded with the sample docs below, no setup required.
 
@@ -27,9 +27,6 @@ An explainable document question-answering system that parses technical document
 - [Overview](#overview)
 - [What Makes EvidenceRAG Different](#what-makes-evidencerag-different)
 - [How It Works](#how-it-works)
-- [Authentication & Conversations](#authentication--conversations)
-- [Explainability & Observability](#explainability--observability)
-- [Entity Graph](#entity-graph)
 - [Evaluation Results](#evaluation-results)
 - [Technology Stack](#technology-stack)
 - [Project Structure](#project-structure)
@@ -66,77 +63,16 @@ It answers questions using content from Markdown, PDF, Word, Excel, and CSV file
 
 ## How It Works
 
-```mermaid
-flowchart TB
-    U["User"] --> UI["Web Interface (Next.js)"]
-    UI -- "email + password" --> SBAUTH["Supabase Auth"]
+Query rewriting → hybrid BM25 + dense retrieval fused by RRF → reranking → relevance grading →
+parent-section reconstruction → a **confidence gate** (abstains rather than guessing on weak
+evidence) → grounded generation → a **faithfulness hard gate** (withholds the answer rather than
+returning an unsupported one). Every document belongs to its uploader; every chat happens inside a
+conversation scoped to 1–5 documents, never a global search box; auth is Supabase JWTs verified
+against its public JWKS endpoint, no shared secret.
 
-    subgraph API["FastAPI Application"]
-        DEPS["JWT Verification (JWKS)"]
-        CONV["/conversations"]
-        UPLOAD["/upload"]
-        GRAPHAPI["/graph"]
-    end
-
-    UI -- "Bearer JWT" --> DEPS --> CONV & UPLOAD & GRAPHAPI
-
-    subgraph INGESTION["Structure-Aware Ingestion"]
-        PARSERS["MD / PDF / DOCX / XLSX Parsers"] --> TREE["KnowledgeNode Tree"]
-        TREE --> CHUNK["Heading-Aware Chunking"] --> HASH["Hash-Based Dedup"]
-        TREE --> ENTITY["Optional Entity Extraction"]
-    end
-
-    UPLOAD --> PARSERS
-
-    subgraph STORAGE["Storage (SQLite local / Postgres+pgvector on Supabase)"]
-        DB[("Documents + Chunks + Embeddings + Entities + Conversations")]
-    end
-
-    HASH --> DB
-    ENTITY --> DB
-
-    subgraph RETRIEVAL["Retrieval Pipeline"]
-        REWRITE["Query Rewriting"] --> BM25["BM25"] & DENSE["Dense Similarity"]
-        BM25 --> RRF["Reciprocal Rank Fusion"]
-        DENSE --> RRF
-        RRF --> RERANK["Cross-Encoder Rerank"] --> GRADE["Relevance Grading"]
-        GRADE --> PARENT["Parent-Section Reconstruction"] --> FOLLOWUP["Bounded Follow-Up Hop"]
-    end
-
-    CONV --> REWRITE
-    DB --> BM25 & DENSE & PARENT
-    FOLLOWUP --> GEN["Grounded Generation (Configured LLM)"]
-
-    GEN --> ANSWER["Answer + Sources + Faithfulness Score + Telemetry"] --> UI
-```
-
-**Ingestion** — each format-specific parser (Markdown/PDF/DOCX/XLSX) produces the same `KnowledgeNode` shape, so retrieval logic never depends on file format. A document hash check skips re-embedding unchanged files; `ENABLE_ENTITY_GRAPH` optionally extracts per-section entities.
-
-**Query flow** — query rewriting (original + up to 2 rewritten tracks) → hybrid BM25 + dense retrieval fused by RRF → reranking → relevance grading → context compression + parent-section reconstruction → an adaptive context budget (2/4/5 blocks based on top score) → a **confidence gate**: below `RETRIEVAL_CONFIDENCE_THRESHOLD` the pipeline abstains and returns only the closest-match chunks as `sources`, with no synthesized claim → if confident but a gap remains, one bounded additional retrieval hop (never an open-ended loop) → grounded generation → **faithfulness hard gate**: a second, cheap LLM call checks the answer against its own cited chunks, and below `FAITHFULNESS_GATE_THRESHOLD` the answer is withheld rather than returned as-is. The confidence gate and reranking only run in "advanced mode"; naive mode always attempts an answer.
-
-Implementation: `server/src/query_pipeline.py` (`process_chat_query`), `server/src/retrieval/*`, `server/src/evaluation/judge.py`.
-
----
-
-## Authentication & Conversations
-
-Every document belongs to the user who uploaded it, and every chat happens inside a **conversation** scoped to exactly one document — not a global search box. `documents.user_id` is nullable: `NULL` means a shared/demo document (the `docs/fixtures/sample_docs/` corpus), visible to every signed-in user; uploads via `POST /upload` are private to the uploader.
-
-Sign-in/sign-up talk directly from the browser to Supabase Auth (`web/lib/auth.ts`), never proxied through the backend — the backend's only auth responsibility is verifying a caller's JWT against Supabase's public **JWKS** endpoint (`server/api/deps.py`), no shared secret stored server-side. Every route requires a valid `Authorization: Bearer <jwt>` except `/health` and `/source/{filename}` (opened via plain browser navigation for citation links).
-
-> Per-user ownership is enforced on every document/conversation/graph route via a centralized `api/authz.py` (404s for a non-owner, 403 for mutating a shared document).
-
----
-
-## Explainability & Observability
-
-Every answer (including an abstention) returns a numbered `sources` array — the exact chunks used to build the prompt, each with document name, page/section, and a short snippet — rendered in the UI as an expandable citation list. A `chunks_matrix` field exposes the full retrieval debug trail (BM25/dense/rerank scores, which query track found it, which hop) for anyone who wants to see *why* a chunk was selected, not just that it was. A telemetry layer (`telemetry.py`) records stage-level latency and outcome for every query, so bottlenecks are found by looking at numbers, not by guessing.
-
----
-
-## Entity Graph
-
-Each document section can be run through local entity extraction to build a co-occurrence graph (gated by `ENABLE_ENTITY_GRAPH` — one LLM call per section, so it can get expensive on large documents). It currently supports document exploration, concept discovery, and section-level relationship inspection via an interactive visualization (`/graph` in the web UI) — **it is not currently used as a retrieval signal.**
+**Full design doc:** [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) (pipeline stages, the
+swappable-storage/fixed-pipeline split, the LLM-call architecture, observability, the authz layer).
+**Every route's contract:** [`docs/API.md`](./docs/API.md).
 
 ---
 
@@ -195,23 +131,13 @@ Concrete, source-checked figures rather than vague claims — each one points at
 ## Project Structure
 
 ```
-├── server/
-│   ├── api/            FastAPI app, routers (health, documents, conversations, graph), services/, authz.py
-│   ├── src/
-│   │   ├── query_pipeline.py, graph.py (entity extraction)
-│   │   ├── core/         config.py, llm.py, security.py, telemetry.py, observability.py, rate_limiter.py,
-│   │   │                 response_cache.py, guardrails.py - cross-cutting infra, not one pipeline stage
-│   │   ├── storage/       database.py (SQLite / Postgres+pgvector), files.py (disk / Supabase Storage)
-│   │   ├── ingestion/     pipeline.py, chunking.py, parsers/ (tree-aware, per format)
-│   │   ├── retrieval/     hybrid.py, reranker.py, grader.py, query_rewriter.py, compression.py
-│   │   └── evaluation/    judge.py (faithfulness scoring)
-│   ├── tests/            api/, retrieval/, ingestion/, core/ - mirrors src/'s own domain split
-│   └── scripts/          ingest.py, run_eval.py, compare_eval.py, supabase_schema.sql
-├── web/                   Next.js frontend (app/, components/, hooks/, stores/, lib/)
-└── docs/
-    ├── fixtures/          sample_docs/ (demo corpus)
-    └── eval/              eval_set.json / eval_report.md / eval_baseline.json / eval_metrics.json
+├── server/        FastAPI backend - api/ (routers, services, authz), src/ (pipeline, retrieval,
+│                   ingestion, storage, core), tests/, scripts/
+├── web/            Next.js frontend (app/, components/, hooks/, stores/, lib/)
+└── docs/           ARCHITECTURE.md, API.md, fixtures/ (demo corpus), eval/ (eval harness I/O)
 ```
+
+See [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) for what's inside `server/src/`.
 
 ---
 
