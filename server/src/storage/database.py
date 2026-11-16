@@ -1,4 +1,5 @@
 import base64
+import re
 import sqlite3
 import json
 import os
@@ -1663,6 +1664,38 @@ def touch_conversation(conversation_id: str, title: Optional[str] = None) -> Non
         conn.commit()
     finally:
         conn.close()
+
+
+def get_untitled_chat_numbers(user_id: str) -> List[int]:
+    """Numeric suffixes already in use among this user's "Untitled chat"/
+    "Untitled chat N" titles, so conversation_service.py's title-generation
+    failure path can pick the next free one instead of colliding - e.g. if
+    "Untitled chat" and "Untitled chat 2" are both already taken, the next
+    placeholder should be "Untitled chat 3", not another bare "Untitled
+    chat". Parsed in Python off a plain LIKE prefix match rather than a
+    DB-side regex, since SQLite has no built-in regex support and this is
+    a rare, cheap, one-user-scoped query."""
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor()
+        ph = _ph(1)
+        cursor.execute(
+            f"SELECT title FROM conversations WHERE user_id = {ph} AND title LIKE {ph}",
+            (user_id, "Untitled chat%"),
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+    finally:
+        conn.close()
+    numbers = []
+    for row in rows:
+        title = row["title"] or ""
+        if title == "Untitled chat":
+            numbers.append(1)
+        else:
+            match = re.fullmatch(r"Untitled chat (\d+)", title)
+            if match:
+                numbers.append(int(match.group(1)))
+    return numbers
 
 
 def replace_fallback_title(conversation_id: str, fallback_title: str, new_title: str) -> None:

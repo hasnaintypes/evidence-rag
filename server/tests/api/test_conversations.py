@@ -138,7 +138,11 @@ def test_send_message_returns_llm_generated_title_on_first_turn_only(client, app
     assert conversation["title"] == "Retention Drivers This Quarter"
 
 
-def test_send_message_falls_back_to_truncated_title_when_llm_call_fails(client, app):
+def test_send_message_falls_back_to_untitled_chat_when_llm_call_fails(client, app):
+    """When title generation fails (bad JSON, 429, whatever - see
+    _generate_title()'s docstring), the permanent title must not be left
+    as the user's own raw truncated prompt forever - it swaps to an
+    "Untitled chat" placeholder instead (#conversation title fallback)."""
     conversation_id = _seed_conversation()
     override_current_user(app, OWNER)
 
@@ -160,7 +164,66 @@ def test_send_message_falls_back_to_truncated_title_when_llm_call_fails(client, 
     assert response.json()["title"] is None  # nothing new was generated, so nothing to animate
 
     conversation = get_conversation(conversation_id)
-    assert conversation["title"] == "a fresh question"  # the existing truncated fallback, unchanged
+    assert conversation["title"] == "Untitled chat"  # not the raw "a fresh question" prompt
+
+
+def test_send_message_numbers_successive_untitled_chats_per_user(client, app):
+    """A second, third, etc. conversation that also fails title generation
+    for the same user gets "Untitled chat 2", "Untitled chat 3" - not
+    another colliding bare "Untitled chat"."""
+    upsert_document_record(
+        doc_id="doc-untitled", filename="doc.md", file_hash="h", node_count=1, chunk_count=1, user_id=OWNER
+    )
+    conv_a = create_conversation("conv-untitled-a", user_id=OWNER, doc_ids=["doc-untitled"])["id"]
+    conv_b = create_conversation("conv-untitled-b", user_id=OWNER, doc_ids=["doc-untitled"])["id"]
+    override_current_user(app, OWNER)
+
+    fake_result = {
+        "reply": "a real answer",
+        "sources": [],
+        "faithfulness": {"score": 0.9, "unsupported_claims": []},
+        "telemetry": {},
+        "chunks_matrix": [],
+        "thinking": "",
+    }
+    with (
+        patch("api.services.conversation_service.process_chat_query", return_value=fake_result),
+        patch("api.services.conversation_service.generate_llm_json", return_value=None),
+    ):
+        client.post(f"/conversations/{conv_a}/messages", json={"message": "first question"})
+        client.post(f"/conversations/{conv_b}/messages", json={"message": "second question"})
+
+    assert get_conversation(conv_a)["title"] == "Untitled chat"
+    assert get_conversation(conv_b)["title"] == "Untitled chat 2"
+
+
+def test_title_generation_is_skipped_outright_during_an_active_llm_cooldown(client, app):
+    """_generate_title() must not even attempt the LLM call while the
+    shared endpoint is cooling down from an earlier 429 - it should fall
+    back to "Untitled chat" without calling generate_llm_json() at all."""
+    conversation_id = _seed_conversation()
+    override_current_user(app, OWNER)
+
+    fake_result = {
+        "reply": "a real answer",
+        "sources": [],
+        "faithfulness": {"score": 0.9, "unsupported_claims": []},
+        "telemetry": {},
+        "chunks_matrix": [],
+        "thinking": "",
+    }
+    with (
+        patch("api.services.conversation_service.process_chat_query", return_value=fake_result),
+        patch("api.services.conversation_service.llm_cooldown_remaining_seconds", return_value=45.0),
+        patch("api.services.conversation_service.generate_llm_json") as mock_generate_json,
+    ):
+        response = client.post(f"/conversations/{conversation_id}/messages", json={"message": "a fresh question"})
+
+    assert response.status_code == 200
+    mock_generate_json.assert_not_called()
+
+    conversation = get_conversation(conversation_id)
+    assert conversation["title"] == "Untitled chat"
 
 
 def _fake_stream_events(reply="a real answer"):

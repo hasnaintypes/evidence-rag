@@ -429,6 +429,16 @@ def _llm_cooldown_remaining() -> float:
     return max(0.0, _llm_cooldown_until - time.monotonic())
 
 
+def llm_cooldown_remaining_seconds() -> float:
+    """Public wrapper around _llm_cooldown_remaining() for callers outside
+    this module that want to skip a non-essential call (e.g.
+    conversation_service.py's title generation, which stacks a 5th LLM
+    call right behind the 4 the main pipeline already made for the same
+    message) without even attempting it while the shared endpoint is
+    already cooling down from a 429. 0.0 means not cooling down."""
+    return _llm_cooldown_remaining()
+
+
 def _start_llm_cooldown(seconds: float) -> None:
     global _llm_cooldown_until
     _llm_cooldown_until = time.monotonic() + seconds

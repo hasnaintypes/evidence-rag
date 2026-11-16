@@ -10,7 +10,7 @@ from fastapi.encoders import jsonable_encoder
 from api.authz import get_owned_conversation
 from api.deps import CurrentUser
 from src.query_pipeline import process_chat_query, process_chat_query_stream
-from src.core.llm import generate_llm_json
+from src.core.llm import generate_llm_json, llm_cooldown_remaining_seconds
 from src.core.security import generate_source_token
 
 # Same "inherits whatever handler the process entry point set up for the
@@ -25,6 +25,7 @@ from src.storage.database import (
     delete_messages_after,
     get_conversation_messages,
     get_default_conversation_doc_ids,
+    get_untitled_chat_numbers,
     insert_message,
     list_conversations,
     replace_fallback_title,
@@ -49,10 +50,19 @@ def _generate_title(user_message: str) -> Optional[str]:
     effort, same defensive isinstance-checked-before-use posture as
     evaluation/judge.py's score_faithfulness() - returns None on any
     failure (bad/missing API response, wrong type) so the caller falls
-    back to the existing message[:TITLE_MAX_CHARS] truncation; never
-    raises, never blocks the real reply on this. No server-enforced JSON
-    schema (see src/core/llm.py's generate_llm_json() docstring) -
-    the prompt above asks for the shape in text instead."""
+    back to an "Untitled chat" placeholder; never raises, never blocks
+    the real reply on this. No server-enforced JSON schema (see
+    src/core/llm.py's generate_llm_json() docstring) - the prompt above
+    asks for the shape in text instead.
+
+    Skips the call entirely (returns None immediately) if the shared LLM
+    endpoint is already cooling down from a 429 - this is the 5th call
+    for the same message (query rewriting, reranking, answer generation,
+    and faithfulness judging already ran), so it's the cheapest one to
+    give up on first instead of burning another round trip that's
+    already known to fail."""
+    if llm_cooldown_remaining_seconds() > 0:
+        return None
     result = generate_llm_json(TITLE_PROMPT.format(question=user_message), max_tokens=50, operation="title_generation")
     if not isinstance(result, dict):
         return None
@@ -60,6 +70,19 @@ def _generate_title(user_message: str) -> Optional[str]:
     if not isinstance(title, str) or not title.strip():
         return None
     return title.strip()[:TITLE_MAX_CHARS]
+
+
+def _next_untitled_title(user_id: str) -> str:
+    """ "Untitled chat" for this user's first one, "Untitled chat 2"/"3"/...
+    after that - same incrementing-placeholder convention as a file
+    manager's "untitled folder"/"untitled folder 2", so a run of title-
+    generation failures (e.g. the free-tier quota exhaustion this project
+    keeps hitting) never shows the user their own raw prompt text back as
+    a permanent conversation title."""
+    used = get_untitled_chat_numbers(user_id)
+    if not used:
+        return "Untitled chat"
+    return f"Untitled chat {max(used) + 1}"
 
 
 class ConversationService:
@@ -202,7 +225,7 @@ class ConversationService:
 
         reply = ConversationService._persist_reply(conversation_id, message, history, result)
         if len(history) == 0:
-            background_tasks.add_task(ConversationService._generate_and_apply_title, conversation_id, message)
+            background_tasks.add_task(ConversationService._generate_and_apply_title, conversation_id, message, user.id)
         return reply
 
     @staticmethod
@@ -281,7 +304,7 @@ class ConversationService:
                         # instead, since it has no way to send anything after
                         # its one response.
                         if len(history) == 0:
-                            title = ConversationService._generate_and_apply_title(conversation_id, message)
+                            title = ConversationService._generate_and_apply_title(conversation_id, message, user.id)
                             yield f"data: {json.dumps({'type': 'title', 'title': title})}\n\n"
                 except Exception:
                     logger.exception(
@@ -335,19 +358,32 @@ class ConversationService:
         }
 
     @staticmethod
-    def _generate_and_apply_title(conversation_id: str, message: str) -> str:
+    def _generate_and_apply_title(conversation_id: str, message: str, user_id: str) -> str:
         """Generates the real title and swaps it in for the fallback
         truncation _persist_reply() already set, unless the user renamed
         the conversation in the meantime (replace_fallback_title()'s own
         guard against that race). Returns whichever title is now correct
-        - the generated one, or the fallback itself on any generation
-        failure - so send_message_stream() can report it to the client
-        without a second DB read."""
+        - the generated one, the fallback itself if it was never
+        replaced, or a fresh "Untitled chat"/"Untitled chat N" placeholder
+        if generation failed outright - so send_message_stream() can
+        report it to the client without a second DB read.
+
+        The LLM title call can fail for two different reasons seen in
+        production (rate-limited 429, or an unparseable JSON response) -
+        either way _generate_title() returns None, and this used to leave
+        the truncated raw prompt as the permanent title forever. Swapping
+        that to an incrementing "Untitled chat" placeholder instead keeps
+        a repeat quota failure from making every new conversation's title
+        just be whatever the user happened to type first."""
         fallback_title = message[:TITLE_MAX_CHARS]
         generated_title = _generate_title(message)
         if generated_title and generated_title != fallback_title:
             replace_fallback_title(conversation_id, fallback_title, generated_title)
             return generated_title
+        if not generated_title:
+            untitled_title = _next_untitled_title(user_id)
+            replace_fallback_title(conversation_id, fallback_title, untitled_title)
+            return untitled_title
         return fallback_title
 
     @staticmethod
