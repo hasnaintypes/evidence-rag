@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { toast } from "@/hooks/use-toast";
@@ -97,7 +97,7 @@ export function AppSidebar() {
   const { user, session } = useAuth();
   const { conversations, isLoading, hasMore, fetchInitial, loadMore, patch, remove } =
     useConversationsStore();
-  const sentinelRef = useRef<HTMLDivElement>(null);
+  const sentinelObserverRef = useRef<IntersectionObserver | null>(null);
 
   // ChatLayout no longer gates its render on auth resolving (see the
   // removed skeleton-flash gate), so AppSidebar can mount before `session`
@@ -107,18 +107,31 @@ export function AppSidebar() {
     if (session) fetchInitial();
   }, [session, fetchInitial]);
 
-  useEffect(() => {
-    const sentinel = sentinelRef.current;
-    if (!sentinel) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries[0]?.isIntersecting) loadMore();
-      },
-      { root: sentinel.closest("[data-sidebar=content]") },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [loadMore]);
+  // A callback ref, not useRef()+useEffect([loadMore]) - the sentinel div
+  // below only renders once hasMore is true, which is never the case on
+  // the first render (store starts with hasMore: false). An effect keyed
+  // on `loadMore` (a stable Zustand action reference) would only ever run
+  // once, while the sentinel is still unmounted, permanently bailing out
+  // of "if (!sentinel) return" and never re-attaching once the sentinel
+  // actually mounts - silently capping the sidebar at page one. A
+  // callback ref instead fires every time the node itself mounts/
+  // unmounts, which is exactly the event that matters here.
+  const sentinelRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      sentinelObserverRef.current?.disconnect();
+      sentinelObserverRef.current = null;
+      if (!node) return;
+      const observer = new IntersectionObserver(
+        (entries) => {
+          if (entries[0]?.isIntersecting) loadMore();
+        },
+        { root: node.closest("[data-sidebar=content]") },
+      );
+      observer.observe(node);
+      sentinelObserverRef.current = observer;
+    },
+    [loadMore],
+  );
 
   const [renameTarget, setRenameTarget] = useState<ConversationListItem | null>(null);
   const [renameValue, setRenameValue] = useState("");
