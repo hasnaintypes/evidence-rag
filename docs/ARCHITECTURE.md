@@ -185,3 +185,41 @@ auth guard + sidebar shell for every `/chat/*` route. Session state is a single 
 (`web/stores/auth-store.ts`) subscribed once at module load. `web/hooks/` (`use-auth`,
 `use-conversations`, `use-documents`) wrap `lib/api.ts`'s authenticated fetch wrappers with
 loading/error state so components don't duplicate fetch boilerplate.
+
+## Technology Stack
+
+| Layer | Technology |
+|:--|:--|
+| Backend | Python, FastAPI, Uvicorn |
+| Frontend | Next.js (App Router), Tailwind CSS, shadcn/ui |
+| Auth | Supabase Auth, JWT verified backend-side via JWKS |
+| Chat generation | Any OpenAI-compatible endpoint (`LLM_BASE_URL`/`LLM_MODEL`) — currently Gemini's own OpenAI-compatible API |
+| Embeddings | Voyage AI (`voyage-3.5`, independent of the chat provider) |
+| Retrieval | `rank-bm25` + dense similarity, Reciprocal Rank Fusion |
+| Reranking / judging / titling | Same configured LLM endpoint as chat generation, one batched call each |
+| Parsing | pdfplumber (PDF), python-docx (DOCX), pandas (XLSX/CSV) |
+| Graph visualization | Vis Network |
+| Evaluation | Precision@K, Recall@K, MRR, LLM-as-judge faithfulness |
+
+## Project Structure
+
+```
+├── server/        FastAPI backend - api/ (routers, services, authz), src/ (pipeline, retrieval,
+│                   ingestion, storage, core), tests/, scripts/
+├── web/            Next.js frontend (app/, components/, hooks/, stores/, lib/)
+└── docs/           ARCHITECTURE.md, API.md, CONFIGURATION.md, QUICKSTART.md, EVALUATION.md,
+                    fixtures/ (demo corpus), eval/ (eval harness I/O)
+```
+
+## Known Limitations
+
+- The retrieval-confidence abstention gate only applies in advanced mode; naive mode always
+  attempts an answer.
+- Query rewriting, reranking, generation, and faithfulness judging all go through the same
+  configured LLM endpoint/model — faithfulness isn't judged by an independent model.
+- The entity graph is exploration-only, not a retrieval signal, and costs one LLM call per
+  section.
+- Every data route requires a signed-in Supabase user; there's no anonymous/read-only demo mode.
+- Streamed answers are fully visible before the faithfulness gate can hide them ([#71](../../../issues/71)).
+- The PDF table-misdetection fix's 50% filled-cell threshold may reject legitimately sparse real
+  tables ([#72](../../../issues/72)).
