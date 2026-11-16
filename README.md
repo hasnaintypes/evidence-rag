@@ -51,18 +51,14 @@ It answers questions using content from Markdown, PDF, Word, Excel, and CSV file
 |:--|:--|
 | Fixed-size flat chunks | Hierarchical `KnowledgeNode` tree |
 | Dense retrieval only | BM25 + dense retrieval + RRF |
-| Raw Top-K results | Cross-encoder reranking |
-| Always trusts retrieved chunks | Relevance grading and deduplication |
+| Raw Top-K, trusted blindly | Reranking + relevance grading + dedup |
 | Matched excerpt in isolation | Full parent-section reconstruction |
-| Single retrieval pass | One bounded follow-up retrieval hop |
 | Tables treated as plain text | Tables and figures preserved atomically |
-| Re-embeds everything | Hash-based incremental ingestion |
 | Hidden retrieval process | Explainability matrix and telemetry |
-| No relationship layer | Entity co-occurrence graph |
 | Answer with no way to verify it | Numbered source citations (doc, page/section, snippet) |
 | Always answers, even on a weak match | Abstains below a configurable retrieval-confidence threshold |
 
-**Design principles:** chunking is a *view* over the document tree, never the primary representation; the follow-up retrieval hop is capped at one round, triggered by a score threshold rather than another LLM call — adaptive without being an open-ended agent loop; on insufficient evidence or generation failure, the system returns an explicit failure state and the retrieved references, never a fabricated answer.
+**Design principles:** chunking is a *view* over the document tree, never the primary representation; retrieval gets at most one bounded follow-up hop, triggered by a score threshold rather than another LLM call — adaptive without being an open-ended agent loop; on insufficient evidence or generation failure, the system returns an explicit failure state and the retrieved references, never a fabricated answer.
 
 ---
 
@@ -107,14 +103,14 @@ flowchart TB
 
     CONV --> REWRITE
     DB --> BM25 & DENSE & PARENT
-    FOLLOWUP --> GEN["Grounded Generation (Gemini)"]
+    FOLLOWUP --> GEN["Grounded Generation (Configured LLM)"]
 
     GEN --> ANSWER["Answer + Sources + Faithfulness Score + Telemetry"] --> UI
 ```
 
 **Ingestion** — each format-specific parser (Markdown/PDF/DOCX/XLSX) produces the same `KnowledgeNode` shape, so retrieval logic never depends on file format. A document hash check skips re-embedding unchanged files; `ENABLE_ENTITY_GRAPH` optionally extracts per-section entities.
 
-**Query flow** — query rewriting (original + up to 2 rewritten tracks) → hybrid BM25 + dense retrieval fused by RRF → cross-encoder reranking → relevance grading → context compression + full parent-section reconstruction → an adaptive context budget (2/4/5 blocks based on top score) → a **confidence gate**: below `RETRIEVAL_CONFIDENCE_THRESHOLD` the pipeline abstains and returns only the closest-match chunks as `sources`, with no synthesized claim → if confident but a gap remains, one bounded additional retrieval hop (never an open-ended loop) → grounded generation → answer faithfulness scoring (a second, cheap Gemini call checks the answer against its own cited chunks — advisory today, not yet a hard gate; see [Roadmap](#roadmap--production-hardening)). This confidence gate only runs in "advanced mode"; naive mode skips the cross-encoder and always attempts an answer.
+**Query flow** — query rewriting (original + up to 2 rewritten tracks) → hybrid BM25 + dense retrieval fused by RRF → reranking → relevance grading → context compression + parent-section reconstruction → an adaptive context budget (2/4/5 blocks based on top score) → a **confidence gate**: below `RETRIEVAL_CONFIDENCE_THRESHOLD` the pipeline abstains and returns only the closest-match chunks as `sources`, with no synthesized claim → if confident but a gap remains, one bounded additional retrieval hop (never an open-ended loop) → grounded generation → **faithfulness hard gate**: a second, cheap LLM call checks the answer against its own cited chunks, and below `FAITHFULNESS_GATE_THRESHOLD` the answer is withheld rather than returned as-is. The confidence gate and reranking only run in "advanced mode"; naive mode always attempts an answer.
 
 Implementation: `server/src/query_pipeline.py` (`process_chat_query`), `server/src/retrieval/*`, `server/src/evaluation/judge.py`.
 
@@ -122,21 +118,17 @@ Implementation: `server/src/query_pipeline.py` (`process_chat_query`), `server/s
 
 ## Authentication & Conversations
 
-Every document belongs to the user who uploaded it, and every chat happens inside a **conversation** scoped to exactly one document — not a global search box.
+Every document belongs to the user who uploaded it, and every chat happens inside a **conversation** scoped to exactly one document — not a global search box. `documents.user_id` is nullable: `NULL` means a shared/demo document (the `docs/fixtures/sample_docs/` corpus), visible to every signed-in user; uploads via `POST /upload` are private to the uploader.
 
-Sign-in/sign-up talk directly from the browser to Supabase Auth (`web/lib/auth.ts`), never proxied through the backend. The backend's only auth responsibility is verifying a caller's JWT against Supabase's public **JWKS** endpoint (`server/api/deps.py`) — no shared secret stored server-side. Every route requires a valid `Authorization: Bearer <jwt>` except `/health` and `/source/{filename}` (opened via plain browser navigation for citation links).
+Sign-in/sign-up talk directly from the browser to Supabase Auth (`web/lib/auth.ts`), never proxied through the backend — the backend's only auth responsibility is verifying a caller's JWT against Supabase's public **JWKS** endpoint (`server/api/deps.py`), no shared secret stored server-side. Every route requires a valid `Authorization: Bearer <jwt>` except `/health` and `/source/{filename}` (opened via plain browser navigation for citation links).
 
-`documents.user_id` is nullable: `NULL` means a shared/demo document (the `docs/fixtures/sample_docs/` corpus, indexed via `scripts/ingest.py`), visible to every signed-in user; uploads via `POST /upload` are private to the uploader.
-
-> Per-user ownership is enforced on every document/conversation/graph route, including every service method, via a centralized `api/authz.py` (404s for a non-owner, 403 for mutating a shared document).
+> Per-user ownership is enforced on every document/conversation/graph route via a centralized `api/authz.py` (404s for a non-owner, 403 for mutating a shared document).
 
 ---
 
 ## Explainability & Observability
 
-Every answer (including an abstention) returns a numbered `sources` array — the exact chunks used to build the prompt, each with document name, page/section, and a short snippet — rendered in the UI as an expandable citation list. A separate `chunks_matrix` field exposes the full retrieval debug trail (BM25/dense/rerank scores, which query track found it, which retrieval hop) for anyone who wants to see *why* a chunk was selected, not just that it was.
-
-Alongside this, a telemetry layer (`telemetry.py`) records stage-level latency and outcome for every query — expansion, embedding, retrieval, reranking, grading, compression, generation, faithfulness scoring — so bottlenecks are found by looking at numbers, not by guessing.
+Every answer (including an abstention) returns a numbered `sources` array — the exact chunks used to build the prompt, each with document name, page/section, and a short snippet — rendered in the UI as an expandable citation list. A `chunks_matrix` field exposes the full retrieval debug trail (BM25/dense/rerank scores, which query track found it, which hop) for anyone who wants to see *why* a chunk was selected, not just that it was. A telemetry layer (`telemetry.py`) records stage-level latency and outcome for every query, so bottlenecks are found by looking at numbers, not by guessing.
 
 ---
 
@@ -155,9 +147,7 @@ The retrieval pipeline is evaluated against a naive dense-retrieval baseline on 
 | Naive dense retrieval | 0.857 | 0.857 | 0.857 |
 | **Advanced pipeline** | **0.893** (+4.2%) | **1.000** (+16.7%) | **0.905** (+5.6%) |
 
-Every query is also scored for **answer faithfulness**: a second, cheap Gemini call acts as an LLM-as-judge given the generated answer and its cited chunks, returning a 0–1 support score plus any unsupported claims (`src/evaluation/judge.py`) — this catches the case retrieval metrics can't: the right document was found, but the answer still misstated what it says. Below `FAITHFULNESS_GATE_THRESHOLD` (0.7), the generated answer is withheld entirely rather than returned as-is — faithfulness is a hard gate, not just a reported score.
-
-> **Known-stale numbers (tracked in [#57](../../issues/57)):** the table above is from `docs/eval/eval_report.md`, last regenerated against an 8-question `eval_set.json`; the set has since grown to 9 questions with no refreshed run committed yet. A fresh run during a 2026-11-06 review hit [#55](../../issues/55) (a Supabase connection-pool exhaustion, under investigation) before it could complete — so the numbers above are the best available, not current.
+Every query is also scored for **answer faithfulness**: a second, cheap LLM call acts as a judge given the generated answer and its cited chunks, returning a 0–1 support score plus any unsupported claims (`src/evaluation/judge.py`) — this catches the case retrieval metrics can't: the right document was found, but the answer still misstated what it says. Below `FAITHFULNESS_GATE_THRESHOLD` (0.7), the generated answer is withheld entirely rather than returned as-is — faithfulness is a hard gate, not just a reported score.
 
 Full detail: [`docs/eval/eval_report.md`](./docs/eval/eval_report.md).
 
@@ -167,12 +157,12 @@ Concrete, source-checked figures rather than vague claims — each one points at
 
 | Metric | Value | Where |
 |:--|--:|:--|
-| Automated tests passing | **216 / 216** | `server/tests/` (`pytest`) |
+| Automated tests passing | **299 / 299** | `server/tests/` (`pytest`) |
 | Retrieval confidence gate | 0.5 | `RETRIEVAL_CONFIDENCE_THRESHOLD`, `config.py` |
 | Faithfulness hard gate | 0.7 | `FAITHFULNESS_GATE_THRESHOLD`, `config.py` |
 | Max retrieval hops | 2 (initial + 1 bounded follow-up) | `MAX_HOPS`, `query_pipeline.py` |
 | Chunk size / overlap | 200 / 40 tokens | `chunk_size_tokens` / `chunk_overlap_tokens`, `config.py` |
-| Embedding dimensions | 3072 | `gemini-embedding-001` |
+| Embedding dimensions | 1024 | `voyage-3.5`, `VOYAGE_EMBEDDING_DIMENSION` |
 | Embedding concurrency speedup | ~4.6x (6 workers vs. sequential) | `EMBED_CONCURRENCY`, `ingestion/pipeline.py` |
 | Scoped vs. full-corpus retrieval latency | ~2–5ms flat (5–10k+ chunks) vs. ~250ms at 10k chunks | `retrieval/hybrid.py`, [#27](../../issues/27) |
 | pgvector HNSW ANN query latency | ~5ms at 15k rows (Supabase mode) | `idx_chunks_embedding`, [#17](../../issues/17) |
@@ -190,9 +180,10 @@ Concrete, source-checked figures rather than vague claims — each one points at
 | Backend | Python, FastAPI, Uvicorn |
 | Frontend | Next.js (App Router), Tailwind CSS, shadcn/ui |
 | Auth | Supabase Auth, JWT verified backend-side via JWKS |
-| Chat / Embeddings | Gemini (`gemini-2.5-flash` / `gemini-embedding-001`) |
+| Chat generation | Any OpenAI-compatible endpoint (`LLM_BASE_URL`/`LLM_MODEL`) — currently Gemini's own OpenAI-compatible API |
+| Embeddings | Voyage AI (`voyage-3.5`, independent of the chat provider) |
 | Retrieval | `rank-bm25` + dense similarity, Reciprocal Rank Fusion |
-| Reranking | Gemini (LLM-based relevance scoring, one batched call per rerank) |
+| Reranking / judging / titling | Same configured LLM endpoint as chat generation, one batched call each |
 | Parsing | pdfplumber (PDF), python-docx (DOCX), pandas (XLSX/CSV) |
 | Graph visualization | Vis Network |
 | Evaluation | Precision@K, Recall@K, MRR, LLM-as-judge faithfulness |
@@ -219,8 +210,6 @@ Concrete, source-checked figures rather than vague claims — each one points at
     ├── fixtures/          sample_docs/ (demo corpus)
     └── eval/              eval_set.json / eval_report.md / eval_baseline.json / eval_metrics.json
 ```
-
-The `services/`/`authz.py` layer (#18), the `docs/` split into `fixtures/` + `eval/` (#19), and the `src/core/`+`tests/` domain grouping shown above have all landed.
 
 ---
 
@@ -282,16 +271,13 @@ Open `http://localhost:3000`, sign up, then start a conversation from the sideba
 
 ## Roadmap & Production Hardening
 
-An earlier ground-up review (tracked as 5 GitHub milestones: security/authz hardening, faithfulness as a hard gate, a real test suite + CI gate, model routing/guardrails, ops hardening) is now **complete** — per-user ownership is enforced via a centralized `api/authz.py`, the faithfulness score is a hard gate (not just advisory), a 216-test `pytest` suite gates every PR, Gemini calls have fallback-model routing, and prompt-injection flagging/rate limiting/response caching/pgvector HNSW are all live (see the [System Numbers](#system-numbers) table above).
-
-A follow-up architecture review (2026-11-06) surfaced a further round of gaps — chat-pipeline failures persisted as fake 200 replies, the frontend discarding backend error detail, a service method bypassing the authz pattern, a Supabase connection-pool leak, assorted API convention cleanup, and a stale eval baseline — all filed as issues (#52-#57) and since resolved and closed. See the repo's [milestones](../../milestones) and [issues](../../issues) for current status.
+A ground-up hardening pass across 5 GitHub milestones (security/authz, faithfulness as a hard gate, a real test suite, model routing/guardrails, ops hardening) is complete — see the [System Numbers](#system-numbers) table above for what that bought. Follow-up review rounds have surfaced further gaps since, all filed and closed. See [milestones](../../milestones) and [issues](../../issues) for current status.
 
 ---
 
 ## Current Limitations
 
 - The retrieval-confidence abstention gate only applies in advanced mode; naive mode always attempts an answer.
-- Faithfulness scoring is judged by the same model family doing the generation, not an independent/stronger judge model.
+- Query rewriting, reranking, generation, and faithfulness judging all go through the same configured LLM endpoint/model — faithfulness isn't judged by an independent model.
 - The entity graph is exploration-only, not a retrieval signal, and costs one LLM call per section.
 - Every data route requires a signed-in Supabase user; there's no anonymous/read-only demo mode.
-- The committed eval numbers above are one eval-set revision stale (#57), and a fresh run is currently blocked on a suspected connection-pool leak (#55).

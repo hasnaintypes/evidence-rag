@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 1280px;
+    height: 640px;
+    background: #0b0e14;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: Arial, Helvetica, sans-serif;
+  }
+  .wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 22px;
+  }
+  .mark {
+    display: flex;
+    align-items: center;
+    gap: 22px;
+  }
+  .bracket {
+    font-family: "Courier New", monospace;
+    font-weight: 700;
+    font-size: 72px;
+    color: #4b5566;
+    line-height: 1;
+  }
+  .word {
+    font-weight: 800;
+    font-size: 84px;
+    letter-spacing: -0.02em;
+    color: #f3f4f6;
+    line-height: 1;
+  }
+  .word .accent {
+    color: #6ee7b7;
+  }
+  .tagline {
+    font-family: "Courier New", monospace;
+    font-size: 19px;
+    letter-spacing: 0.04em;
+    color: #5b6472;
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="mark">
+      <span class="bracket">[1]</span>
+      <span class="word">Evidence<span class="accent">RAG</span></span>
+    </div>
+    <div class="tagline">retrieves evidence, cites it, or refuses to answer</div>
+  </div>
+</body>
+</html>
